@@ -272,6 +272,20 @@ void fl_engine_send_window_metrics_event(FlEngine* engine,
                                          double pixel_ratio);
 
 /**
+ * fl_engine_send_view_focus_event:
+ * @engine: an #FlEngine.
+ * @view_id: the view whose native focus changed.
+ * @state: the new focus state.
+ * @direction: the direction focus moved between views.
+ *
+ * Sends a native view focus change to the engine.
+ */
+void fl_engine_send_view_focus_event(FlEngine* engine,
+                                     FlutterViewId view_id,
+                                     FlutterViewFocusState state,
+                                     FlutterViewFocusDirection direction);
+
+/**
  * fl_engine_send_mouse_pointer_event:
  * @engine: an #FlEngine.
  * @view_id: the view that the event occured on.

@@ -1192,6 +1192,26 @@ void fl_engine_send_window_metrics_event(FlEngine* self,
   }
 }
 
+void fl_engine_send_view_focus_event(FlEngine* self,
+                                     FlutterViewId view_id,
+                                     FlutterViewFocusState state,
+                                     FlutterViewFocusDirection direction) {
+  g_return_if_fail(FL_IS_ENGINE(self));
+
+  if (self->engine == nullptr) {
+    return;
+  }
+
+  FlutterViewFocusEvent event = {};
+  event.struct_size = sizeof(event);
+  event.view_id = view_id;
+  event.state = state;
+  event.direction = direction;
+  if (self->embedder_api.SendViewFocusEvent(self->engine, &event) != kSuccess) {
+    g_warning("Failed to send view focus event");
+  }
+}
+
 void fl_engine_send_mouse_pointer_event(FlEngine* self,
                                         FlutterViewId view_id,
                                         FlutterPointerPhase phase,

@@ -5,6 +5,7 @@
 #include "flutter/shell/platform/linux/public/flutter_linux/fl_view.h"
 
 #include <memory>
+#include <vector>
 
 #include "flutter/shell/platform/embedder/test_utils/proc_table_replacement.h"
 #include "flutter/shell/platform/linux/fl_engine_private.h"
@@ -65,6 +66,34 @@ TEST_F(FlViewTest, DisposeClearsTextInputWidget) {
   g_object_unref(view);
 
   EXPECT_EQ(fl_text_input_handler_get_widget(handler), nullptr);
+}
+
+TEST_F(FlViewTest, SendsViewFocusEvents) {
+  g_autoptr(FlView) view = fl_view_new(project);
+  FlEngine* engine = fl_view_get_engine(view);
+  StartEngine(engine);
+
+  std::vector<FlutterViewFocusEvent> events;
+  fl_engine_get_embedder_api(engine)->SendViewFocusEvent = MOCK_ENGINE_PROC(
+      SendViewFocusEvent,
+      [&events](auto raw_engine, const FlutterViewFocusEvent* event) {
+        events.push_back(*event);
+        return kSuccess;
+      });
+
+  GdkEventFocus focus_event = {};
+  GtkWidgetClass* widget_class = GTK_WIDGET_GET_CLASS(view);
+  widget_class->focus_in_event(GTK_WIDGET(view), &focus_event);
+  widget_class->focus_out_event(GTK_WIDGET(view), &focus_event);
+
+  ASSERT_EQ(events.size(), 2u);
+  EXPECT_EQ(events[0].struct_size, sizeof(FlutterViewFocusEvent));
+  EXPECT_EQ(events[0].view_id, fl_view_get_id(view));
+  EXPECT_EQ(events[0].state, kFocused);
+  EXPECT_EQ(events[0].direction, kUndefined);
+  EXPECT_EQ(events[1].view_id, fl_view_get_id(view));
+  EXPECT_EQ(events[1].state, kUnfocused);
+  EXPECT_EQ(events[1].direction, kUndefined);
 }
 
 // FIXME(robert-ancell): Disabling this test as it requires the FlView

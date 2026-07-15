@@ -585,12 +585,23 @@ static gboolean handle_key_event(FlView* self, GdkEventKey* key_event) {
   return TRUE;
 }
 
-// Implements GtkWidget::key_press_event.
+// Implements GtkWidget::focus_in_event.
 static gboolean fl_view_focus_in_event(GtkWidget* widget,
                                        GdkEventFocus* event) {
   FlView* self = FL_VIEW(widget);
   fl_text_input_handler_set_widget(
       fl_engine_get_text_input_handler(self->engine), widget);
+  fl_engine_send_view_focus_event(self->engine, self->view_id, kFocused,
+                                  kUndefined);
+  return FALSE;
+}
+
+// Implements GtkWidget::focus_out_event.
+static gboolean fl_view_focus_out_event(GtkWidget* widget,
+                                        GdkEventFocus* event) {
+  FlView* self = FL_VIEW(widget);
+  fl_engine_send_view_focus_event(self->engine, self->view_id, kUnfocused,
+                                  kUndefined);
   return FALSE;
 }
 
@@ -616,6 +627,7 @@ static void fl_view_class_init(FlViewClass* klass) {
   GtkWidgetClass* widget_class = GTK_WIDGET_CLASS(klass);
   widget_class->realize = fl_view_realize;
   widget_class->focus_in_event = fl_view_focus_in_event;
+  widget_class->focus_out_event = fl_view_focus_out_event;
   widget_class->key_press_event = fl_view_key_press_event;
   widget_class->key_release_event = fl_view_key_release_event;
 
