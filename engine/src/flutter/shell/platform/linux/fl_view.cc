@@ -550,14 +550,6 @@ static void fl_view_realize(GtkWidget* widget) {
 }
 
 static gboolean handle_key_event(FlView* self, GdkEventKey* key_event) {
-  g_message(
-      "BUGLOG handle_key_event: view_id=%lld keyval=0x%x state=0x%x "
-      "is_press=%d gdk_window=%p widget_window=%p",
-      static_cast<long long>(self->view_id), key_event->keyval,
-      key_event->state, key_event->type == GDK_KEY_PRESS,
-      static_cast<void*>(key_event->window),
-      static_cast<void*>(gtk_widget_get_window(GTK_WIDGET(self))));
-
   g_autoptr(FlKeyEvent) event = fl_key_event_new_from_gdk_event(
       gdk_event_copy(reinterpret_cast<GdkEvent*>(key_event)));
 
@@ -578,21 +570,10 @@ static gboolean handle_key_event(FlView* self, GdkEventKey* key_event) {
           g_warning("Failed to handle key event: %s", error->message);
         }
 
-        g_message(
-            "BUGLOG handle_key_event callback: view_id=%lld "
-            "redispatch_event=%p",
-            static_cast<long long>(self->view_id),
-            static_cast<void*>(redispatch_event));
-
         if (redispatch_event != nullptr) {
-          gboolean handled_by_text_input = fl_text_input_handler_filter_keypress(
-              fl_engine_get_text_input_handler(self->engine),
-              redispatch_event);
-          g_message(
-              "BUGLOG handle_key_event callback: view_id=%lld "
-              "handled_by_text_input=%d",
-              static_cast<long long>(self->view_id), handled_by_text_input);
-          if (!handled_by_text_input) {
+          if (!fl_text_input_handler_filter_keypress(
+                  fl_engine_get_text_input_handler(self->engine),
+                  redispatch_event)) {
             fl_keyboard_manager_add_redispatched_event(
                 fl_engine_get_keyboard_manager(self->engine), redispatch_event);
             gdk_event_put(fl_key_event_get_origin(redispatch_event));
@@ -608,11 +589,6 @@ static gboolean handle_key_event(FlView* self, GdkEventKey* key_event) {
 static gboolean fl_view_focus_in_event(GtkWidget* widget,
                                        GdkEventFocus* event) {
   FlView* self = FL_VIEW(widget);
-  g_message(
-      "BUGLOG fl_view_focus_in_event: view_id=%lld widget=%p "
-      "toplevel_window=%p",
-      static_cast<long long>(self->view_id), static_cast<void*>(widget),
-      static_cast<void*>(gtk_widget_get_window(gtk_widget_get_toplevel(widget))));
   fl_text_input_handler_set_widget(
       fl_engine_get_text_input_handler(self->engine), widget);
   fl_engine_send_view_focus_event(self->engine, self->view_id, kFocused,
@@ -624,11 +600,6 @@ static gboolean fl_view_focus_in_event(GtkWidget* widget,
 static gboolean fl_view_focus_out_event(GtkWidget* widget,
                                         GdkEventFocus* event) {
   FlView* self = FL_VIEW(widget);
-  g_message(
-      "BUGLOG fl_view_focus_out_event: view_id=%lld widget=%p "
-      "toplevel_window=%p",
-      static_cast<long long>(self->view_id), static_cast<void*>(widget),
-      static_cast<void*>(gtk_widget_get_window(gtk_widget_get_toplevel(widget))));
   fl_engine_send_view_focus_event(self->engine, self->view_id, kUnfocused,
                                   kUndefined);
   return FALSE;

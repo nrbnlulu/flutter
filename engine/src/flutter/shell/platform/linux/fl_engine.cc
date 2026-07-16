@@ -1207,10 +1207,6 @@ void fl_engine_send_view_focus_event(FlEngine* self,
   event.view_id = view_id;
   event.state = state;
   event.direction = direction;
-  g_message(
-      "BUGLOG fl_engine_send_view_focus_event: view_id=%lld state=%d "
-      "direction=%d",
-      static_cast<long long>(view_id), state, direction);
   if (self->embedder_api.SendViewFocusEvent(self->engine, &event) != kSuccess) {
     g_warning("Failed to send view focus event");
   }

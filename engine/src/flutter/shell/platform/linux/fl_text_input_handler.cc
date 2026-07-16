@@ -244,12 +244,6 @@ static gboolean im_delete_surrounding_cb(FlTextInputHandler* self,
 static void set_client(int64_t client_id, gpointer user_data) {
   FlTextInputHandler* self = FL_TEXT_INPUT_HANDLER(user_data);
 
-  g_message(
-      "BUGLOG set_client: self=%p old_client_id=%lld new_client_id=%lld "
-      "widget=%p",
-      static_cast<void*>(self), static_cast<long long>(self->client_id),
-      static_cast<long long>(client_id), static_cast<void*>(self->widget));
-
   self->client_id = client_id;
 }
 
@@ -325,8 +319,6 @@ static void set_editing_state(const gchar* text,
 // Called when the input method client is complete.
 static void clear_client(gpointer user_data) {
   FlTextInputHandler* self = FL_TEXT_INPUT_HANDLER(user_data);
-  g_message("BUGLOG clear_client: self=%p old_client_id=%lld",
-            static_cast<void*>(self), static_cast<long long>(self->client_id));
   self->client_id = kClientIdUnset;
 }
 
@@ -493,11 +485,6 @@ GtkIMContext* fl_text_input_handler_get_im_context(FlTextInputHandler* self) {
 void fl_text_input_handler_set_widget(FlTextInputHandler* self,
                                       GtkWidget* widget) {
   g_return_if_fail(FL_IS_TEXT_INPUT_HANDLER(self));
-  g_message(
-      "BUGLOG fl_text_input_handler_set_widget: self=%p old_widget=%p "
-      "new_widget=%p client_id=%lld",
-      static_cast<void*>(self), static_cast<void*>(self->widget),
-      static_cast<void*>(widget), static_cast<long long>(self->client_id));
   self->widget = widget;
   gtk_im_context_set_client_window(
       self->im_context,
@@ -513,27 +500,13 @@ gboolean fl_text_input_handler_filter_keypress(FlTextInputHandler* self,
                                                FlKeyEvent* event) {
   g_return_val_if_fail(FL_IS_TEXT_INPUT_HANDLER(self), FALSE);
 
-  g_message(
-      "BUGLOG fl_text_input_handler_filter_keypress: self=%p keyval=0x%x "
-      "client_id=%lld widget=%p",
-      static_cast<void*>(self), fl_key_event_get_keyval(event),
-      static_cast<long long>(self->client_id), static_cast<void*>(self->widget));
-
   if (self->client_id == kClientIdUnset) {
-    g_message(
-        "BUGLOG fl_text_input_handler_filter_keypress: self=%p "
-        "client_id unset, returning FALSE",
-        static_cast<void*>(self));
     return FALSE;
   }
 
   if (gtk_im_context_filter_keypress(
           self->im_context,
           reinterpret_cast<GdkEventKey*>(fl_key_event_get_origin(event)))) {
-    g_message(
-        "BUGLOG fl_text_input_handler_filter_keypress: self=%p "
-        "im_context consumed the event, returning TRUE",
-        static_cast<void*>(self));
     return TRUE;
   }
 
@@ -598,12 +571,6 @@ gboolean fl_text_input_handler_filter_keypress(FlTextInputHandler* self,
   if (do_action) {
     perform_action(self);
   }
-
-  g_message(
-      "BUGLOG fl_text_input_handler_filter_keypress: self=%p returning "
-      "changed=%d (keyval was not natively handled; expected to be handled "
-      "by framework Shortcuts/Actions if focus is correct)",
-      static_cast<void*>(self), changed);
 
   return changed;
 }
