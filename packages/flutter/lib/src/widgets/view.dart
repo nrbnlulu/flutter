@@ -239,6 +239,11 @@ class _ViewState extends State<View> with WidgetsBindingObserver {
 
   @override
   void didChangeViewFocus(ViewFocusEvent event) {
+    debugPrint(
+      'BUGLOG didChangeViewFocus: thisViewId=${widget.view.viewId} '
+      'eventViewId=${event.viewId} state=${event.state} '
+      'direction=${event.direction} scopeNodeCurrentFocus=${_scopeNode.focusedChild}',
+    );
     _viewHasFocus = switch (event.state) {
       ViewFocusState.focused => event.viewId == widget.view.viewId,
       ViewFocusState.unfocused => false,
@@ -257,8 +262,17 @@ class _ViewState extends State<View> with WidgetsBindingObserver {
           case ViewFocusDirection.undefined:
             nextFocus = _scopeNode;
         }
+        debugPrint(
+          'BUGLOG didChangeViewFocus: viewId=${widget.view.viewId} '
+          'requesting focus on nextFocus=$nextFocus '
+          '(scopeNode=$_scopeNode, isScopeNodeItself=${identical(nextFocus, _scopeNode)})',
+        );
         nextFocus.requestFocus();
       case ViewFocusState.unfocused:
+        debugPrint(
+          'BUGLOG didChangeViewFocus: viewId=${widget.view.viewId} '
+          'parking focus on rootScope',
+        );
         // Focusing on the root scope node will "park" the focus, so that no
         // descendant node will be given focus, and there's no widget that can
         // receive keyboard events.
