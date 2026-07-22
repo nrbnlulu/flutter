@@ -1,0 +1,19 @@
+[package]
+name = "flutter-shell-winit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Winit host runtime for the Flutter Rust shell"
+
+[lib]
+path = "src/lib.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+winit = { version = "=0.30.13", default-features = false, features = [
+  "rwh_06",
+  "wayland",
+  "wayland-csd-adwaita",
+  "wayland-dlopen",
+  "x11",
+] }

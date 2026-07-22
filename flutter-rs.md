@@ -144,6 +144,10 @@ FRB bindings. It must not contain a generated copy of the shared shell runtime.
 The runtime belongs to the SDK fork so fixes and engine changes remain
 centralized.
 
+All Rust crates in the shell, plugin SDK, and generated `runner-rs/` workspace
+use Rust edition 2024. The Flutter tool pins a concrete Rust toolchain that
+supports that edition for reproducible application and engine builds.
+
 ## C++/Rust boundary
 
 Rust should not directly inherit Flutter C++ types or consume arbitrary C++

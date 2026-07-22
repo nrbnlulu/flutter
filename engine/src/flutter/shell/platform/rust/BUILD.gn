@@ -1,0 +1,78 @@
+# Copyright 2026 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//flutter/testing/testing.gni")
+
+_flutter_shell_core_output = "$target_gen_dir/rust/libflutter_shell_core.a"
+
+# Cargo owns Rust dependency resolution. This action produces the static
+# runtime archive consumed by the private C++/Rust ABI test and, later, by the
+# Rust runner. The workspace rust-toolchain.toml pins Rust 1.93.1.
+action("flutter_shell_core_rust") {
+  script = "build_rust.py"
+
+  inputs = [
+    "Cargo.lock",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    "crates/flutter-plugin-sdk/Cargo.toml",
+    "crates/flutter-plugin-sdk/src/lib.rs",
+    "crates/flutter-shell-core/Cargo.toml",
+    "crates/flutter-shell-core/src/lib.rs",
+  ]
+
+  outputs = [ _flutter_shell_core_output ]
+
+  args = [
+    "--manifest-path",
+    rebase_path("Cargo.toml", root_build_dir),
+    "--package",
+    "flutter-shell-core",
+    "--output",
+    rebase_path(_flutter_shell_core_output, root_build_dir),
+  ]
+}
+
+# This target is intentionally independent of a particular native platform.
+# Platform-specific Rust implementations are selected by the Rust runner, not
+# by the existing GTK, Win32, Android, or Darwin shell targets.
+source_set("flutter_rust_shell") {
+  public = [
+    "platform_view_rust.h",
+    "rust_task_runner.h",
+    "rust_bridge.h",
+  ]
+
+  sources = [
+    "platform_view_rust.cc",
+    "rust_task_runner.cc",
+  ]
+
+  public_deps = [
+    "//flutter/shell/common",
+  ]
+
+  deps = [ "//flutter/fml" ]
+}
+
+if (enable_unittests) {
+  executable("flutter_rust_shell_unittests") {
+    testonly = true
+
+    sources = [
+      "platform_view_rust_unittests.cc",
+      "rust_task_runner_unittests.cc",
+    ]
+
+    deps = [
+      ":flutter_rust_shell",
+      ":flutter_shell_core_rust",
+      "//flutter/common",
+      "//flutter/testing",
+      "//flutter/testing:dart",
+    ]
+
+    ldflags = [ rebase_path(_flutter_shell_core_output, root_build_dir) ]
+  }
+}

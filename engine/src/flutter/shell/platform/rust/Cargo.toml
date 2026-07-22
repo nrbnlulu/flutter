@@ -1,0 +1,12 @@
+[workspace]
+members = [
+  "crates/flutter-plugin-sdk",
+  "crates/flutter-shell-core",
+  "crates/flutter-shell-winit",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.93"
+license = "BSD-3-Clause"

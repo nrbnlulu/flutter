@@ -28,3 +28,10 @@ group("platform") {
     assert(false, "Unknown/Unsupported platform.")
   }
 }
+
+# The Rust shell is an opt-in alternative shell. It is not selected by this
+# platform group so the existing GTK, Win32, Android, and Darwin shells retain
+# their current build behavior. A Rust runner depends on this target directly.
+group("rust") {
+  deps = [ "rust:flutter_rust_shell" ]
+}

@@ -1,0 +1,10 @@
+[package]
+name = "flutter-plugin-sdk"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Public Rust plugin API for the Flutter Rust shell"
+
+[lib]
+path = "src/lib.rs"
