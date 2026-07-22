@@ -16,10 +16,10 @@ Embedder API.
 | Existing shells remain available | Complete | The Rust target is opt-in and is not added to the existing platform-selection group. |
 | In-tree Rust platform target | Complete | `//flutter/shell/platform/rust:flutter_rust_shell` builds. |
 | Internal PlatformView adapter | Complete | `PlatformViewRust` builds and its four focused tests pass. |
-| Rust/C++ ABI | Complete for discovery | ABI v1 is defined in `rust_bridge.h`, linked through GN, and exercised by C++ tests. |
+| Rust/C++ ABI | Callback bridge implemented | ABI v1 defines Rust-owned task-runner callbacks and opaque C++ runner handles; winit dispatch is still pending. |
 | Rust workspace and `flutter-plugin-sdk` | Complete for foundation | Workspace uses Rust edition 2024, concrete toolchain 1.93.1, and passes its tests. |
 | Winit event loop | Implemented; Flutter integration pending | Linux runtime crate owns a minimal winit window/event loop and passes its unit test. |
-| Merged UI/platform task runner | C++ contract complete | `RustTaskRunner` queues Flutter task batons for the Rust host loop; its three focused tests pass. |
+| Merged UI/platform task runner | Bridge implemented | `RustTaskRunner` queues batons for a Rust-owned callback host; winit still needs to wake and return due batons. |
 | Impeller/wgpu interop | Not started | Must follow a working rendering surface. |
 | Linux runnable shell | Not started | Requires a Rust runner, a surface implementation, and task runners. |
 
@@ -52,6 +52,13 @@ Embedder API.
   opaque batons and runs them when winit returns the baton on its main thread.
   It is the basis for sharing the UI and platform task runner without using the
   Embedder task-runner API.
+- Extended ABI v1 with a Rust-owned task-runner callback table and opaque C++
+  runner handle. The C++ side converts `fml::TimePoint` to a relative delay;
+  the Rust host queues the baton against `Instant`, so no clock epoch crosses
+  the boundary.
+- Added Rust task-runner host state with thread-affinity and destruction
+  tracking. Its stable boxed address is the callback `user_data` owned by the
+  winit host.
 - Left existing platform shells unmodified and unselected. The Rust runner will
   select its own target explicitly.
 
@@ -62,14 +69,14 @@ Embedder API.
 - Built `//flutter/shell/platform/rust:flutter_rust_shell` and
   `//flutter/shell/platform/rust:flutter_rust_shell_unittests` with the
   host-debug GN configuration.
-- Ran `flutter_rust_shell_unittests`: 7 tests passed.
+- Ran `flutter_rust_shell_unittests`: 9 tests passed.
 - Ran `cargo +1.93.1 test --workspace --locked`: all crate and documentation
   tests pass, including the winit host task queue.
 
 ## Next implementation steps
 
-1. Extend the private ABI with Rust-owned callback handles and lifetime
-   operations, then bind `RustTaskRunner` to the winit wake/timer loop.
+1. Bind `RustTaskRunner` to the winit wake/timer loop and return due batons
+   through the opaque C++ runner handle.
 2. Construct `Shell` with the merged Rust task runner and `PlatformViewRust`.
 3. Add an Impeller-backed Linux rendering surface and boot a Flutter app.
 

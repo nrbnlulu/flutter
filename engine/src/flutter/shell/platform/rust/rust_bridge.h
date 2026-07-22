@@ -21,7 +21,32 @@ typedef struct FlutterRustShellAbi {
   uint32_t plugin_sdk_api_version;
 } FlutterRustShellAbi;
 
+// A callback table owned by the Rust host for one merged Flutter UI/platform
+// task runner. Times are relative delays so C++ and Rust need not share a
+// monotonic-clock epoch. `task_runner` and `task_baton` are opaque values that
+// Rust returns to FlutterRustShellRunTask when the winit loop reaches them.
+typedef void (*FlutterRustScheduleTaskCallback)(void* user_data,
+                                                void* task_runner,
+                                                uint64_t task_baton,
+                                                uint64_t delay_nanos);
+typedef int (*FlutterRustRunsTasksOnCurrentThreadCallback)(void* user_data);
+typedef void (*FlutterRustTaskRunnerDestroyedCallback)(void* user_data);
+
+typedef struct FlutterRustTaskRunnerCallbacks {
+  void* user_data;
+  FlutterRustScheduleTaskCallback schedule_task;
+  FlutterRustRunsTasksOnCurrentThreadCallback runs_tasks_on_current_thread;
+  FlutterRustTaskRunnerDestroyedCallback task_runner_destroyed;
+} FlutterRustTaskRunnerCallbacks;
+
 FlutterRustShellAbi FlutterRustShellGetAbi(void);
+
+// Creates and destroys the C++ half of a Rust-owned task runner. The returned
+// handle is opaque to Rust; only the callback table's owner may destroy it.
+void* FlutterRustShellCreateTaskRunner(
+    FlutterRustTaskRunnerCallbacks callbacks);
+int FlutterRustShellRunTask(void* task_runner, uint64_t task_baton);
+void FlutterRustShellDestroyTaskRunner(void* task_runner);
 
 #ifdef __cplusplus
 }

@@ -19,6 +19,33 @@ struct ScheduledTask {
   fml::TimePoint target_time;
 };
 
+struct RustHostState {
+  std::optional<ScheduledTask> scheduled_task;
+  uint64_t delay_nanos = 0;
+  bool destroyed = false;
+};
+
+void ScheduleRustHostTask(void* user_data,
+                          void* task_runner,
+                          uint64_t task_baton,
+                          uint64_t delay_nanos) {
+  auto* state = static_cast<RustHostState*>(user_data);
+  state->scheduled_task = {
+      static_cast<RustTaskRunner*>(task_runner),
+      task_baton,
+      fml::TimePoint(),
+  };
+  state->delay_nanos = delay_nanos;
+}
+
+int RustHostRunsTasksOnCurrentThread(void*) {
+  return 1;
+}
+
+void RustHostTaskRunnerDestroyed(void* user_data) {
+  static_cast<RustHostState*>(user_data)->destroyed = true;
+}
+
 RustTaskRunner::DispatchTable MakeDispatchTable(
     std::optional<ScheduledTask>* scheduled_task,
     bool* destroyed) {
@@ -69,6 +96,47 @@ TEST(RustTaskRunnerTest, InvokesDestructionCallback) {
   }
 
   EXPECT_TRUE(destroyed);
+}
+
+TEST(RustTaskRunnerTest, DispatchesTasksThroughPrivateRustCallbacks) {
+  RustHostState state;
+  {
+    FlutterRustTaskRunnerCallbacks callbacks = {
+        .user_data = &state,
+        .schedule_task = ScheduleRustHostTask,
+        .runs_tasks_on_current_thread = RustHostRunsTasksOnCurrentThread,
+        .task_runner_destroyed = RustHostTaskRunnerDestroyed,
+    };
+    auto task_runner = RustTaskRunner::CreateForRustHost(callbacks);
+    fml::RefPtr<fml::TaskRunner> task_runner_interface = task_runner;
+    bool ran = false;
+
+    task_runner_interface->PostTask([&ran] { ran = true; });
+
+    ASSERT_TRUE(state.scheduled_task.has_value());
+    EXPECT_TRUE(state.scheduled_task->task_runner->RunTask(
+        state.scheduled_task->task_baton));
+    EXPECT_TRUE(ran);
+    EXPECT_TRUE(task_runner_interface->RunsTasksOnCurrentThread());
+  }
+  EXPECT_TRUE(state.destroyed);
+}
+
+TEST(RustTaskRunnerTest, OwnsOpaqueRunnerHandleForRustHost) {
+  RustHostState state;
+  FlutterRustTaskRunnerCallbacks callbacks = {
+      .user_data = &state,
+      .schedule_task = ScheduleRustHostTask,
+      .runs_tasks_on_current_thread = RustHostRunsTasksOnCurrentThread,
+      .task_runner_destroyed = RustHostTaskRunnerDestroyed,
+  };
+  void* task_runner = FlutterRustShellCreateTaskRunner(callbacks);
+
+  ASSERT_NE(task_runner, nullptr);
+  ScheduleRustHostTask(&state, task_runner, 1, 0);
+  EXPECT_FALSE(FlutterRustShellRunTask(task_runner, 1));
+  FlutterRustShellDestroyTaskRunner(task_runner);
+  EXPECT_TRUE(state.destroyed);
 }
 
 }  // namespace

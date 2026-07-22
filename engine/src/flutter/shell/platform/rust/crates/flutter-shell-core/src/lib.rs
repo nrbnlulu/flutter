@@ -9,6 +9,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use flutter_plugin_sdk::PLUGIN_SDK_API_VERSION;
+use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
 pub const SHELL_ABI_VERSION: u32 = 1;
@@ -19,6 +20,17 @@ pub const SHELL_ABI_VERSION: u32 = 1;
 pub struct FlutterRustShellAbi {
     pub shell_abi_version: u32,
     pub plugin_sdk_api_version: u32,
+}
+
+/// Private callback table used to bind Flutter task scheduling to the Rust
+/// host loop. It is ABI-compatible with `rust_bridge.h` and never exposed to
+/// application plugins.
+#[repr(C)]
+pub struct FlutterRustTaskRunnerCallbacks {
+    pub user_data: *mut c_void,
+    pub schedule_task: Option<extern "C" fn(*mut c_void, *mut c_void, u64, u64)>,
+    pub runs_tasks_on_current_thread: Option<extern "C" fn(*mut c_void) -> i32>,
+    pub task_runner_destroyed: Option<extern "C" fn(*mut c_void)>,
 }
 
 /// Returns the ABI versions compiled into the Rust shell runtime.

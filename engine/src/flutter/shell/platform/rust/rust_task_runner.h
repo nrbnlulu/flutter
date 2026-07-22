@@ -11,6 +11,7 @@
 
 #include "flutter/fml/macros.h"
 #include "flutter/fml/task_runner.h"
+#include "flutter/shell/platform/rust/rust_bridge.h"
 
 namespace flutter {
 
@@ -29,6 +30,11 @@ class RustTaskRunner final : public fml::TaskRunner {
   };
 
   static fml::RefPtr<RustTaskRunner> Create(DispatchTable dispatch_table);
+
+  // Creates a task runner whose dispatch table is supplied by the Rust host.
+  // The callback table must outlive this runner's final destruction callback.
+  static fml::RefPtr<RustTaskRunner> CreateForRustHost(
+      FlutterRustTaskRunnerCallbacks callbacks);
 
   ~RustTaskRunner() override;
 
