@@ -33,6 +33,50 @@ pub struct FlutterRustTaskRunnerCallbacks {
     pub task_runner_destroyed: Option<extern "C" fn(*mut c_void)>,
 }
 
+/// Raw Vulkan objects borrowed from Rust/wgpu, ABI-compatible with
+/// `FlutterRustVulkanContextData` in `rust_bridge.h`. The extension arrays are
+/// borrowed only for the duration of the `FlutterRustShellCreateShell` call.
+#[repr(C)]
+pub struct FlutterRustVulkanContextData {
+    pub get_instance_proc_addr: *mut c_void,
+    pub instance: *mut c_void,
+    pub physical_device: *mut c_void,
+    pub device: *mut c_void,
+    pub queue: *mut c_void,
+    pub queue_family_index: u32,
+    pub instance_extensions: *const *const std::ffi::c_char,
+    pub instance_extensions_count: u32,
+    pub device_extensions: *const *const std::ffi::c_char,
+    pub device_extensions_count: u32,
+}
+
+/// A Vulkan swapchain image acquired by the Rust GPU broker, ABI-compatible
+/// with `FlutterRustVulkanImage` in `rust_bridge.h`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct FlutterRustVulkanImage {
+    pub image: u64,
+    pub format: u32,
+}
+
+/// ABI-compatible with `FlutterRustVulkanPresentationCallbacks`.
+#[repr(C)]
+pub struct FlutterRustVulkanPresentationCallbacks {
+    pub user_data: *mut c_void,
+    pub acquire_image: Option<
+        extern "C" fn(*mut c_void, u32, u32, *mut FlutterRustVulkanImage) -> i32,
+    >,
+    pub present_image: Option<extern "C" fn(*mut c_void, FlutterRustVulkanImage) -> i32>,
+}
+
+/// Paths borrowed only for the duration of the `FlutterRustShellCreateShell`
+/// call; ABI-compatible with `FlutterRustShellSettings`.
+#[repr(C)]
+pub struct FlutterRustShellSettings {
+    pub assets_path: *const std::ffi::c_char,
+    pub icu_data_path: *const std::ffi::c_char,
+}
+
 /// Returns the ABI versions compiled into the Rust shell runtime.
 #[unsafe(no_mangle)]
 pub extern "C" fn FlutterRustShellGetAbi() -> FlutterRustShellAbi {

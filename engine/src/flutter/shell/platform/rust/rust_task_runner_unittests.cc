@@ -131,10 +131,30 @@ TEST(RustTaskRunnerTest, OwnsOpaqueRunnerHandleForRustHost) {
       .task_runner_destroyed = RustHostTaskRunnerDestroyed,
   };
   void* task_runner = FlutterRustShellCreateTaskRunner(callbacks);
-
   ASSERT_NE(task_runner, nullptr);
-  ScheduleRustHostTask(&state, task_runner, 1, 0);
-  EXPECT_FALSE(FlutterRustShellRunTask(task_runner, 1));
+
+  // FlutterRustShellRunTask must accept the same `task_runner` identity that
+  // schedule_task forwards to Rust (RustTaskRunner::FromHandle's underlying
+  // pointer), not the opaque handle returned by
+  // FlutterRustShellCreateTaskRunner. Post through the real interface so this
+  // exercises that identity end to end, the way the production Rust host
+  // does. FromHandle returns its own retained reference, so it must go out of
+  // scope before FlutterRustShellDestroyTaskRunner releases the handle's
+  // reference, or the destruction callback below will not fire.
+  {
+    fml::RefPtr<fml::TaskRunner> task_runner_interface =
+        RustTaskRunner::FromHandle(task_runner);
+    bool ran = false;
+    task_runner_interface->PostTask([&ran] { ran = true; });
+
+    ASSERT_TRUE(state.scheduled_task.has_value());
+    EXPECT_TRUE(FlutterRustShellRunTask(state.scheduled_task->task_runner,
+                                       state.scheduled_task->task_baton));
+    EXPECT_TRUE(ran);
+    EXPECT_FALSE(FlutterRustShellRunTask(state.scheduled_task->task_runner,
+                                        state.scheduled_task->task_baton));
+  }
+
   FlutterRustShellDestroyTaskRunner(task_runner);
   EXPECT_TRUE(state.destroyed);
 }

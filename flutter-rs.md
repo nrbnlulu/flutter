@@ -173,6 +173,32 @@ Instead:
 
 This arrangement confines most upstream merge work to a narrow adapter.
 
+### Who owns the final link
+
+Two build topologies satisfy the boundary above, and they differ in which
+build system produces the final executable:
+
+- **GN owns the link (current phase 0 approach).** GN builds the C++ engine
+  adapter as a `source_set` and a small `executable` with a `main()` that
+  immediately calls into Rust; the Rust half is a `staticlib` that GN's build
+  action compiles with Cargo and links in. Rust never has to know how to link
+  Dart, Impeller, or Skia.
+- **Cargo owns the link.** GN instead builds the same C++ adapter as a
+  `shared_library` (the engine already does this for the embedder API and the
+  GTK shell), and a real Cargo `bin` crate links against it dynamically via a
+  `build.rs` that locates the GN output directory and emits the matching
+  `rustc-link-lib`/`rustc-link-search`/rpath flags. `cargo run`/`cargo build`
+  become the actual entry point instead of a ninja-built executable.
+
+Phase 0 uses the first approach because it is the smallest change that proves
+the seam: ninja already shells out to Cargo for the Rust archives, so one
+extra `executable` target with a two-line `main.cc` is enough. The generated
+application's `runner-rs/` (see Repository layout) implies the second model
+eventually, since it is described as an ordinary Rust workspace, not a GN
+target. Revisit this choice once tooling and project generation (see Tooling
+and project generation) needs `runner-rs/` to feel like a normal Cargo
+project; the phase 0 shim should not be read as the intended long-term shape.
+
 ## Threading and event loop
 
 Winit's event loop owns the native main thread. The Rust shell assigns both
@@ -727,6 +753,11 @@ and finally macOS/iOS.
 Exit condition: a Flutter counter application runs through the Rust backend,
 without the public Embedder API or routing through the GTK shell. The regular
 GTK shell remains available as a separate build target.
+
+The native runner built here is a GN executable with a two-line `main.cc` that
+calls straight into Rust (see "Who owns the final link" under C++/Rust
+boundary). That is a phase 0 expedient to avoid teaching Cargo how to link the
+engine; it is not the tooling model application authors will see.
 
 ### Phase 1: winit platform host
 

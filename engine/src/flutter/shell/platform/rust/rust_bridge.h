@@ -39,6 +39,29 @@ typedef struct FlutterRustTaskRunnerCallbacks {
   FlutterRustTaskRunnerDestroyedCallback task_runner_destroyed;
 } FlutterRustTaskRunnerCallbacks;
 
+// A Vulkan swapchain image acquired by the Rust GPU broker. The broker owns
+// the image and all synchronization associated with it. C++ borrows it only
+// for the duration of a Flutter frame.
+typedef struct FlutterRustVulkanImage {
+  uint64_t image;
+  uint32_t format;
+} FlutterRustVulkanImage;
+
+typedef int (*FlutterRustAcquireVulkanImageCallback)(
+    void* user_data,
+    uint32_t width,
+    uint32_t height,
+    FlutterRustVulkanImage* image);
+typedef int (*FlutterRustPresentVulkanImageCallback)(
+    void* user_data,
+    FlutterRustVulkanImage image);
+
+typedef struct FlutterRustVulkanPresentationCallbacks {
+  void* user_data;
+  FlutterRustAcquireVulkanImageCallback acquire_image;
+  FlutterRustPresentVulkanImageCallback present_image;
+} FlutterRustVulkanPresentationCallbacks;
+
 FlutterRustShellAbi FlutterRustShellGetAbi(void);
 
 // Creates and destroys the C++ half of a Rust-owned task runner. The returned
@@ -47,6 +70,55 @@ void* FlutterRustShellCreateTaskRunner(
     FlutterRustTaskRunnerCallbacks callbacks);
 int FlutterRustShellRunTask(void* task_runner, uint64_t task_baton);
 void FlutterRustShellDestroyTaskRunner(void* task_runner);
+
+// Raw Vulkan objects borrowed from Rust/wgpu for the lifetime of the shell
+// they create. C-string arrays are borrowed only for the duration of the
+// FlutterRustShellCreateShell call.
+typedef struct FlutterRustVulkanContextData {
+  void* get_instance_proc_addr;
+  void* instance;
+  void* physical_device;
+  void* device;
+  void* queue;
+  uint32_t queue_family_index;
+  const char* const* instance_extensions;
+  uint32_t instance_extensions_count;
+  const char* const* device_extensions;
+  uint32_t device_extensions_count;
+} FlutterRustVulkanContextData;
+
+// Paths borrowed only for the duration of the FlutterRustShellCreateShell
+// call; the engine copies what it needs.
+typedef struct FlutterRustShellSettings {
+  const char* assets_path;
+  const char* icu_data_path;
+} FlutterRustShellSettings;
+
+// Creates the private engine-side half of one Rust-hosted Flutter
+// application. `task_runner` must be a handle previously returned by
+// FlutterRustShellCreateTaskRunner and is used as the merged UI/platform task
+// runner; the caller retains ownership of it. Returns null on failure.
+void* FlutterRustShellCreateShell(
+    void* task_runner,
+    FlutterRustVulkanContextData context_data,
+    FlutterRustVulkanPresentationCallbacks presentation_callbacks,
+    FlutterRustShellSettings settings);
+
+// Starts the root isolate and attaches the Vulkan presentation surface. Must
+// run on the merged Rust UI/platform task runner. Returns non-zero on
+// success.
+int FlutterRustShellRunShell(void* shell);
+
+// Reports the implicit view's size to the running engine. Call once after
+// FlutterRustShellRunShell succeeds and again on every resize; without this
+// the root isolate has no valid view to schedule frames for. Must run on the
+// merged Rust UI/platform task runner.
+void FlutterRustShellSetViewportMetrics(void* shell,
+                                        double width,
+                                        double height,
+                                        double pixel_ratio);
+
+void FlutterRustShellDestroyShell(void* shell);
 
 #ifdef __cplusplus
 }

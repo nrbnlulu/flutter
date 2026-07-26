@@ -5,6 +5,8 @@
 import("//flutter/testing/testing.gni")
 
 _flutter_shell_core_output = "$target_gen_dir/rust/libflutter_shell_core.a"
+_flutter_shell_winit_output = "$target_gen_dir/rust/libflutter_shell_winit.a"
+_flutter_shell_wgpu_output = "$target_gen_dir/rust/libflutter_shell_wgpu.a"
 
 # Cargo owns Rust dependency resolution. This action produces the static
 # runtime archive consumed by the private C++/Rust ABI test and, later, by the
@@ -34,6 +36,64 @@ action("flutter_shell_core_rust") {
   ]
 }
 
+# This archive owns winit's event loop. It remains separate from the small
+# core ABI archive because the final native runner is responsible for linking
+# its platform system libraries alongside the Flutter engine.
+action("flutter_shell_winit_rust") {
+  script = "build_rust.py"
+
+  inputs = [
+    "Cargo.lock",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    "crates/flutter-plugin-sdk/Cargo.toml",
+    "crates/flutter-plugin-sdk/src/lib.rs",
+    "crates/flutter-shell-core/Cargo.toml",
+    "crates/flutter-shell-core/src/lib.rs",
+    "crates/flutter-shell-winit/Cargo.toml",
+    "crates/flutter-shell-winit/src/lib.rs",
+    "crates/flutter-shell-wgpu/Cargo.toml",
+    "crates/flutter-shell-wgpu/src/lib.rs",
+  ]
+
+  outputs = [ _flutter_shell_winit_output ]
+
+  args = [
+    "--manifest-path",
+    rebase_path("Cargo.toml", root_build_dir),
+    "--package",
+    "flutter-shell-winit",
+    "--output",
+    rebase_path(_flutter_shell_winit_output, root_build_dir),
+  ]
+}
+
+# The broker owns wgpu and is intentionally isolated from the C++ engine ABI.
+# It is built as a Rust library until the winit runner links the final native
+# executable, where its platform system dependencies can be supplied together.
+action("flutter_shell_wgpu_rust") {
+  script = "build_rust.py"
+
+  inputs = [
+    "Cargo.lock",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    "crates/flutter-shell-wgpu/Cargo.toml",
+    "crates/flutter-shell-wgpu/src/lib.rs",
+  ]
+
+  outputs = [ _flutter_shell_wgpu_output ]
+
+  args = [
+    "--manifest-path",
+    rebase_path("Cargo.toml", root_build_dir),
+    "--package",
+    "flutter-shell-wgpu",
+    "--output",
+    rebase_path(_flutter_shell_wgpu_output, root_build_dir),
+  ]
+}
+
 # This target is intentionally independent of a particular native platform.
 # Platform-specific Rust implementations are selected by the Rust runner, not
 # by the existing GTK, Win32, Android, or Darwin shell targets.
@@ -41,19 +101,60 @@ source_set("flutter_rust_shell") {
   public = [
     "platform_view_rust.h",
     "rust_task_runner.h",
+    "rust_shell.h",
     "rust_bridge.h",
+    "vulkan_context_rust.h",
+    "rust_vulkan_surface.h",
   ]
 
   sources = [
     "platform_view_rust.cc",
     "rust_task_runner.cc",
+    "rust_shell.cc",
+    "rust_vulkan_surface.cc",
+    "vulkan_context_rust.cc",
   ]
 
   public_deps = [
     "//flutter/shell/common",
+    "//flutter/shell/gpu:gpu_surface_vulkan",
   ]
 
-  deps = [ "//flutter/fml" ]
+  deps = [
+    "//flutter/fml",
+    "//flutter/impeller",
+    "//flutter/impeller/renderer/backend/vulkan",
+  ]
+}
+
+# The standalone native runner. Rust owns the winit main loop and native
+# window; this executable is only the process entry point and the private
+# ABI callback implementations linked in through :flutter_rust_shell.
+executable("flutter_rust_shell_runner") {
+  sources = [
+    "main.cc",
+    "rust_runner.h",
+  ]
+
+  # The Dart VM resolves its JIT snapshot symbols by looking inside the
+  # currently loaded process; this makes them visible despite the default
+  # hidden-visibility build config. See shell_host_executable in
+  # //flutter/shell/common/BUILD.gn for the same requirement.
+  public_configs = [ "//flutter:export_dynamic_symbols" ]
+
+  deps = [
+    ":flutter_rust_shell",
+    ":flutter_shell_winit_rust",
+    "//flutter/lib/snapshot",
+    "//flutter/runtime:libdart",
+  ]
+
+  ldflags = [ rebase_path(_flutter_shell_winit_output, root_build_dir) ]
+
+  libs = [
+    "dl",
+    "pthread",
+  ]
 }
 
 if (enable_unittests) {

@@ -1,10 +1,10 @@
 [package]
-name = "flutter-shell-winit"
+name = "flutter-shell-wgpu"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Winit host runtime for the Flutter Rust shell"
+description = "Private wgpu Vulkan broker for the Flutter Rust shell"
 
 [lib]
 crate-type = ["rlib", "staticlib"]
@@ -12,9 +12,11 @@ path = "src/lib.rs"
 
 [dependencies]
 flutter-shell-core = { path = "../flutter-shell-core", version = "0.1.0" }
-flutter-shell-wgpu = { path = "../flutter-shell-wgpu", version = "0.1.0" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+ash = "=0.38.0"
+pollster = "=0.4.0"
+wgpu = { version = "=30.0.0", default-features = false, features = ["vulkan", "wgsl"] }
 winit = { version = "=0.30.13", default-features = false, features = [
   "rwh_06",
   "wayland",

@@ -2,6 +2,7 @@
 members = [
   "crates/flutter-plugin-sdk",
   "crates/flutter-shell-core",
+  "crates/flutter-shell-wgpu",
   "crates/flutter-shell-winit",
 ]
 resolver = "3"

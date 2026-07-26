@@ -1,0 +1,227 @@
+// Copyright 2026 The Flutter Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "flutter/shell/platform/rust/rust_shell.h"
+
+#include <vector>
+
+#include "flutter/common/constants.h"
+#include "flutter/common/task_runners.h"
+#include "flutter/fml/memory/ref_ptr.h"
+#include "flutter/lib/ui/window/viewport_metrics.h"
+#include "flutter/runtime/dart_vm.h"
+#include "flutter/runtime/platform_data.h"
+#include "flutter/shell/common/run_configuration.h"
+#include "flutter/shell/common/shell.h"
+#include "flutter/shell/common/thread_host.h"
+#include "flutter/shell/platform/rust/platform_view_rust.h"
+#include "flutter/shell/platform/rust/rust_task_runner.h"
+#include "flutter/shell/platform/rust/rust_vulkan_surface.h"
+
+namespace flutter {
+
+std::unique_ptr<RustShell> RustShell::Create(
+    fml::RefPtr<fml::TaskRunner> main_task_runner,
+    RustVulkanContextData context_data,
+    FlutterRustVulkanPresentationCallbacks presentation_callbacks,
+    Settings settings) {
+  if (!main_task_runner) {
+    return nullptr;
+  }
+  // The winit-owned UI thread never installs an fml::MessageLoop, so
+  // UIDartState's task-observer registration (used to flush the root
+  // isolate's microtask queue after each task) has nowhere to go by default.
+  // main_task_runner is always the RustTaskRunner obtained through
+  // RustTaskRunner::FromHandle; route the callbacks to its own observer
+  // registry, which RunTask drains after every task it executes.
+  auto* rust_task_runner =
+      static_cast<RustTaskRunner*>(main_task_runner.get());
+  settings.task_observer_add = [rust_task_runner](
+                                   intptr_t key,
+                                   const fml::closure& callback) {
+    return rust_task_runner->AddTaskObserver(key, callback);
+  };
+  settings.task_observer_remove = [rust_task_runner](fml::TaskQueueId queue_id,
+                                                     intptr_t key) {
+    rust_task_runner->RemoveTaskObserver(key);
+  };
+  auto get_instance_proc_addr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+      context_data.get_instance_proc_addr);
+  auto context = CreateRustVulkanContext(std::move(context_data));
+  auto presentation = std::make_shared<RustVulkanPresentation>(
+      get_instance_proc_addr, std::move(context), presentation_callbacks);
+  if (!presentation->IsValid()) {
+    return nullptr;
+  }
+
+  auto thread_host = std::make_unique<ThreadHost>(
+      "FlutterRust", ThreadHost::kRaster | ThreadHost::kIo);
+  TaskRunners task_runners("FlutterRust", main_task_runner,
+                           thread_host->raster_thread->GetTaskRunner(),
+                           main_task_runner,
+                           thread_host->io_thread->GetTaskRunner());
+  PlatformViewRust::Configuration platform_view_configuration;
+  platform_view_configuration.create_rendering_surface = [presentation] {
+    return presentation->CreateSurface();
+  };
+  auto shell = Shell::Create(
+      PlatformData{}, task_runners, settings,
+      [platform_view_configuration =
+           std::move(platform_view_configuration)](Shell& shell) mutable {
+        return std::make_unique<PlatformViewRust>(
+            shell, shell.GetTaskRunners(),
+            std::move(platform_view_configuration));
+      },
+      [](Shell& shell) { return std::make_unique<Rasterizer>(shell); });
+  if (!shell || !shell->IsSetup()) {
+    return nullptr;
+  }
+  return std::unique_ptr<RustShell>(
+      new RustShell(std::move(thread_host), std::move(presentation),
+                    std::move(shell), std::move(settings)));
+}
+
+RustShell::RustShell(std::unique_ptr<ThreadHost> thread_host,
+                     std::shared_ptr<RustVulkanPresentation> presentation,
+                     std::unique_ptr<Shell> shell,
+                     Settings settings)
+    : thread_host_(std::move(thread_host)),
+      presentation_(std::move(presentation)),
+      shell_(std::move(shell)),
+      settings_(std::move(settings)) {}
+
+RustShell::~RustShell() = default;
+
+bool RustShell::IsValid() const {
+  return shell_ && shell_->IsSetup() && presentation_->IsValid();
+}
+
+bool RustShell::Run() {
+  if (!IsValid() || running_) {
+    return false;
+  }
+  auto run_configuration = RunConfiguration::InferFromSettings(settings_);
+  if (!run_configuration.IsValid()) {
+    return false;
+  }
+  shell_->RunEngine(std::move(run_configuration));
+  auto platform_view = shell_->GetPlatformView();
+  if (!platform_view) {
+    return false;
+  }
+  platform_view->NotifyCreated();
+  running_ = true;
+  return true;
+}
+
+void RustShell::SetViewportMetrics(double width,
+                                   double height,
+                                   double pixel_ratio) {
+  if (!shell_) {
+    return;
+  }
+  auto platform_view = shell_->GetPlatformView();
+  if (!platform_view) {
+    return;
+  }
+  platform_view->SetViewportMetrics(
+      kFlutterImplicitViewId,
+      ViewportMetrics(pixel_ratio, width, height, /*p_physical_touch_slop=*/-1.0,
+                      /*display_id=*/0));
+}
+
+}  // namespace flutter
+
+namespace {
+
+std::vector<std::string> ToStringVector(const char* const* values,
+                                        uint32_t count) {
+  std::vector<std::string> result;
+  result.reserve(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    result.emplace_back(values[i]);
+  }
+  return result;
+}
+
+flutter::RustVulkanContextData ToContextData(
+    const FlutterRustVulkanContextData& data) {
+  flutter::RustVulkanContextData result;
+  result.get_instance_proc_addr = data.get_instance_proc_addr;
+  result.instance = data.instance;
+  result.physical_device = data.physical_device;
+  result.device = data.device;
+  result.queue = data.queue;
+  result.queue_family_index = data.queue_family_index;
+  result.instance_extensions =
+      ToStringVector(data.instance_extensions, data.instance_extensions_count);
+  result.device_extensions =
+      ToStringVector(data.device_extensions, data.device_extensions_count);
+  return result;
+}
+
+flutter::Settings ToSettings(const FlutterRustShellSettings& settings) {
+  flutter::Settings result;
+  if (settings.assets_path) {
+    result.assets_path = settings.assets_path;
+  }
+  if (settings.icu_data_path) {
+    result.icu_data_path = settings.icu_data_path;
+  }
+  // Phase 0 only runs a JIT kernel snapshot; there is no AOT path yet.
+  if (!flutter::DartVM::IsRunningPrecompiledCode()) {
+    result.application_kernel_asset = "kernel_blob.bin";
+  }
+  // Settings::enable_impeller only defaults to true on Android/iOS; every
+  // other platform, including Linux, defaults to false. Leaving it unset
+  // makes the Dart-level paragraph/text layer build Skia-flavored DlText
+  // objects while this shell's surface is Impeller-only, which crashes the
+  // first time anything draws text.
+  result.enable_impeller = true;
+  // task_observer_add/remove are wired in RustShell::Create, which has the
+  // concrete RustTaskRunner this Settings will run on.
+  return result;
+}
+
+}  // namespace
+
+extern "C" void* FlutterRustShellCreateShell(
+    void* task_runner,
+    FlutterRustVulkanContextData context_data,
+    FlutterRustVulkanPresentationCallbacks presentation_callbacks,
+    FlutterRustShellSettings settings) {
+  auto main_task_runner = flutter::RustTaskRunner::FromHandle(task_runner);
+  if (!main_task_runner) {
+    return nullptr;
+  }
+  auto shell = flutter::RustShell::Create(
+      std::move(main_task_runner), ToContextData(context_data),
+      presentation_callbacks, ToSettings(settings));
+  if (!shell || !shell->IsValid()) {
+    return nullptr;
+  }
+  return shell.release();
+}
+
+extern "C" int FlutterRustShellRunShell(void* shell) {
+  if (!shell) {
+    return 0;
+  }
+  return static_cast<flutter::RustShell*>(shell)->Run() ? 1 : 0;
+}
+
+extern "C" void FlutterRustShellSetViewportMetrics(void* shell,
+                                                   double width,
+                                                   double height,
+                                                   double pixel_ratio) {
+  if (!shell) {
+    return;
+  }
+  static_cast<flutter::RustShell*>(shell)->SetViewportMetrics(width, height,
+                                                              pixel_ratio);
+}
+
+extern "C" void FlutterRustShellDestroyShell(void* shell) {
+  delete static_cast<flutter::RustShell*>(shell);
+}

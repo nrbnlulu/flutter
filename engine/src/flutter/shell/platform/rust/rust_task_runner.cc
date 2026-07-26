@@ -5,6 +5,7 @@
 #include "flutter/shell/platform/rust/rust_task_runner.h"
 
 #include <utility>
+#include <vector>
 
 #include "flutter/fml/message_loop_impl.h"
 #include "flutter/fml/message_loop_task_queues.h"
@@ -32,6 +33,14 @@ struct RustTaskRunnerHandle {
 fml::RefPtr<RustTaskRunner> RustTaskRunner::Create(
     DispatchTable dispatch_table) {
   return fml::MakeRefCounted<RustTaskRunner>(std::move(dispatch_table));
+}
+
+fml::RefPtr<RustTaskRunner> RustTaskRunner::FromHandle(
+    void* task_runner_handle) {
+  if (!task_runner_handle) {
+    return nullptr;
+  }
+  return static_cast<RustTaskRunnerHandle*>(task_runner_handle)->runner;
 }
 
 fml::RefPtr<RustTaskRunner> RustTaskRunner::CreateForRustHost(
@@ -115,7 +124,32 @@ bool RustTaskRunner::RunTask(uint64_t task_baton) {
   }
 
   task();
+
+  std::vector<fml::closure> observers;
+  {
+    std::scoped_lock lock(tasks_mutex_);
+    observers.reserve(task_observers_.size());
+    for (const auto& [key, observer] : task_observers_) {
+      observers.push_back(observer);
+    }
+  }
+  for (const auto& observer : observers) {
+    observer();
+  }
+
   return true;
+}
+
+fml::TaskQueueId RustTaskRunner::AddTaskObserver(intptr_t key,
+                                                 fml::closure callback) {
+  std::scoped_lock lock(tasks_mutex_);
+  task_observers_[key] = std::move(callback);
+  return placeholder_id_;
+}
+
+void RustTaskRunner::RemoveTaskObserver(intptr_t key) {
+  std::scoped_lock lock(tasks_mutex_);
+  task_observers_.erase(key);
 }
 
 }  // namespace flutter
@@ -130,8 +164,14 @@ extern "C" int FlutterRustShellRunTask(void* task_runner, uint64_t task_baton) {
   if (!task_runner) {
     return 0;
   }
-  auto* handle = static_cast<flutter::RustTaskRunnerHandle*>(task_runner);
-  return handle->runner->RunTask(task_baton) ? 1 : 0;
+  // `task_runner` here is the raw RustTaskRunner* identity that
+  // DispatchTable::schedule_task forwarded (see RustTaskRunner::PostTaskForTime
+  // passing `this`), not the RustTaskRunnerHandle* returned by
+  // FlutterRustShellCreateTaskRunner. The object stays alive for the duration
+  // of this call because the handle's fml::RefPtr keeps it alive until
+  // FlutterRustShellDestroyTaskRunner runs.
+  auto* runner = static_cast<flutter::RustTaskRunner*>(task_runner);
+  return runner->RunTask(task_baton) ? 1 : 0;
 }
 
 extern "C" void FlutterRustShellDestroyTaskRunner(void* task_runner) {
