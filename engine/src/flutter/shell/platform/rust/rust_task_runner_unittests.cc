@@ -149,10 +149,10 @@ TEST(RustTaskRunnerTest, OwnsOpaqueRunnerHandleForRustHost) {
 
     ASSERT_TRUE(state.scheduled_task.has_value());
     EXPECT_TRUE(FlutterRustShellRunTask(state.scheduled_task->task_runner,
-                                       state.scheduled_task->task_baton));
+                                        state.scheduled_task->task_baton));
     EXPECT_TRUE(ran);
     EXPECT_FALSE(FlutterRustShellRunTask(state.scheduled_task->task_runner,
-                                        state.scheduled_task->task_baton));
+                                         state.scheduled_task->task_baton));
   }
 
   FlutterRustShellDestroyTaskRunner(task_runner);

@@ -100,17 +100,17 @@ action("flutter_shell_wgpu_rust") {
 source_set("flutter_rust_shell") {
   public = [
     "platform_view_rust.h",
-    "rust_task_runner.h",
-    "rust_shell.h",
     "rust_bridge.h",
-    "vulkan_context_rust.h",
+    "rust_shell.h",
+    "rust_task_runner.h",
     "rust_vulkan_surface.h",
+    "vulkan_context_rust.h",
   ]
 
   sources = [
     "platform_view_rust.cc",
-    "rust_task_runner.cc",
     "rust_shell.cc",
+    "rust_task_runner.cc",
     "rust_vulkan_surface.cc",
     "vulkan_context_rust.cc",
   ]

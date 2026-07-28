@@ -23,14 +23,8 @@ def main() -> None:
   manifest_path = Path(args.manifest_path).resolve()
   output_path = Path(args.output).resolve()
   cargo_target_dir = output_path.parent / "cargo-target"
-  profile_dir = (
-      "release"
-      if os.environ.get("FLUTTER_RUNTIME_MODE") == "release"
-      else "debug"
-  )
-  artifact = cargo_target_dir / profile_dir / (
-      "lib" + args.package.replace("-", "_") + ".a"
-  )
+  profile_dir = ("release" if os.environ.get("FLUTTER_RUNTIME_MODE") == "release" else "debug")
+  artifact = cargo_target_dir / profile_dir / ("lib" + args.package.replace("-", "_") + ".a")
 
   environment = os.environ.copy()
   environment["CARGO_TARGET_DIR"] = str(cargo_target_dir)
