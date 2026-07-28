@@ -124,7 +124,39 @@ source_set("flutter_rust_shell") {
     "//flutter/fml",
     "//flutter/impeller",
     "//flutter/impeller/renderer/backend/vulkan",
+    "//flutter/shell/platform/common:common_cpp_switches",
   ]
+}
+
+# The application-facing engine boundary. Cargo links a small Rust binary to
+# this library; GN keeps ownership of the private Flutter, Dart, Impeller, and
+# Skia dependency closure. This is deliberately not the public Embedder API.
+shared_library("flutter_rust_engine") {
+  output_name = "flutter_rust_engine"
+
+  # Ninja must relink if the Linux export policy changes.
+  inputs = [ "rust_engine_exports.lst" ]
+
+  # source_set object files only propagate through public_deps.  The shared
+  # object is the owner of this implementation, so make the implementation
+  # source set public to the link while keeping its C++ headers private at the
+  # Rust/C ABI boundary.
+  public_deps = [ ":flutter_rust_shell" ]
+
+  deps = [
+    "//flutter/lib/snapshot",
+    "//flutter/runtime:libdart",
+  ]
+
+  # Export only the private C ABI plus the two debug snapshot symbols the Dart
+  # VM discovers from this loaded library. The Rust executable itself remains
+  # unaware of Dart, Impeller, and Skia.
+  if (is_linux) {
+    ldflags = [ "-Wl,--version-script=" +
+                rebase_path("rust_engine_exports.lst", root_build_dir) ]
+  }
+
+  public_configs = [ "//flutter:config" ]
 }
 
 # The standalone native runner. Rust owns the winit main loop and native

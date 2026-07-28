@@ -7,6 +7,12 @@
 
 #include <stdint.h>
 
+#if defined(_WIN32)
+#define FLUTTER_RUST_SHELL_EXPORT __declspec(dllexport)
+#else
+#define FLUTTER_RUST_SHELL_EXPORT __attribute__((visibility("default")))
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -66,10 +72,12 @@ FlutterRustShellAbi FlutterRustShellGetAbi(void);
 
 // Creates and destroys the C++ half of a Rust-owned task runner. The returned
 // handle is opaque to Rust; only the callback table's owner may destroy it.
-void* FlutterRustShellCreateTaskRunner(
+FLUTTER_RUST_SHELL_EXPORT void* FlutterRustShellCreateTaskRunner(
     FlutterRustTaskRunnerCallbacks callbacks);
-int FlutterRustShellRunTask(void* task_runner, uint64_t task_baton);
-void FlutterRustShellDestroyTaskRunner(void* task_runner);
+FLUTTER_RUST_SHELL_EXPORT int FlutterRustShellRunTask(void* task_runner,
+                                                      uint64_t task_baton);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellDestroyTaskRunner(
+    void* task_runner);
 
 // Raw Vulkan objects borrowed from Rust/wgpu for the lifetime of the shell
 // they create. C-string arrays are borrowed only for the duration of the
@@ -98,7 +106,7 @@ typedef struct FlutterRustShellSettings {
 // application. `task_runner` must be a handle previously returned by
 // FlutterRustShellCreateTaskRunner and is used as the merged UI/platform task
 // runner; the caller retains ownership of it. Returns null on failure.
-void* FlutterRustShellCreateShell(
+FLUTTER_RUST_SHELL_EXPORT void* FlutterRustShellCreateShell(
     void* task_runner,
     FlutterRustVulkanContextData context_data,
     FlutterRustVulkanPresentationCallbacks presentation_callbacks,
@@ -107,18 +115,19 @@ void* FlutterRustShellCreateShell(
 // Starts the root isolate and attaches the Vulkan presentation surface. Must
 // run on the merged Rust UI/platform task runner. Returns non-zero on
 // success.
-int FlutterRustShellRunShell(void* shell);
+FLUTTER_RUST_SHELL_EXPORT int FlutterRustShellRunShell(void* shell);
 
 // Reports the implicit view's size to the running engine. Call once after
 // FlutterRustShellRunShell succeeds and again on every resize; without this
 // the root isolate has no valid view to schedule frames for. Must run on the
 // merged Rust UI/platform task runner.
-void FlutterRustShellSetViewportMetrics(void* shell,
-                                        double width,
-                                        double height,
-                                        double pixel_ratio);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSetViewportMetrics(
+    void* shell,
+    double width,
+    double height,
+    double pixel_ratio);
 
-void FlutterRustShellDestroyShell(void* shell);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellDestroyShell(void* shell);
 
 #ifdef __cplusplus
 }

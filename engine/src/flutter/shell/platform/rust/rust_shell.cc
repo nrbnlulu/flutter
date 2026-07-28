@@ -8,13 +8,16 @@
 
 #include "flutter/common/constants.h"
 #include "flutter/common/task_runners.h"
+#include "flutter/fml/command_line.h"
 #include "flutter/fml/memory/ref_ptr.h"
 #include "flutter/lib/ui/window/viewport_metrics.h"
 #include "flutter/runtime/dart_vm.h"
 #include "flutter/runtime/platform_data.h"
 #include "flutter/shell/common/run_configuration.h"
 #include "flutter/shell/common/shell.h"
+#include "flutter/shell/common/switches.h"
 #include "flutter/shell/common/thread_host.h"
+#include "flutter/shell/platform/common/engine_switches.h"
 #include "flutter/shell/platform/rust/platform_view_rust.h"
 #include "flutter/shell/platform/rust/rust_task_runner.h"
 #include "flutter/shell/platform/rust/rust_vulkan_surface.h"
@@ -35,11 +38,9 @@ std::unique_ptr<RustShell> RustShell::Create(
   // main_task_runner is always the RustTaskRunner obtained through
   // RustTaskRunner::FromHandle; route the callbacks to its own observer
   // registry, which RunTask drains after every task it executes.
-  auto* rust_task_runner =
-      static_cast<RustTaskRunner*>(main_task_runner.get());
+  auto* rust_task_runner = static_cast<RustTaskRunner*>(main_task_runner.get());
   settings.task_observer_add = [rust_task_runner](
-                                   intptr_t key,
-                                   const fml::closure& callback) {
+                                   intptr_t key, const fml::closure& callback) {
     return rust_task_runner->AddTaskObserver(key, callback);
   };
   settings.task_observer_remove = [rust_task_runner](fml::TaskQueueId queue_id,
@@ -126,9 +127,9 @@ void RustShell::SetViewportMetrics(double width,
     return;
   }
   platform_view->SetViewportMetrics(
-      kFlutterImplicitViewId,
-      ViewportMetrics(pixel_ratio, width, height, /*p_physical_touch_slop=*/-1.0,
-                      /*display_id=*/0));
+      kFlutterImplicitViewId, ViewportMetrics(pixel_ratio, width, height,
+                                              /*p_physical_touch_slop=*/-1.0,
+                                              /*display_id=*/0));
 }
 
 }  // namespace flutter
@@ -162,7 +163,17 @@ flutter::RustVulkanContextData ToContextData(
 }
 
 flutter::Settings ToSettings(const FlutterRustShellSettings& settings) {
-  flutter::Settings result;
+  // Match the desktop shells' environment switch contract so a Flutter-tool
+  // resident run can select a VM-service port, start paused, and pass the
+  // usual debugger/profiling flags without adding them to application argv.
+  std::vector<std::string> command_line_args = {"flutter_rust_shell"};
+  auto environment_switches = flutter::GetSwitchesFromEnvironment();
+  command_line_args.insert(command_line_args.end(),
+                           environment_switches.begin(),
+                           environment_switches.end());
+  flutter::Settings result =
+      flutter::SettingsFromCommandLine(fml::CommandLineFromIterators(
+          command_line_args.begin(), command_line_args.end()));
   if (settings.assets_path) {
     result.assets_path = settings.assets_path;
   }

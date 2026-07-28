@@ -396,6 +396,16 @@ mod linux {
             if let Some(shell) = self.shell.take() {
                 destroy_cpp_shell(shell);
             }
+
+            // Wgpu's Vulkan surface owns a Wayland swapchain. It must be
+            // dropped while winit still owns the native Window: dropping the
+            // `window` field first lets the compositor tear down its Wayland
+            // proxy, after which Vulkan's vkDestroySwapchainKHR can crash in
+            // the driver. Taking these options makes this order explicit
+            // instead of relying on ShellApplication's field declaration
+            // order (which is window before gpu_broker for startup clarity).
+            self.gpu_broker.take();
+            self.window.take();
         }
     }
 
