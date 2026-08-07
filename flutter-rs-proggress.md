@@ -6,9 +6,9 @@ for the architectural plan.
 
 ## Current focus
 
-Phase 0 is complete. Phase 1 — winit platform host (resize, viewport metrics,
-pointer, keyboard, lifecycle, and real vsync integration beyond the fallback
-timer) is next.
+Phase 0 is complete. Phase 1 — winit platform host — is in progress. Pointer
+input is wired; keyboard, lifecycle, complete resize/display metrics, and real
+vsync integration beyond the fallback timer are next.
 
 ## Status
 
@@ -23,6 +23,7 @@ timer) is next.
 | Merged UI/platform task runner | Complete for phase 0 | `RustTaskRunner` queues batons for the Rust host, winit returns due batons through opaque C++ handles, and it now also drives Dart's per-task microtask flush (see below). |
 | Impeller/wgpu interop | Working, unsynchronized | wgpu owns the Vulkan device/surface; C++ creates `ContextVK` from borrowed handles plus the in-tree Impeller Vulkan shader bundle. Acquire/present round-trip real swapchain images. Cross-queue synchronization between wgpu's present and Impeller's independent submission is not implemented (tracked as a phase 2 GPU-interop-broker concern, not a phase 0 gap). |
 | Linux runnable shell | Complete | `flutter_rust_shell_runner` boots a real kernel-snapshot Flutter app, and the compositor reports its window mapped and visible at the correct size. |
+| Pointer input | Complete for phase 1 plumbing | Winit mouse, wheel, and touch events cross the private ABI and are converted into Flutter `PointerDataPacket`s; Rust translation and C++ conversion tests pass. |
 
 ## Implementation log
 
@@ -149,6 +150,24 @@ timer) is next.
   this session (the desktop session was locked), so this is confirmed by
   process stability plus compositor window state rather than a rendered image.
 
+### Phase 1 — pointer input
+
+- Added a private, value-only pointer event to the Rust/C++ ABI with explicit
+  phase, device-kind, and signal-kind translation on the engine side. Invalid
+  enum values are dropped instead of being cast into Flutter's internal enums.
+- Added winit mouse state tracking for add/remove, hover/drag motion, primary,
+  secondary, middle, back, and forward button masks.
+- Forwarded wheel input as Flutter scroll signals. Winit line deltas use the
+  Linux shell's 53-physical-pixel line unit, and vertical deltas are normalized
+  from winit's positive-up convention to Flutter's positive-down convention.
+- Forwarded winit touch started/moved/ended/cancelled phases with stable touch
+  device identifiers and contact button state.
+- Added Rust tests for synthesized mouse entry, hover/drag transitions, button
+  state, and scroll normalization, plus C++ tests for private-ABI conversion and
+  rejection of unknown enum values.
+- Declared directly linked Rust archives as GN inputs so Rust-only changes
+  reliably relink the native runner and ABI test executable.
+
 ## Validation
 
 - `git diff --check` passes.
@@ -158,7 +177,7 @@ timer) is next.
   `//flutter/shell/platform/rust:flutter_shell_winit_rust`, and
   `//flutter/shell/platform/rust:flutter_rust_shell_runner` with the
   host-debug GN configuration (`et build`-managed `out/host_debug`).
-- Ran `flutter_rust_shell_unittests`: 9 tests passed.
+- Ran `flutter_rust_shell_unittests`: 11 tests passed.
 - Ran `cargo +1.93.1 test --workspace --locked`: all crate and documentation
   tests pass.
 - Ran `flutter_rust_shell_runner <flutter_assets> <icudtl.dat>` against a real
@@ -169,9 +188,8 @@ timer) is next.
 
 ## Next implementation steps (phase 1)
 
-1. Add resize, viewport metrics, pointer, keyboard, and lifecycle event
-   forwarding beyond the minimal viewport-metrics-on-resize wiring phase 0
-   added.
+1. Add keyboard and lifecycle event forwarding, and complete resize/display
+   metrics beyond the minimal viewport-metrics-on-resize wiring phase 0 added.
 2. Replace the vsync fallback timer with a real winit/compositor-driven vsync
    source.
 3. Add main-thread dispatch for background isolate and Rust-worker callbacks,

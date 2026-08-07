@@ -6,9 +6,76 @@
 
 #include <utility>
 
+#include "flutter/common/constants.h"
 #include "flutter/fml/logging.h"
+#include "flutter/lib/ui/window/pointer_data.h"
+#include "flutter/lib/ui/window/pointer_data_packet.h"
 
 namespace flutter {
+
+std::unique_ptr<PointerDataPacket> CreateRustPointerDataPacket(
+    const FlutterRustPointerEvent& event) {
+  PointerData data;
+  data.Clear();
+  data.embedder_id = 0;
+  data.time_stamp = static_cast<int64_t>(event.timestamp_micros);
+  switch (event.phase) {
+    case kFlutterRustPointerPhaseCancel:
+      data.change = PointerData::Change::kCancel;
+      break;
+    case kFlutterRustPointerPhaseAdd:
+      data.change = PointerData::Change::kAdd;
+      break;
+    case kFlutterRustPointerPhaseRemove:
+      data.change = PointerData::Change::kRemove;
+      break;
+    case kFlutterRustPointerPhaseHover:
+      data.change = PointerData::Change::kHover;
+      break;
+    case kFlutterRustPointerPhaseDown:
+      data.change = PointerData::Change::kDown;
+      break;
+    case kFlutterRustPointerPhaseMove:
+      data.change = PointerData::Change::kMove;
+      break;
+    case kFlutterRustPointerPhaseUp:
+      data.change = PointerData::Change::kUp;
+      break;
+    default:
+      return nullptr;
+  }
+  switch (event.device_kind) {
+    case kFlutterRustPointerDeviceKindMouse:
+      data.kind = PointerData::DeviceKind::kMouse;
+      break;
+    case kFlutterRustPointerDeviceKindTouch:
+      data.kind = PointerData::DeviceKind::kTouch;
+      break;
+    default:
+      return nullptr;
+  }
+  switch (event.signal_kind) {
+    case kFlutterRustPointerSignalKindNone:
+      data.signal_kind = PointerData::SignalKind::kNone;
+      break;
+    case kFlutterRustPointerSignalKindScroll:
+      data.signal_kind = PointerData::SignalKind::kScroll;
+      break;
+    default:
+      return nullptr;
+  }
+  data.device = event.device;
+  data.physical_x = event.physical_x;
+  data.physical_y = event.physical_y;
+  data.scroll_delta_x = event.scroll_delta_x;
+  data.scroll_delta_y = event.scroll_delta_y;
+  data.buttons = event.buttons;
+  data.view_id = kFlutterImplicitViewId;
+
+  auto packet = std::make_unique<PointerDataPacket>(1);
+  packet->SetPointerData(0, data);
+  return packet;
+}
 
 PlatformViewRust::PlatformViewRust(Delegate& delegate,
                                    const TaskRunners& task_runners,

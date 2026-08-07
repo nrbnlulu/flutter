@@ -1,0 +1,12 @@
+version: "3"
+
+vars:
+  PY312_BIN: /home/dev/.local/share/uv/python/cpython-3.12.12-linux-x86_64-gnu/bin
+  DEPOT_TOOLS: /home/dev/depot_tools
+
+tasks:
+  fmt:
+    desc: Run the engine formatting checks (requires depot_tools and Python <=3.12 for yapf)
+    dir: engine/src/flutter
+    cmds:
+      - PATH="{{.PY312_BIN}}:{{.DEPOT_TOOLS}}:$PATH" ./ci/format.sh

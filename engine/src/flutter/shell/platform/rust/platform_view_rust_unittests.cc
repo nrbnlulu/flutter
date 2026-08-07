@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 
+#include "flutter/common/constants.h"
 #include "flutter/common/settings.h"
 #include "flutter/testing/testing.h"
 #include "gtest/gtest.h"
@@ -131,6 +132,46 @@ TEST(PlatformViewRustTest, LinksThePrivateRustAbi) {
 
   EXPECT_EQ(abi.shell_abi_version, FLUTTER_RUST_SHELL_ABI_VERSION);
   EXPECT_EQ(abi.plugin_sdk_api_version, FLUTTER_RUST_PLUGIN_SDK_API_VERSION);
+}
+
+TEST(PlatformViewRustTest, ConvertsPrivateAbiPointerEvents) {
+  FlutterRustPointerEvent event = {};
+  event.timestamp_micros = 1234;
+  event.phase = kFlutterRustPointerPhaseMove;
+  event.device_kind = kFlutterRustPointerDeviceKindMouse;
+  event.signal_kind = kFlutterRustPointerSignalKindScroll;
+  event.device = 7;
+  event.physical_x = 12.5;
+  event.physical_y = 24.0;
+  event.scroll_delta_x = 53.0;
+  event.scroll_delta_y = -106.0;
+  event.buttons = kPointerButtonMousePrimary;
+
+  auto packet = CreateRustPointerDataPacket(event);
+
+  ASSERT_NE(packet, nullptr);
+  ASSERT_EQ(packet->GetLength(), 1u);
+  const PointerData data = packet->GetPointerData(0);
+  EXPECT_EQ(data.time_stamp, 1234);
+  EXPECT_EQ(data.change, PointerData::Change::kMove);
+  EXPECT_EQ(data.kind, PointerData::DeviceKind::kMouse);
+  EXPECT_EQ(data.signal_kind, PointerData::SignalKind::kScroll);
+  EXPECT_EQ(data.device, 7);
+  EXPECT_EQ(data.physical_x, 12.5);
+  EXPECT_EQ(data.physical_y, 24.0);
+  EXPECT_EQ(data.scroll_delta_x, 53.0);
+  EXPECT_EQ(data.scroll_delta_y, -106.0);
+  EXPECT_EQ(data.buttons, kPointerButtonMousePrimary);
+  EXPECT_EQ(data.view_id, kFlutterImplicitViewId);
+}
+
+TEST(PlatformViewRustTest, RejectsUnknownPrivateAbiPointerEnums) {
+  FlutterRustPointerEvent event = {};
+  event.phase = 99;
+  event.device_kind = kFlutterRustPointerDeviceKindMouse;
+  event.signal_kind = kFlutterRustPointerSignalKindNone;
+
+  EXPECT_EQ(CreateRustPointerDataPacket(event), nullptr);
 }
 
 }  // namespace

@@ -43,6 +43,9 @@ class RustShell final {
   // Must run on the merged Rust UI/platform task runner.
   void SetViewportMetrics(double width, double height, double pixel_ratio);
 
+  // Dispatches one Rust-hosted pointer event to the implicit view.
+  void SendPointerEvent(const FlutterRustPointerEvent& event);
+
  private:
   RustShell(std::unique_ptr<ThreadHost> thread_host,
             std::shared_ptr<RustVulkanPresentation> presentation,

@@ -132,6 +132,21 @@ void RustShell::SetViewportMetrics(double width,
                                               /*display_id=*/0));
 }
 
+void RustShell::SendPointerEvent(const FlutterRustPointerEvent& event) {
+  if (!shell_) {
+    return;
+  }
+  auto platform_view = shell_->GetPlatformView();
+  if (!platform_view) {
+    return;
+  }
+
+  auto packet = CreateRustPointerDataPacket(event);
+  if (packet) {
+    platform_view->DispatchPointerDataPacket(std::move(packet));
+  }
+}
+
 }  // namespace flutter
 
 namespace {
@@ -231,6 +246,15 @@ extern "C" void FlutterRustShellSetViewportMetrics(void* shell,
   }
   static_cast<flutter::RustShell*>(shell)->SetViewportMetrics(width, height,
                                                               pixel_ratio);
+}
+
+extern "C" void FlutterRustShellSendPointerEvent(
+    void* shell,
+    FlutterRustPointerEvent event) {
+  if (!shell) {
+    return;
+  }
+  static_cast<flutter::RustShell*>(shell)->SendPointerEvent(event);
 }
 
 extern "C" void FlutterRustShellDestroyShell(void* shell) {

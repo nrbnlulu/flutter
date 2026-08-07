@@ -19,7 +19,10 @@ mod linux {
         time::{Duration, Instant},
     };
 
-    use flutter_shell_core::FlutterRustTaskRunnerCallbacks;
+    use flutter_shell_core::{
+        FlutterRustPointerDeviceKind, FlutterRustPointerEvent, FlutterRustPointerPhase,
+        FlutterRustPointerSignalKind, FlutterRustTaskRunnerCallbacks,
+    };
     #[cfg(not(test))]
     use flutter_shell_core::{FlutterRustShellSettings, FlutterRustVulkanContextData};
     use flutter_shell_wgpu::GpuBroker;
@@ -27,7 +30,7 @@ mod linux {
     use std::ffi::CString;
     use winit::{
         application::ApplicationHandler,
-        event::WindowEvent,
+        event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent},
         event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
         window::{Window, WindowId},
     };
@@ -96,12 +99,7 @@ mod linux {
         }
         // SAFETY: the struct layouts are ABI-compatible with rust_bridge.h.
         unsafe {
-            FlutterRustShellCreateShell(
-                task_runner,
-                context_data,
-                presentation_callbacks,
-                settings,
-            )
+            FlutterRustShellCreateShell(task_runner, context_data, presentation_callbacks, settings)
         }
     }
 
@@ -137,6 +135,16 @@ mod linux {
         unsafe {
             FlutterRustShellSetViewportMetrics(shell, width as f64, height as f64, 1.0);
         }
+    }
+
+    #[cfg(not(test))]
+    fn send_cpp_pointer_event(shell: *mut c_void, event: FlutterRustPointerEvent) {
+        unsafe extern "C" {
+            fn FlutterRustShellSendPointerEvent(shell: *mut c_void, event: FlutterRustPointerEvent);
+        }
+        // SAFETY: `shell` was returned by create_cpp_shell and the event is an
+        // ABI-compatible value with no borrowed fields.
+        unsafe { FlutterRustShellSendPointerEvent(shell, event) }
     }
 
     /// Winit host configuration, shared across the platforms this crate will
@@ -197,6 +205,221 @@ mod linux {
             }
             due
         }
+    }
+
+    const MOUSE_DEVICE_ID: i64 = 0;
+    const MOUSE_PRIMARY_BUTTON: i64 = 1 << 0;
+    const MOUSE_SECONDARY_BUTTON: i64 = 1 << 1;
+    const MOUSE_MIDDLE_BUTTON: i64 = 1 << 2;
+    const MOUSE_BACK_BUTTON: i64 = 1 << 3;
+    const MOUSE_FORWARD_BUTTON: i64 = 1 << 4;
+    const SCROLL_LINE_PIXELS: f64 = 53.0;
+
+    struct PointerState {
+        started_at: Instant,
+        physical_x: f64,
+        physical_y: f64,
+        buttons: i64,
+        inside: bool,
+        pointer_outside: bool,
+    }
+
+    impl PointerState {
+        fn new() -> Self {
+            Self {
+                started_at: Instant::now(),
+                physical_x: 0.0,
+                physical_y: 0.0,
+                buttons: 0,
+                inside: false,
+                pointer_outside: true,
+            }
+        }
+
+        fn mouse_event(
+            &self,
+            phase: FlutterRustPointerPhase,
+            signal_kind: FlutterRustPointerSignalKind,
+            scroll_delta_x: f64,
+            scroll_delta_y: f64,
+        ) -> FlutterRustPointerEvent {
+            FlutterRustPointerEvent {
+                timestamp_micros: self.started_at.elapsed().as_micros().min(u64::MAX as u128)
+                    as u64,
+                phase: phase as u32,
+                device_kind: FlutterRustPointerDeviceKind::Mouse as u32,
+                signal_kind: signal_kind as u32,
+                device: MOUSE_DEVICE_ID,
+                physical_x: self.physical_x,
+                physical_y: self.physical_y,
+                scroll_delta_x,
+                scroll_delta_y,
+                buttons: self.buttons,
+            }
+        }
+
+        fn entered(&mut self) -> Option<FlutterRustPointerEvent> {
+            self.pointer_outside = false;
+            self.ensure_added()
+        }
+
+        fn ensure_added(&mut self) -> Option<FlutterRustPointerEvent> {
+            if self.inside {
+                return None;
+            }
+            self.inside = true;
+            Some(self.mouse_event(
+                FlutterRustPointerPhase::Add,
+                FlutterRustPointerSignalKind::None,
+                0.0,
+                0.0,
+            ))
+        }
+
+        fn left(&mut self) -> Option<FlutterRustPointerEvent> {
+            self.pointer_outside = true;
+            // Keep the mouse added while a drag is captured outside the
+            // window. Releasing the last button emits Up followed by Remove.
+            if !self.inside || self.buttons != 0 {
+                return None;
+            }
+            self.inside = false;
+            Some(self.mouse_event(
+                FlutterRustPointerPhase::Remove,
+                FlutterRustPointerSignalKind::None,
+                0.0,
+                0.0,
+            ))
+        }
+
+        fn moved(&mut self, physical_x: f64, physical_y: f64) -> Vec<FlutterRustPointerEvent> {
+            self.physical_x = physical_x;
+            self.physical_y = physical_y;
+            self.pointer_outside = false;
+            let mut events = self.entered().into_iter().collect::<Vec<_>>();
+            events.push(self.mouse_event(
+                if self.buttons == 0 {
+                    FlutterRustPointerPhase::Hover
+                } else {
+                    FlutterRustPointerPhase::Move
+                },
+                FlutterRustPointerSignalKind::None,
+                0.0,
+                0.0,
+            ));
+            events
+        }
+
+        fn button(
+            &mut self,
+            button: MouseButton,
+            state: ElementState,
+        ) -> Vec<FlutterRustPointerEvent> {
+            let Some(mask) = mouse_button_mask(button) else {
+                return Vec::new();
+            };
+            if state == ElementState::Pressed {
+                self.pointer_outside = false;
+            }
+            let mut events = self.ensure_added().into_iter().collect::<Vec<_>>();
+            let phase = match state {
+                ElementState::Pressed => {
+                    if self.buttons & mask != 0 {
+                        return events;
+                    }
+                    let was_up = self.buttons == 0;
+                    self.buttons |= mask;
+                    if was_up {
+                        FlutterRustPointerPhase::Down
+                    } else {
+                        FlutterRustPointerPhase::Move
+                    }
+                }
+                ElementState::Released => {
+                    if self.buttons & mask == 0 {
+                        return events;
+                    }
+                    self.buttons &= !mask;
+                    if self.buttons == 0 {
+                        FlutterRustPointerPhase::Up
+                    } else {
+                        FlutterRustPointerPhase::Move
+                    }
+                }
+            };
+            events.push(self.mouse_event(phase, FlutterRustPointerSignalKind::None, 0.0, 0.0));
+            if self.buttons == 0 && self.pointer_outside {
+                if let Some(event) = self.left() {
+                    events.push(event);
+                }
+            }
+            events
+        }
+
+        fn scroll(&mut self, delta: MouseScrollDelta) -> Vec<FlutterRustPointerEvent> {
+            self.pointer_outside = false;
+            let (scroll_delta_x, scroll_delta_y) = match delta {
+                MouseScrollDelta::LineDelta(x, y) => (
+                    f64::from(x) * SCROLL_LINE_PIXELS,
+                    -f64::from(y) * SCROLL_LINE_PIXELS,
+                ),
+                MouseScrollDelta::PixelDelta(position) => (position.x, -position.y),
+            };
+            let mut events = self.entered().into_iter().collect::<Vec<_>>();
+            events.push(self.mouse_event(
+                if self.buttons == 0 {
+                    FlutterRustPointerPhase::Hover
+                } else {
+                    FlutterRustPointerPhase::Move
+                },
+                FlutterRustPointerSignalKind::Scroll,
+                scroll_delta_x,
+                scroll_delta_y,
+            ));
+            events
+        }
+
+        fn touch(&self, touch: Touch) -> FlutterRustPointerEvent {
+            let (phase, buttons) = match touch.phase {
+                TouchPhase::Started => (FlutterRustPointerPhase::Down, 1),
+                TouchPhase::Moved => (FlutterRustPointerPhase::Move, 1),
+                TouchPhase::Ended => (FlutterRustPointerPhase::Up, 0),
+                TouchPhase::Cancelled => (FlutterRustPointerPhase::Cancel, 0),
+            };
+            FlutterRustPointerEvent {
+                timestamp_micros: self.started_at.elapsed().as_micros().min(u64::MAX as u128)
+                    as u64,
+                phase: phase as u32,
+                device_kind: FlutterRustPointerDeviceKind::Touch as u32,
+                signal_kind: FlutterRustPointerSignalKind::None as u32,
+                // Reserve device 0 for the mouse. Winit touch IDs commonly
+                // begin at zero, while Flutter keys pointer state by device.
+                device: touch_device_id(touch.id),
+                physical_x: touch.location.x,
+                physical_y: touch.location.y,
+                scroll_delta_x: 0.0,
+                scroll_delta_y: 0.0,
+                buttons,
+            }
+        }
+    }
+
+    fn mouse_button_mask(button: MouseButton) -> Option<i64> {
+        match button {
+            MouseButton::Left => Some(MOUSE_PRIMARY_BUTTON),
+            MouseButton::Right => Some(MOUSE_SECONDARY_BUTTON),
+            MouseButton::Middle => Some(MOUSE_MIDDLE_BUTTON),
+            MouseButton::Back => Some(MOUSE_BACK_BUTTON),
+            MouseButton::Forward => Some(MOUSE_FORWARD_BUTTON),
+            MouseButton::Other(_) => None,
+        }
+    }
+
+    fn touch_device_id(winit_id: u64) -> i64 {
+        i64::try_from(winit_id)
+            .ok()
+            .and_then(|id| id.checked_add(1))
+            .unwrap_or(i64::MAX)
     }
 
     /// Rust-owned state for a single merged Flutter UI/platform task runner.
@@ -375,6 +598,7 @@ mod linux {
             window: None,
             gpu_broker: None,
             task_runner_host,
+            pointer_state: PointerState::new(),
             #[cfg(not(test))]
             shell: None,
         };
@@ -386,6 +610,7 @@ mod linux {
         window: Option<Arc<Window>>,
         gpu_broker: Option<GpuBroker>,
         task_runner_host: Box<TaskRunnerHost>,
+        pointer_state: PointerState,
         #[cfg(not(test))]
         shell: Option<*mut c_void>,
     }
@@ -458,7 +683,10 @@ mod linux {
                                 })
                                 .collect();
                             let instance_extension_ptrs: Vec<*const std::ffi::c_char> =
-                                instance_extensions.iter().map(|name| name.as_ptr()).collect();
+                                instance_extensions
+                                    .iter()
+                                    .map(|name| name.as_ptr())
+                                    .collect();
                             let device_extensions: Vec<CString> = context_data
                                 .device_extensions
                                 .iter()
@@ -490,7 +718,10 @@ mod linux {
                             )
                         })
                         .expect("wgpu Vulkan context extraction failed");
-                    assert!(!shell.is_null(), "C++ failed to create the Flutter Rust shell");
+                    assert!(
+                        !shell.is_null(),
+                        "C++ failed to create the Flutter Rust shell"
+                    );
                     assert!(
                         run_cpp_shell(shell) != 0,
                         "the Flutter Rust shell failed to start running"
@@ -518,19 +749,46 @@ mod linux {
             {
                 return;
             }
-            if let WindowEvent::Resized(size) = event {
-                if let Some(gpu_broker) = &self.gpu_broker {
-                    gpu_broker
-                        .configure(size.width, size.height)
-                        .expect("winit Vulkan surface reconfiguration failed");
+            match event {
+                WindowEvent::Resized(size) => {
+                    if let Some(gpu_broker) = &self.gpu_broker {
+                        gpu_broker
+                            .configure(size.width, size.height)
+                            .expect("winit Vulkan surface reconfiguration failed");
+                    }
+                    #[cfg(not(test))]
+                    if let Some(shell) = self.shell {
+                        set_cpp_shell_viewport_metrics(shell, size.width, size.height);
+                    }
                 }
-                #[cfg(not(test))]
-                if let Some(shell) = self.shell {
-                    set_cpp_shell_viewport_metrics(shell, size.width, size.height);
+                WindowEvent::CursorEntered { .. } => {
+                    if let Some(event) = self.pointer_state.entered() {
+                        self.send_pointer_events([event]);
+                    }
                 }
-            }
-            if matches!(event, WindowEvent::CloseRequested) {
-                event_loop.exit();
+                WindowEvent::CursorLeft { .. } => {
+                    if let Some(event) = self.pointer_state.left() {
+                        self.send_pointer_events([event]);
+                    }
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    let events = self.pointer_state.moved(position.x, position.y);
+                    self.send_pointer_events(events);
+                }
+                WindowEvent::MouseInput { state, button, .. } => {
+                    let events = self.pointer_state.button(button, state);
+                    self.send_pointer_events(events);
+                }
+                WindowEvent::MouseWheel { delta, .. } => {
+                    let events = self.pointer_state.scroll(delta);
+                    self.send_pointer_events(events);
+                }
+                WindowEvent::Touch(touch) => {
+                    let event = self.pointer_state.touch(touch);
+                    self.send_pointer_events([event]);
+                }
+                WindowEvent::CloseRequested => event_loop.exit(),
+                _ => {}
             }
         }
 
@@ -542,6 +800,19 @@ mod linux {
                 Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
                 None => event_loop.set_control_flow(ControlFlow::Wait),
             }
+        }
+    }
+
+    impl ShellApplication {
+        fn send_pointer_events(&self, events: impl IntoIterator<Item = FlutterRustPointerEvent>) {
+            #[cfg(not(test))]
+            if let Some(shell) = self.shell {
+                for event in events {
+                    send_cpp_pointer_event(shell, event);
+                }
+            }
+            #[cfg(test)]
+            for _ in events {}
         }
     }
 
@@ -596,8 +867,77 @@ mod linux {
             destroyed(callbacks.user_data);
             assert!(host.is_destroyed());
         }
+
+        #[test]
+        fn translates_mouse_motion_and_button_state() {
+            let mut pointer = PointerState::new();
+            let motion = pointer.moved(12.5, 24.0);
+            assert_eq!(motion.len(), 2);
+            assert_eq!(motion[0].phase, FlutterRustPointerPhase::Add as u32);
+            assert_eq!(motion[1].phase, FlutterRustPointerPhase::Hover as u32);
+            assert_eq!((motion[1].physical_x, motion[1].physical_y), (12.5, 24.0));
+
+            let down = pointer.button(MouseButton::Left, ElementState::Pressed);
+            assert_eq!(down.len(), 1);
+            assert_eq!(down[0].phase, FlutterRustPointerPhase::Down as u32);
+            assert_eq!(down[0].buttons, MOUSE_PRIMARY_BUTTON);
+
+            let second_down = pointer.button(MouseButton::Right, ElementState::Pressed);
+            assert_eq!(second_down[0].phase, FlutterRustPointerPhase::Move as u32);
+            assert_eq!(
+                second_down[0].buttons,
+                MOUSE_PRIMARY_BUTTON | MOUSE_SECONDARY_BUTTON
+            );
+
+            let second_up = pointer.button(MouseButton::Right, ElementState::Released);
+            assert_eq!(second_up[0].phase, FlutterRustPointerPhase::Move as u32);
+            assert_eq!(second_up[0].buttons, MOUSE_PRIMARY_BUTTON);
+
+            let drag = pointer.moved(20.0, 30.0);
+            assert_eq!(drag[0].phase, FlutterRustPointerPhase::Move as u32);
+            assert_eq!(drag[0].buttons, MOUSE_PRIMARY_BUTTON);
+
+            let up = pointer.button(MouseButton::Left, ElementState::Released);
+            assert_eq!(up[0].phase, FlutterRustPointerPhase::Up as u32);
+            assert_eq!(up[0].buttons, 0);
+        }
+
+        #[test]
+        fn removes_a_dragged_pointer_after_its_last_button_is_released() {
+            let mut pointer = PointerState::new();
+            pointer.moved(12.5, 24.0);
+            pointer.button(MouseButton::Left, ElementState::Pressed);
+
+            assert!(pointer.left().is_none());
+            let release = pointer.button(MouseButton::Left, ElementState::Released);
+
+            assert_eq!(release.len(), 2);
+            assert_eq!(release[0].phase, FlutterRustPointerPhase::Up as u32);
+            assert_eq!(release[1].phase, FlutterRustPointerPhase::Remove as u32);
+        }
+
+        #[test]
+        fn translates_scroll_direction_and_line_units() {
+            let mut pointer = PointerState::new();
+            pointer.moved(5.0, 6.0);
+            let events = pointer.scroll(MouseScrollDelta::LineDelta(1.0, 2.0));
+            assert_eq!(events.len(), 1);
+            assert_eq!(
+                events[0].signal_kind,
+                FlutterRustPointerSignalKind::Scroll as u32
+            );
+            assert_eq!(events[0].scroll_delta_x, SCROLL_LINE_PIXELS);
+            assert_eq!(events[0].scroll_delta_y, -2.0 * SCROLL_LINE_PIXELS);
+        }
+
+        #[test]
+        fn touch_devices_do_not_collide_with_the_mouse() {
+            assert_eq!(touch_device_id(0), 1);
+            assert_eq!(touch_device_id(7), 8);
+            assert_eq!(touch_device_id(u64::MAX), i64::MAX);
+        }
     }
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::{ShellConfig, ScheduledTask, TaskQueue, TaskRunnerHost, run};
+pub use linux::{ScheduledTask, ShellConfig, TaskQueue, TaskRunnerHost, run};

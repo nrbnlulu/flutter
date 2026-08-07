@@ -9,8 +9,14 @@
 #include <memory>
 
 #include "flutter/shell/common/platform_view.h"
+#include "flutter/shell/platform/rust/rust_bridge.h"
 
 namespace flutter {
+
+// Converts one validated private-ABI event into an engine packet. Returns null
+// for enum values that this engine revision does not understand.
+std::unique_ptr<PointerDataPacket> CreateRustPointerDataPacket(
+    const FlutterRustPointerEvent& event);
 
 // The in-tree platform view used by the optional Rust shell.
 //

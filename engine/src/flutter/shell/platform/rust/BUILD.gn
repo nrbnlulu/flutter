@@ -181,6 +181,10 @@ executable("flutter_rust_shell_runner") {
     "//flutter/runtime:libdart",
   ]
 
+  # The Rust archive is passed directly to the linker, so declare it as an
+  # input as well as depending on its producing action. Otherwise changes to
+  # Rust-only event handling do not cause the native runner to relink.
+  inputs = [ _flutter_shell_winit_output ]
   ldflags = [ rebase_path(_flutter_shell_winit_output, root_build_dir) ]
 
   libs = [
@@ -206,6 +210,7 @@ if (enable_unittests) {
       "//flutter/testing:dart",
     ]
 
+    inputs = [ _flutter_shell_core_output ]
     ldflags = [ rebase_path(_flutter_shell_core_output, root_build_dir) ]
   }
 }

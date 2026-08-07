@@ -63,9 +63,8 @@ pub struct FlutterRustVulkanImage {
 #[repr(C)]
 pub struct FlutterRustVulkanPresentationCallbacks {
     pub user_data: *mut c_void,
-    pub acquire_image: Option<
-        extern "C" fn(*mut c_void, u32, u32, *mut FlutterRustVulkanImage) -> i32,
-    >,
+    pub acquire_image:
+        Option<extern "C" fn(*mut c_void, u32, u32, *mut FlutterRustVulkanImage) -> i32>,
     pub present_image: Option<extern "C" fn(*mut c_void, FlutterRustVulkanImage) -> i32>,
 }
 
@@ -75,6 +74,51 @@ pub struct FlutterRustVulkanPresentationCallbacks {
 pub struct FlutterRustShellSettings {
     pub assets_path: *const std::ffi::c_char,
     pub icu_data_path: *const std::ffi::c_char,
+}
+
+/// Pointer phases accepted by the private engine bridge.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlutterRustPointerPhase {
+    Cancel = 0,
+    Add = 1,
+    Remove = 2,
+    Hover = 3,
+    Down = 4,
+    Move = 5,
+    Up = 6,
+}
+
+/// Pointer device kinds accepted by the private engine bridge.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlutterRustPointerDeviceKind {
+    Mouse = 0,
+    Touch = 1,
+}
+
+/// Pointer signal kinds accepted by the private engine bridge.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlutterRustPointerSignalKind {
+    None = 0,
+    Scroll = 1,
+}
+
+/// One winit pointer event, ABI-compatible with `FlutterRustPointerEvent`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FlutterRustPointerEvent {
+    pub timestamp_micros: u64,
+    pub phase: u32,
+    pub device_kind: u32,
+    pub signal_kind: u32,
+    pub device: i64,
+    pub physical_x: f64,
+    pub physical_y: f64,
+    pub scroll_delta_x: f64,
+    pub scroll_delta_y: f64,
+    pub buttons: i64,
 }
 
 /// Returns the ABI versions compiled into the Rust shell runtime.

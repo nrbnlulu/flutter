@@ -102,6 +102,42 @@ typedef struct FlutterRustShellSettings {
   const char* icu_data_path;
 } FlutterRustShellSettings;
 
+// One pointer event produced by the Rust window host. Numeric enum values are
+// translated explicitly on the C++ side rather than relying on Flutter's
+// internal enum layout across the C ABI.
+typedef enum FlutterRustPointerPhase {
+  kFlutterRustPointerPhaseCancel = 0,
+  kFlutterRustPointerPhaseAdd = 1,
+  kFlutterRustPointerPhaseRemove = 2,
+  kFlutterRustPointerPhaseHover = 3,
+  kFlutterRustPointerPhaseDown = 4,
+  kFlutterRustPointerPhaseMove = 5,
+  kFlutterRustPointerPhaseUp = 6,
+} FlutterRustPointerPhase;
+
+typedef enum FlutterRustPointerDeviceKind {
+  kFlutterRustPointerDeviceKindMouse = 0,
+  kFlutterRustPointerDeviceKindTouch = 1,
+} FlutterRustPointerDeviceKind;
+
+typedef enum FlutterRustPointerSignalKind {
+  kFlutterRustPointerSignalKindNone = 0,
+  kFlutterRustPointerSignalKindScroll = 1,
+} FlutterRustPointerSignalKind;
+
+typedef struct FlutterRustPointerEvent {
+  uint64_t timestamp_micros;
+  uint32_t phase;
+  uint32_t device_kind;
+  uint32_t signal_kind;
+  int64_t device;
+  double physical_x;
+  double physical_y;
+  double scroll_delta_x;
+  double scroll_delta_y;
+  int64_t buttons;
+} FlutterRustPointerEvent;
+
 // Creates the private engine-side half of one Rust-hosted Flutter
 // application. `task_runner` must be a handle previously returned by
 // FlutterRustShellCreateTaskRunner and is used as the merged UI/platform task
@@ -126,6 +162,12 @@ FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSetViewportMetrics(
     double width,
     double height,
     double pixel_ratio);
+
+// Dispatches one mouse or touch event to the implicit Flutter view. Must run
+// on the merged Rust UI/platform task runner.
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSendPointerEvent(
+    void* shell,
+    FlutterRustPointerEvent event);
 
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellDestroyShell(void* shell);
 
