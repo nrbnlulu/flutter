@@ -10,3 +10,8 @@ tasks:
     dir: engine/src/flutter
     cmds:
       - PATH="{{.PY312_BIN}}:{{.DEPOT_TOOLS}}:$PATH" ./ci/format.sh
+
+  push:
+    desc: Push changes (requires depot_tools in PATH)
+    cmds:
+      - PATH="{{.DEPOT_TOOLS}}:$PATH" git push
