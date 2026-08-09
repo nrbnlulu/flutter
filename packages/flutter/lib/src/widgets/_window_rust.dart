@@ -158,7 +158,21 @@ class WindowingOwnerRust extends WindowingOwner {
     BoxConstraints? constraints,
     required bool resizable,
     String? title,
-  }) => throw UnsupportedError('The Rust shell does not support satellite windows yet.');
+  }) {
+    final controller = SatelliteWindowControllerRust(
+      owner: this,
+      delegate: delegate,
+      parent: parent,
+      initialPositioner: initialPositioner,
+      initialAnchorRect: initialAnchorRect,
+      size: size,
+      constraints: constraints,
+      resizable: resizable,
+      title: title,
+    );
+    _controllers[controller.rootView.viewId] = controller;
+    return controller;
+  }
 }
 
 abstract interface class _RustLifecycleController {
@@ -673,6 +687,160 @@ class PopupWindowControllerRust extends PopupWindowController implements _RustLi
   }
 }
 
+@internal
+class SatelliteWindowControllerRust extends SatelliteWindowController
+    implements _RustLifecycleController {
+  SatelliteWindowControllerRust({
+    required WindowingOwnerRust owner,
+    required SatelliteWindowControllerDelegate delegate,
+    required BaseWindowController parent,
+    required WindowPositioner initialPositioner,
+    required Rect? initialAnchorRect,
+    required Size? size,
+    required BoxConstraints? constraints,
+    required bool resizable,
+    required String? title,
+  }) : _owner = owner,
+       _delegate = delegate,
+       _parent = parent,
+       _title = title ?? 'Flutter',
+       super.empty() {
+    _validateParent(parent);
+    final int viewId = _RustWindowing.createSatelliteWindow(
+      engineId: _owner._engineId,
+      parentViewId: parent.rootView.viewId,
+      initialPositioner: initialPositioner,
+      initialAnchorRect: initialAnchorRect,
+      size: size,
+      constraints: constraints,
+      resizable: resizable,
+      title: _title,
+    );
+    if (viewId < 0) {
+      throw StateError('The Rust shell failed to create a satellite window.');
+    }
+    rootView = WidgetsBinding.instance.platformDispatcher.views.firstWhere(
+      (FlutterView view) => view.viewId == viewId,
+    );
+  }
+
+  final WindowingOwnerRust _owner;
+  final SatelliteWindowControllerDelegate _delegate;
+  BaseWindowController _parent;
+  String _title;
+  bool _destroyRequested = false;
+  bool _destroyed = false;
+
+  void _validateParent(BaseWindowController value) {
+    if (value is! WindowControllerRust && value is! DialogWindowControllerRust) {
+      throw ArgumentError.value(
+        value,
+        'parent',
+        'must be a regular or dialog window owned by the Rust shell',
+      );
+    }
+  }
+
+  void _ensureNotDestroyed() {
+    if (_destroyed) {
+      throw StateError('Window has been destroyed.');
+    }
+  }
+
+  _WindowStateValue get _state {
+    _ensureNotDestroyed();
+    return _RustWindowing.getWindowState(_owner._engineId, rootView.viewId);
+  }
+
+  @override
+  BaseWindowController get parent => _parent;
+
+  @override
+  Size get contentSize => Size(_state.width, _state.height);
+
+  @override
+  bool get isDestroyed => _destroyed;
+
+  @override
+  String get title {
+    _ensureNotDestroyed();
+    return _title;
+  }
+
+  @override
+  bool get isActivated => _state.focused != 0;
+
+  @override
+  void destroy() {
+    if (_destroyed || _destroyRequested) {
+      return;
+    }
+    _destroyRequested = true;
+    _RustWindowing.destroyWindow(_owner._engineId, rootView.viewId);
+  }
+
+  @override
+  void setParent(BaseWindowController parent) {
+    _ensureNotDestroyed();
+    _validateParent(parent);
+    if (!_RustWindowing.setParent(_owner._engineId, rootView.viewId, parent.rootView.viewId)) {
+      throw StateError('The Rust shell rejected the satellite parent.');
+    }
+    _parent = parent;
+    notifyListeners();
+  }
+
+  @override
+  void setSize(Size size) {
+    _ensureNotDestroyed();
+    _RustWindowing.setSize(_owner._engineId, rootView.viewId, size.width, size.height);
+  }
+
+  @override
+  void setConstraints(BoxConstraints constraints) {
+    _ensureNotDestroyed();
+    _RustWindowing.setConstraints(_owner._engineId, rootView.viewId, constraints);
+  }
+
+  @override
+  void setTitle(String title) {
+    _ensureNotDestroyed();
+    _RustWindowing.setTitle(_owner._engineId, rootView.viewId, title);
+    _title = title;
+    notifyListeners();
+  }
+
+  @override
+  void activate() {
+    _ensureNotDestroyed();
+    _RustWindowing.activate(_owner._engineId, rootView.viewId);
+  }
+
+  @override
+  void _stateChanged() {
+    if (!_destroyed) {
+      notifyListeners();
+    }
+  }
+
+  @override
+  void _closeRequested() {
+    if (!_destroyed && !_destroyRequested) {
+      _delegate.onWindowCloseRequested(this);
+    }
+  }
+
+  @override
+  void _windowDestroyed() {
+    if (_destroyed) {
+      return;
+    }
+    _destroyed = true;
+    notifyListeners();
+    _delegate.onWindowDestroyed();
+  }
+}
+
 enum _WindowEvent {
   stateChanged(0),
   closeRequested(1),
@@ -756,6 +924,38 @@ final class _PopupWindowRequest extends ffi.Struct {
   external double maxWidth;
   @ffi.Double()
   external double maxHeight;
+  @ffi.Double()
+  external double anchorX;
+  @ffi.Double()
+  external double anchorY;
+  @ffi.Double()
+  external double anchorWidth;
+  @ffi.Double()
+  external double anchorHeight;
+
+  @ffi.Int32()
+  external int parentAnchor;
+  @ffi.Int32()
+  external int childAnchor;
+
+  @ffi.Double()
+  external double offsetX;
+  @ffi.Double()
+  external double offsetY;
+
+  @ffi.Uint32()
+  external int constraintAdjustment;
+}
+
+final class _SatelliteWindowRequest extends ffi.Struct {
+  external _RegularWindowRequest window;
+
+  @ffi.Int64()
+  external int parentViewId;
+
+  @ffi.Int32()
+  external int hasAnchorRect;
+
   @ffi.Double()
   external double anchorX;
   @ffi.Double()
@@ -938,6 +1138,68 @@ final class _RustWindowing {
     }
   }
 
+  static int createSatelliteWindow({
+    required int engineId,
+    required int parentViewId,
+    required WindowPositioner initialPositioner,
+    required Rect? initialAnchorRect,
+    required Size? size,
+    required BoxConstraints? constraints,
+    required bool resizable,
+    required String title,
+  }) {
+    final List<int> titleBytes = utf8.encode(title);
+    final ffi.Pointer<_SatelliteWindowRequest> request = _malloc(
+      ffi.sizeOf<_SatelliteWindowRequest>(),
+    ).cast<_SatelliteWindowRequest>();
+    if (request == ffi.nullptr) {
+      throw StateError('Native allocation failed.');
+    }
+    final ffi.Pointer<ffi.Uint8> titlePointer = _allocateBytes(titleBytes.length);
+    if (titleBytes.isNotEmpty) {
+      titlePointer.asTypedList(titleBytes.length).setAll(0, titleBytes);
+    }
+    final WindowPositionerConstraintAdjustment adjustment = initialPositioner.constraintAdjustment;
+    request.ref.window
+      ..hasSize = size == null ? 0 : 1
+      ..width = size?.width ?? 0
+      ..height = size?.height ?? 0
+      ..title = titlePointer
+      ..titleLength = titleBytes.length
+      ..resizable = resizable ? 1 : 0
+      ..hasConstraints = constraints == null ? 0 : 1
+      ..minWidth = constraints?.minWidth ?? 0
+      ..minHeight = constraints?.minHeight ?? 0
+      ..maxWidth = constraints?.maxWidth ?? 0
+      ..maxHeight = constraints?.maxHeight ?? 0;
+    request.ref
+      ..parentViewId = parentViewId
+      ..hasAnchorRect = initialAnchorRect == null ? 0 : 1
+      ..anchorX = initialAnchorRect?.left ?? 0
+      ..anchorY = initialAnchorRect?.top ?? 0
+      ..anchorWidth = initialAnchorRect?.width ?? 0
+      ..anchorHeight = initialAnchorRect?.height ?? 0
+      ..parentAnchor = initialPositioner.parentAnchor.index
+      ..childAnchor = initialPositioner.childAnchor.index
+      ..offsetX = initialPositioner.offset.dx
+      ..offsetY = initialPositioner.offset.dy
+      ..constraintAdjustment =
+          (adjustment.slideX ? 1 : 0) |
+          (adjustment.slideY ? 2 : 0) |
+          (adjustment.flipX ? 4 : 0) |
+          (adjustment.flipY ? 8 : 0) |
+          (adjustment.resizeX ? 16 : 0) |
+          (adjustment.resizeY ? 32 : 0);
+    try {
+      return _createSatellite(engineId, request);
+    } finally {
+      if (titlePointer != ffi.nullptr) {
+        _free(titlePointer.cast());
+      }
+      _free(request.cast());
+    }
+  }
+
   static _WindowStateValue getWindowState(int engineId, int viewId) {
     final ffi.Pointer<_WindowState> state = _malloc(
       ffi.sizeOf<_WindowState>(),
@@ -1020,6 +1282,11 @@ final class _RustWindowing {
   )
   external static int _createPopup(int engineId, ffi.Pointer<_PopupWindowRequest> request);
 
+  @ffi.Native<ffi.Int64 Function(ffi.Int64, ffi.Pointer<_SatelliteWindowRequest>)>(
+    symbol: 'FlutterRustShellWindowCreateSatellite',
+  )
+  external static int _createSatellite(int engineId, ffi.Pointer<_SatelliteWindowRequest> request);
+
   @ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int64)>(symbol: 'FlutterRustShellWindowDestroy')
   external static void destroyWindow(int engineId, int viewId);
 
@@ -1101,4 +1368,13 @@ final class _RustWindowing {
     int engineId,
     ffi.Pointer<ffi.NativeFunction<_WindowEventNative>> callback,
   );
+
+  @ffi.Native<ffi.Int32 Function(ffi.Int64, ffi.Int64, ffi.Int64)>(
+    symbol: 'FlutterRustShellWindowSetParent',
+  )
+  external static int _setParent(int engineId, int viewId, int parentViewId);
+
+  static bool setParent(int engineId, int viewId, int parentViewId) {
+    return _setParent(engineId, viewId, parentViewId) != 0;
+  }
 }

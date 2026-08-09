@@ -359,6 +359,15 @@ FlutterRustViewId RustShell::CreatePopupWindow(
       windowing_callbacks_.user_data, request);
 }
 
+FlutterRustViewId RustShell::CreateSatelliteWindow(
+    const FlutterRustSatelliteWindowRequest* request) {
+  if (!request || !windowing_callbacks_.create_satellite_window) {
+    return -1;
+  }
+  return windowing_callbacks_.create_satellite_window(
+      windowing_callbacks_.user_data, request);
+}
+
 void RustShell::DestroyWindow(FlutterRustViewId view_id) {
   if (view_id <= kFlutterImplicitViewId ||
       !windowing_callbacks_.destroy_window) {
@@ -457,6 +466,17 @@ void RustShell::SetWindowEventCallback(
   }
   windowing_callbacks_.set_window_event_callback(windowing_callbacks_.user_data,
                                                  callback);
+}
+
+bool RustShell::SetWindowParent(FlutterRustViewId view_id,
+                                FlutterRustViewId parent_view_id) {
+  if (view_id <= kFlutterImplicitViewId ||
+      parent_view_id < kFlutterImplicitViewId ||
+      !windowing_callbacks_.set_window_parent) {
+    return false;
+  }
+  return windowing_callbacks_.set_window_parent(windowing_callbacks_.user_data,
+                                                view_id, parent_view_id) != 0;
 }
 
 }  // namespace flutter
@@ -678,6 +698,16 @@ extern "C" FlutterRustViewId FlutterRustShellWindowCreatePopup(
       request);
 }
 
+extern "C" FlutterRustViewId FlutterRustShellWindowCreateSatellite(
+    int64_t engine_id,
+    const FlutterRustSatelliteWindowRequest* request) {
+  if (engine_id == 0) {
+    return -1;
+  }
+  return reinterpret_cast<flutter::RustShell*>(engine_id)
+      ->CreateSatelliteWindow(request);
+}
+
 extern "C" void FlutterRustShellWindowDestroy(int64_t engine_id,
                                               FlutterRustViewId view_id) {
   if (engine_id == 0) {
@@ -772,6 +802,19 @@ extern "C" void FlutterRustShellWindowSetEventCallback(
     reinterpret_cast<flutter::RustShell*>(engine_id)->SetWindowEventCallback(
         callback);
   }
+}
+
+extern "C" int FlutterRustShellWindowSetParent(
+    int64_t engine_id,
+    FlutterRustViewId view_id,
+    FlutterRustViewId parent_view_id) {
+  if (engine_id == 0) {
+    return 0;
+  }
+  return reinterpret_cast<flutter::RustShell*>(engine_id)->SetWindowParent(
+             view_id, parent_view_id)
+             ? 1
+             : 0;
 }
 
 extern "C" void FlutterRustShellDestroyShell(void* shell) {

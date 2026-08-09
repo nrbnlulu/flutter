@@ -12,7 +12,7 @@ use flutter_plugin_sdk::PLUGIN_SDK_API_VERSION;
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 6;
+pub const SHELL_ABI_VERSION: u32 = 7;
 
 /// Engine-scoped identity of one Flutter view/native window pair.
 #[repr(transparent)]
@@ -97,6 +97,23 @@ pub struct FlutterRustPopupWindowRequest {
     pub constraint_adjustment: u32,
 }
 
+/// Synchronous persistent auxiliary-window request.
+#[repr(C)]
+pub struct FlutterRustSatelliteWindowRequest {
+    pub window: FlutterRustRegularWindowRequest,
+    pub parent_view_id: FlutterRustViewId,
+    pub has_anchor_rect: i32,
+    pub anchor_x: f64,
+    pub anchor_y: f64,
+    pub anchor_width: f64,
+    pub anchor_height: f64,
+    pub parent_anchor: i32,
+    pub child_anchor: i32,
+    pub offset_x: f64,
+    pub offset_y: f64,
+    pub constraint_adjustment: u32,
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FlutterRustWindowState {
@@ -130,6 +147,9 @@ pub struct FlutterRustWindowingCallbacks {
     pub create_popup_window: Option<
         extern "C" fn(*mut c_void, *const FlutterRustPopupWindowRequest) -> FlutterRustViewId,
     >,
+    pub create_satellite_window: Option<
+        extern "C" fn(*mut c_void, *const FlutterRustSatelliteWindowRequest) -> FlutterRustViewId,
+    >,
     pub destroy_window: Option<extern "C" fn(*mut c_void, FlutterRustViewId)>,
     pub get_window_state:
         Option<extern "C" fn(*mut c_void, FlutterRustViewId, *mut FlutterRustWindowState) -> i32>,
@@ -143,6 +163,8 @@ pub struct FlutterRustWindowingCallbacks {
     pub set_window_fullscreen: Option<extern "C" fn(*mut c_void, FlutterRustViewId, i32)>,
     pub set_window_event_callback:
         Option<extern "C" fn(*mut c_void, Option<FlutterRustWindowEventCallback>)>,
+    pub set_window_parent:
+        Option<extern "C" fn(*mut c_void, FlutterRustViewId, FlutterRustViewId) -> i32>,
 }
 
 #[repr(u32)]

@@ -19,7 +19,7 @@ extern "C" {
 
 // This private ABI is lockstep-versioned with the Flutter fork. It is not the
 // Flutter Embedder API and is never exposed to application plugins.
-#define FLUTTER_RUST_SHELL_ABI_VERSION 6u
+#define FLUTTER_RUST_SHELL_ABI_VERSION 7u
 #define FLUTTER_RUST_PLUGIN_SDK_API_VERSION 1u
 
 typedef struct FlutterRustShellAbi {
@@ -96,6 +96,21 @@ typedef struct FlutterRustPopupWindowRequest {
   uint32_t constraint_adjustment;
 } FlutterRustPopupWindowRequest;
 
+typedef struct FlutterRustSatelliteWindowRequest {
+  FlutterRustRegularWindowRequest window;
+  FlutterRustViewId parent_view_id;
+  int32_t has_anchor_rect;
+  double anchor_x;
+  double anchor_y;
+  double anchor_width;
+  double anchor_height;
+  int32_t parent_anchor;
+  int32_t child_anchor;
+  double offset_x;
+  double offset_y;
+  uint32_t constraint_adjustment;
+} FlutterRustSatelliteWindowRequest;
+
 typedef struct FlutterRustWindowState {
   double width;
   double height;
@@ -123,6 +138,9 @@ typedef FlutterRustViewId (*FlutterRustCreateDialogWindowCallback)(
 typedef FlutterRustViewId (*FlutterRustCreatePopupWindowCallback)(
     void* user_data,
     const FlutterRustPopupWindowRequest* request);
+typedef FlutterRustViewId (*FlutterRustCreateSatelliteWindowCallback)(
+    void* user_data,
+    const FlutterRustSatelliteWindowRequest* request);
 typedef void (*FlutterRustDestroyWindowCallback)(void* user_data,
                                                  FlutterRustViewId view_id);
 typedef int (*FlutterRustGetWindowStateCallback)(void* user_data,
@@ -150,12 +168,17 @@ typedef void (*FlutterRustSetWindowFlagCallback)(void* user_data,
 typedef void (*FlutterRustSetWindowEventCallback)(
     void* user_data,
     FlutterRustWindowEventCallback callback);
+typedef int (*FlutterRustSetWindowParentCallback)(
+    void* user_data,
+    FlutterRustViewId view_id,
+    FlutterRustViewId parent_view_id);
 
 typedef struct FlutterRustWindowingCallbacks {
   void* user_data;
   FlutterRustCreateRegularWindowCallback create_regular_window;
   FlutterRustCreateDialogWindowCallback create_dialog_window;
   FlutterRustCreatePopupWindowCallback create_popup_window;
+  FlutterRustCreateSatelliteWindowCallback create_satellite_window;
   FlutterRustDestroyWindowCallback destroy_window;
   FlutterRustGetWindowStateCallback get_window_state;
   FlutterRustSetWindowSizeCallback set_window_size;
@@ -166,6 +189,7 @@ typedef struct FlutterRustWindowingCallbacks {
   FlutterRustSetWindowFlagCallback set_window_minimized;
   FlutterRustSetWindowFlagCallback set_window_fullscreen;
   FlutterRustSetWindowEventCallback set_window_event_callback;
+  FlutterRustSetWindowParentCallback set_window_parent;
 } FlutterRustWindowingCallbacks;
 
 typedef enum FlutterRustViewFocusState {
@@ -373,6 +397,10 @@ FLUTTER_RUST_SHELL_EXPORT FlutterRustViewId FlutterRustShellWindowCreateDialog(
 FLUTTER_RUST_SHELL_EXPORT FlutterRustViewId
 FlutterRustShellWindowCreatePopup(int64_t engine_id,
                                   const FlutterRustPopupWindowRequest* request);
+FLUTTER_RUST_SHELL_EXPORT FlutterRustViewId
+FlutterRustShellWindowCreateSatellite(
+    int64_t engine_id,
+    const FlutterRustSatelliteWindowRequest* request);
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowDestroy(
     int64_t engine_id,
     FlutterRustViewId view_id);
@@ -416,6 +444,10 @@ FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowSetFullscreen(
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowSetEventCallback(
     int64_t engine_id,
     FlutterRustWindowEventCallback callback);
+FLUTTER_RUST_SHELL_EXPORT int FlutterRustShellWindowSetParent(
+    int64_t engine_id,
+    FlutterRustViewId view_id,
+    FlutterRustViewId parent_view_id);
 
 // Starts the root isolate and attaches the Vulkan presentation surface. Must
 // run on the merged Rust UI/platform task runner. Returns non-zero on

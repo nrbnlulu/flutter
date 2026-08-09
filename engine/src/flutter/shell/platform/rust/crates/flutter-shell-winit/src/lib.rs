@@ -28,10 +28,13 @@ mod linux {
         FlutterRustPointerPhase, FlutterRustPointerSignalKind, FlutterRustTaskRunnerCallbacks,
         FlutterRustViewId, FlutterRustVsyncCallbacks, FlutterRustWindowEventCallback,
     };
+    use flutter_shell_core::{
+        FlutterRustDialogWindowRequest, FlutterRustPopupWindowRequest,
+        FlutterRustRegularWindowRequest, FlutterRustSatelliteWindowRequest,
+    };
     #[cfg(not(test))]
     use flutter_shell_core::{
-        FlutterRustDialogWindowRequest, FlutterRustPlatformMessageCallbacks,
-        FlutterRustPopupWindowRequest, FlutterRustRegularWindowRequest, FlutterRustShellSettings,
+        FlutterRustPlatformMessageCallbacks, FlutterRustShellSettings,
         FlutterRustViewFocusDirection, FlutterRustViewFocusState, FlutterRustViewMetrics,
         FlutterRustViewOperationCallbacks, FlutterRustVulkanContextData,
         FlutterRustVulkanPresentationCallbacks, FlutterRustWindowEvent, FlutterRustWindowState,
@@ -53,11 +56,10 @@ mod linux {
     };
     #[cfg(not(test))]
     use winit::monitor::Fullscreen;
+    use winit::platform::wayland::PopupAnchor;
     #[cfg(not(test))]
     use winit::platform::{
-        wayland::{
-            ActiveEventLoopExtWayland, PopupAnchor, PopupAttributesWayland, WindowExtWayland,
-        },
+        wayland::{ActiveEventLoopExtWayland, PopupAttributesWayland, WindowExtWayland},
         x11::{WindowAttributesX11, WindowType},
     };
     use winit::{
@@ -161,16 +163,17 @@ mod linux {
         result
     }
 
-    #[cfg(not(test))]
+    #[derive(Debug)]
     struct NativeWindowRequest {
         title: String,
         width: f64,
         height: f64,
+        shrink_wrap: bool,
         resizable: bool,
         constraints: Option<(f64, f64, f64, f64)>,
     }
 
-    #[cfg(not(test))]
+    #[derive(Debug)]
     struct NativePopupRequest {
         kind: NativeWindowKind,
         parent_view_id: FlutterRustViewId,
@@ -182,7 +185,17 @@ mod linux {
         constraint_adjustment: u32,
     }
 
-    #[cfg(not(test))]
+    #[derive(Debug)]
+    struct NativeSatelliteRequest {
+        window: NativeWindowRequest,
+        parent_view_id: FlutterRustViewId,
+        anchor_rect: Option<(f64, f64, f64, f64)>,
+        parent_anchor: PopupAnchor,
+        gravity: PopupAnchor,
+        offset: (f64, f64),
+        _constraint_adjustment: u32,
+    }
+
     fn popup_anchor(value: i32) -> Option<PopupAnchor> {
         Some(match value {
             0 => PopupAnchor::None,
@@ -198,7 +211,6 @@ mod linux {
         })
     }
 
-    #[cfg(not(test))]
     fn popup_gravity_for_child_anchor(value: i32) -> Option<PopupAnchor> {
         Some(match popup_anchor(value)? {
             PopupAnchor::None => PopupAnchor::None,
@@ -213,7 +225,6 @@ mod linux {
         })
     }
 
-    #[cfg(not(test))]
     fn decode_popup_request(request: &FlutterRustPopupWindowRequest) -> Option<NativePopupRequest> {
         let kind = match request.kind {
             0 => NativeWindowKind::Tooltip,
@@ -268,7 +279,43 @@ mod linux {
         })
     }
 
-    #[cfg(not(test))]
+    fn decode_satellite_request(
+        request: &FlutterRustSatelliteWindowRequest,
+    ) -> Option<NativeSatelliteRequest> {
+        let window = decode_window_request(&request.window)?;
+        if request.parent_view_id <= FlutterRustViewId::IMPLICIT
+            || ![
+                request.anchor_x,
+                request.anchor_y,
+                request.anchor_width,
+                request.anchor_height,
+                request.offset_x,
+                request.offset_y,
+            ]
+            .into_iter()
+            .all(f64::is_finite)
+            || request.anchor_width < 0.0
+            || request.anchor_height < 0.0
+            || request.constraint_adjustment & !0x3f != 0
+        {
+            return None;
+        }
+        Some(NativeSatelliteRequest {
+            window,
+            parent_view_id: request.parent_view_id,
+            anchor_rect: (request.has_anchor_rect != 0).then_some((
+                request.anchor_x,
+                request.anchor_y,
+                request.anchor_width,
+                request.anchor_height,
+            )),
+            parent_anchor: popup_anchor(request.parent_anchor)?,
+            gravity: popup_gravity_for_child_anchor(request.child_anchor)?,
+            offset: (request.offset_x, request.offset_y),
+            _constraint_adjustment: request.constraint_adjustment,
+        })
+    }
+
     fn decode_window_request(
         request: &FlutterRustRegularWindowRequest,
     ) -> Option<NativeWindowRequest> {
@@ -314,38 +361,43 @@ mod linux {
             title,
             width,
             height,
+            shrink_wrap: request.has_size == 0,
             resizable: request.resizable != 0,
             constraints,
         })
     }
 
+    trait WindowingCallbackHost {
+        fn create_window(
+            &self,
+            request: NativeWindowRequest,
+            kind: NativeWindowKind,
+            parent: Option<FlutterRustViewId>,
+        ) -> FlutterRustViewId;
+
+        fn create_popup(&self, request: NativePopupRequest) -> FlutterRustViewId;
+
+        fn create_satellite(&self, request: NativeSatelliteRequest) -> FlutterRustViewId;
+
+        fn destroy_window(&self, view_id: FlutterRustViewId);
+    }
+
     #[cfg(not(test))]
-    extern "C" fn create_regular_window_callback(
-        _user_data: *mut c_void,
-        request: *const FlutterRustRegularWindowRequest,
-    ) -> FlutterRustViewId {
-        if request.is_null() {
-            return FlutterRustViewId(-1);
-        }
-        // SAFETY: C++ borrows this Dart-allocated request only for the
-        // duration of the synchronous callback.
-        let Some(request) = decode_window_request(unsafe { &*request }) else {
-            return FlutterRustViewId(-1);
-        };
-        ACTIVE_WINDOWING_CONTEXT.with(|slot| {
-            let context = slot.borrow();
-            let Some(context) = context.as_ref() else {
+    impl WindowingCallbackHost for ActiveWindowingContext {
+        fn create_window(
+            &self,
+            request: NativeWindowRequest,
+            kind: NativeWindowKind,
+            parent: Option<FlutterRustViewId>,
+        ) -> FlutterRustViewId {
+            let Some(windows) = self.windows.upgrade() else {
                 return FlutterRustViewId(-1);
             };
-            let Some(windows) = context.windows.upgrade() else {
-                return FlutterRustViewId(-1);
-            };
-            // SAFETY: with_active_windowing_context installs this pointer only
-            // while winit is executing a callback with a live ActiveEventLoop.
-            let event_loop = unsafe { &*context.event_loop };
+            // SAFETY: the context exists only during a live winit callback.
+            let event_loop = unsafe { &*self.event_loop };
             let created = windows
                 .borrow_mut()
-                .create_regular_view(event_loop, request, NativeWindowKind::Regular, None)
+                .create_regular_view(event_loop, request, kind, parent)
                 .map_err(|error| log::error!("failed to create Flutter window: {error}"));
             let Ok(created) = created else {
                 return FlutterRustViewId(-1);
@@ -358,6 +410,135 @@ mod linux {
                 created.event_proxy,
             );
             created.view_id
+        }
+
+        fn create_popup(&self, request: NativePopupRequest) -> FlutterRustViewId {
+            let Some(windows) = self.windows.upgrade() else {
+                return FlutterRustViewId(-1);
+            };
+            // SAFETY: see create_window.
+            let event_loop = unsafe { &*self.event_loop };
+            let Ok(created) = windows.borrow_mut().create_popup_view(event_loop, request) else {
+                return FlutterRustViewId(-1);
+            };
+            add_cpp_shell_view(
+                created.shell,
+                created.view_id,
+                created.metrics,
+                created.presentation_callbacks,
+                created.event_proxy,
+            );
+            created.view_id
+        }
+
+        fn create_satellite(&self, request: NativeSatelliteRequest) -> FlutterRustViewId {
+            let Some(windows) = self.windows.upgrade() else {
+                return FlutterRustViewId(-1);
+            };
+            // SAFETY: see create_window.
+            let event_loop = unsafe { &*self.event_loop };
+            let Ok(created) = windows
+                .borrow_mut()
+                .create_satellite_view(event_loop, request)
+            else {
+                return FlutterRustViewId(-1);
+            };
+            add_cpp_shell_view(
+                created.shell,
+                created.view_id,
+                created.metrics,
+                created.presentation_callbacks,
+                created.event_proxy,
+            );
+            created.view_id
+        }
+
+        fn destroy_window(&self, view_id: FlutterRustViewId) {
+            let Some(windows) = self.windows.upgrade() else {
+                return;
+            };
+            let removals = { windows.borrow_mut().begin_remove_views(view_id) };
+            for (view_id, shell, event_proxy) in removals {
+                remove_cpp_shell_view(shell, view_id, event_proxy);
+            }
+        }
+    }
+
+    fn dispatch_create_regular(
+        host: &dyn WindowingCallbackHost,
+        request: *const FlutterRustRegularWindowRequest,
+    ) -> FlutterRustViewId {
+        if request.is_null() {
+            return FlutterRustViewId(-1);
+        }
+        // SAFETY: the synchronous caller supplies one complete request.
+        let Some(request) = decode_window_request(unsafe { &*request }) else {
+            return FlutterRustViewId(-1);
+        };
+        host.create_window(request, NativeWindowKind::Regular, None)
+    }
+
+    fn dispatch_create_dialog(
+        host: &dyn WindowingCallbackHost,
+        request: *const FlutterRustDialogWindowRequest,
+    ) -> FlutterRustViewId {
+        if request.is_null() {
+            return FlutterRustViewId(-1);
+        }
+        // SAFETY: the synchronous caller supplies one complete request.
+        let request = unsafe { &*request };
+        let Some(window) = decode_window_request(&request.window) else {
+            return FlutterRustViewId(-1);
+        };
+        let parent = (request.has_parent != 0).then_some(request.parent_view_id);
+        host.create_window(window, NativeWindowKind::Dialog, parent)
+    }
+
+    fn dispatch_create_popup(
+        host: &dyn WindowingCallbackHost,
+        request: *const FlutterRustPopupWindowRequest,
+    ) -> FlutterRustViewId {
+        if request.is_null() {
+            return FlutterRustViewId(-1);
+        }
+        // SAFETY: the synchronous caller supplies one complete request.
+        let Some(request) = decode_popup_request(unsafe { &*request }) else {
+            return FlutterRustViewId(-1);
+        };
+        host.create_popup(request)
+    }
+
+    fn dispatch_create_satellite(
+        host: &dyn WindowingCallbackHost,
+        request: *const FlutterRustSatelliteWindowRequest,
+    ) -> FlutterRustViewId {
+        if request.is_null() {
+            return FlutterRustViewId(-1);
+        }
+        // SAFETY: the synchronous caller supplies one complete request.
+        let Some(request) = decode_satellite_request(unsafe { &*request }) else {
+            return FlutterRustViewId(-1);
+        };
+        host.create_satellite(request)
+    }
+
+    fn dispatch_destroy(host: &dyn WindowingCallbackHost, view_id: FlutterRustViewId) {
+        if view_id > FlutterRustViewId::IMPLICIT {
+            host.destroy_window(view_id);
+        }
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn create_regular_window_callback(
+        _user_data: *mut c_void,
+        request: *const FlutterRustRegularWindowRequest,
+    ) -> FlutterRustViewId {
+        ACTIVE_WINDOWING_CONTEXT.with(|slot| {
+            let context = slot.borrow();
+            let Some(context) = context.as_ref() else {
+                return FlutterRustViewId(-1);
+            };
+            dispatch_create_regular(context, request)
         })
     }
 
@@ -366,43 +547,12 @@ mod linux {
         _user_data: *mut c_void,
         request: *const FlutterRustDialogWindowRequest,
     ) -> FlutterRustViewId {
-        if request.is_null() {
-            return FlutterRustViewId(-1);
-        }
-        // SAFETY: C++ borrows the complete request for this synchronous call.
-        let request = unsafe { &*request };
-        let Some(window_request) = decode_window_request(&request.window) else {
-            return FlutterRustViewId(-1);
-        };
-        let parent = (request.has_parent != 0).then_some(request.parent_view_id);
         ACTIVE_WINDOWING_CONTEXT.with(|slot| {
             let context = slot.borrow();
             let Some(context) = context.as_ref() else {
                 return FlutterRustViewId(-1);
             };
-            let Some(windows) = context.windows.upgrade() else {
-                return FlutterRustViewId(-1);
-            };
-            // SAFETY: the context pointer is installed only for the duration
-            // of a live ActiveEventLoop callback.
-            let event_loop = unsafe { &*context.event_loop };
-            let created = windows.borrow_mut().create_regular_view(
-                event_loop,
-                window_request,
-                NativeWindowKind::Dialog,
-                parent,
-            );
-            let Ok(created) = created else {
-                return FlutterRustViewId(-1);
-            };
-            add_cpp_shell_view(
-                created.shell,
-                created.view_id,
-                created.metrics,
-                created.presentation_callbacks,
-                created.event_proxy,
-            );
-            created.view_id
+            dispatch_create_dialog(context, request)
         })
     }
 
@@ -411,37 +561,26 @@ mod linux {
         _user_data: *mut c_void,
         request: *const FlutterRustPopupWindowRequest,
     ) -> FlutterRustViewId {
-        if request.is_null() {
-            return FlutterRustViewId(-1);
-        }
-        // SAFETY: C++ borrows the Dart-allocated request only for this
-        // synchronous callback.
-        let Some(request) = decode_popup_request(unsafe { &*request }) else {
-            return FlutterRustViewId(-1);
-        };
         ACTIVE_WINDOWING_CONTEXT.with(|slot| {
             let context = slot.borrow();
             let Some(context) = context.as_ref() else {
                 return FlutterRustViewId(-1);
             };
-            let Some(windows) = context.windows.upgrade() else {
+            dispatch_create_popup(context, request)
+        })
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn create_satellite_window_callback(
+        _user_data: *mut c_void,
+        request: *const FlutterRustSatelliteWindowRequest,
+    ) -> FlutterRustViewId {
+        ACTIVE_WINDOWING_CONTEXT.with(|slot| {
+            let context = slot.borrow();
+            let Some(context) = context.as_ref() else {
                 return FlutterRustViewId(-1);
             };
-            // SAFETY: installed only while winit is executing a callback with
-            // a live ActiveEventLoop.
-            let event_loop = unsafe { &*context.event_loop };
-            let created = windows.borrow_mut().create_popup_view(event_loop, request);
-            let Ok(created) = created else {
-                return FlutterRustViewId(-1);
-            };
-            add_cpp_shell_view(
-                created.shell,
-                created.view_id,
-                created.metrics,
-                created.presentation_callbacks,
-                created.event_proxy,
-            );
-            created.view_id
+            dispatch_create_satellite(context, request)
         })
     }
 
@@ -449,15 +588,8 @@ mod linux {
     extern "C" fn destroy_window_callback(_user_data: *mut c_void, view_id: FlutterRustViewId) {
         ACTIVE_WINDOWING_CONTEXT.with(|slot| {
             let context = slot.borrow();
-            let Some(windows) = context
-                .as_ref()
-                .and_then(|context| context.windows.upgrade())
-            else {
-                return;
-            };
-            let removals = { windows.borrow_mut().begin_remove_views(view_id) };
-            for (view_id, shell, event_proxy) in removals {
-                remove_cpp_shell_view(shell, view_id, event_proxy);
+            if let Some(context) = context.as_ref() {
+                dispatch_destroy(context, view_id);
             }
         });
     }
@@ -643,12 +775,24 @@ mod linux {
     }
 
     #[cfg(not(test))]
+    extern "C" fn set_window_parent_callback(
+        _user_data: *mut c_void,
+        view_id: FlutterRustViewId,
+        parent_view_id: FlutterRustViewId,
+    ) -> i32 {
+        with_window_registry(|windows| windows.reparent_satellite(view_id, parent_view_id))
+            .is_some_and(|result| result.is_ok())
+            .into()
+    }
+
+    #[cfg(not(test))]
     fn windowing_callbacks() -> FlutterRustWindowingCallbacks {
         FlutterRustWindowingCallbacks {
             user_data: std::ptr::null_mut(),
             create_regular_window: Some(create_regular_window_callback),
             create_dialog_window: Some(create_dialog_window_callback),
             create_popup_window: Some(create_popup_window_callback),
+            create_satellite_window: Some(create_satellite_window_callback),
             destroy_window: Some(destroy_window_callback),
             get_window_state: Some(get_window_state_callback),
             set_window_size: Some(set_window_size_callback),
@@ -659,6 +803,7 @@ mod linux {
             set_window_minimized: Some(set_window_minimized_callback),
             set_window_fullscreen: Some(set_window_fullscreen_callback),
             set_window_event_callback: Some(set_window_event_callback),
+            set_window_parent: Some(set_window_parent_callback),
         }
     }
 
@@ -2539,6 +2684,7 @@ mod linux {
 
     struct ViewWindow {
         view_id: FlutterRustViewId,
+        kind: NativeWindowKind,
         #[cfg_attr(test, allow(dead_code))]
         parent_view_id: Option<FlutterRustViewId>,
         // The broker must be destroyed before its native window. Keeping it
@@ -2567,13 +2713,13 @@ mod linux {
         event_proxy: HostEventSender,
     }
 
-    #[cfg(not(test))]
-    #[derive(Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum NativeWindowKind {
         Regular,
         Dialog,
         Tooltip,
         Popup,
+        Satellite,
     }
 
     impl Drop for ShellApplication {
@@ -2706,6 +2852,7 @@ mod linux {
                     window_id,
                     ViewWindow {
                         view_id: FlutterRustViewId::IMPLICIT,
+                        kind: NativeWindowKind::Regular,
                         parent_view_id: None,
                         gpu_broker,
                         window,
@@ -2766,6 +2913,8 @@ mod linux {
                         );
                         (metrics, windows.aggregate_window_state().0)
                     };
+                    #[cfg(not(test))]
+                    self.windows.borrow().update_satellite_visibility(view_id);
                     #[cfg(test)]
                     let _ = metrics;
                     #[cfg(not(test))]
@@ -3141,6 +3290,11 @@ mod linux {
             kind: NativeWindowKind,
             parent_view_id: Option<FlutterRustViewId>,
         ) -> Result<CreatedRegularView, String> {
+            let shrink_wrap = request.shrink_wrap;
+            let layout_constraints =
+                request
+                    .constraints
+                    .unwrap_or((0.0, 0.0, f64::INFINITY, f64::INFINITY));
             let shell = self
                 .shell
                 .ok_or_else(|| "Flutter shell is not running".to_owned())?;
@@ -3160,14 +3314,20 @@ mod linux {
                     if self.removing_views.contains(&parent_view_id) {
                         return Err("dialog parent is being destroyed".to_owned());
                     }
-                    Some(Arc::clone(
-                        &self
-                            .view(parent_view_id)
-                            .ok_or_else(|| {
-                                "dialog parent does not belong to this engine".to_owned()
-                            })?
-                            .window,
-                    ))
+                    let parent = self
+                        .view(parent_view_id)
+                        .ok_or_else(|| "window parent does not belong to this engine".to_owned())?;
+                    if kind == NativeWindowKind::Satellite
+                        && !matches!(
+                            parent.kind,
+                            NativeWindowKind::Regular | NativeWindowKind::Dialog
+                        )
+                    {
+                        return Err(
+                            "satellite parent must be a regular or dialog window".to_owned()
+                        );
+                    }
+                    Some(Arc::clone(&parent.window))
                 }
                 None => None,
             };
@@ -3178,6 +3338,10 @@ mod linux {
             if matches!(kind, NativeWindowKind::Dialog) {
                 attributes = attributes.with_platform_attributes(Box::new(
                     WindowAttributesX11::default().with_x11_window_type(vec![WindowType::Dialog]),
+                ));
+            } else if matches!(kind, NativeWindowKind::Satellite) {
+                attributes = attributes.with_platform_attributes(Box::new(
+                    WindowAttributesX11::default().with_x11_window_type(vec![WindowType::Utility]),
                 ));
             }
             if let Some((min_width, min_height, max_width, max_height)) = request.constraints {
@@ -3206,11 +3370,22 @@ mod linux {
                 .ok_or_else(|| "Flutter view ID space exhausted".to_owned())?;
             let window_id = window.id();
             let metrics = WindowMetrics::from_window(window.as_ref(), window.scale_factor());
+            let metrics = if shrink_wrap {
+                metrics.with_constraints(
+                    layout_constraints.0,
+                    layout_constraints.1,
+                    layout_constraints.2,
+                    layout_constraints.3,
+                )
+            } else {
+                metrics
+            };
             let callbacks = gpu_broker.presentation_callbacks();
             self.views.insert(
                 window_id,
                 ViewWindow {
                     view_id,
+                    kind,
                     parent_view_id,
                     gpu_broker,
                     window,
@@ -3296,6 +3471,7 @@ mod linux {
                 window_id,
                 ViewWindow {
                     view_id,
+                    kind: request.kind,
                     parent_view_id: Some(request.parent_view_id),
                     gpu_broker,
                     window,
@@ -3314,6 +3490,148 @@ mod linux {
                 presentation_callbacks: callbacks,
                 event_proxy: self.event_proxy.clone(),
             })
+        }
+
+        #[cfg(not(test))]
+        fn create_satellite_view(
+            &mut self,
+            event_loop: &dyn ActiveEventLoop,
+            request: NativeSatelliteRequest,
+        ) -> Result<CreatedRegularView, String> {
+            let NativeSatelliteRequest {
+                window,
+                parent_view_id,
+                anchor_rect,
+                parent_anchor,
+                gravity,
+                offset,
+                _constraint_adjustment: _,
+            } = request;
+            let created = self.create_regular_view(
+                event_loop,
+                window,
+                NativeWindowKind::Satellite,
+                Some(parent_view_id),
+            )?;
+            self.position_satellite(
+                created.view_id,
+                parent_view_id,
+                anchor_rect,
+                parent_anchor,
+                gravity,
+                offset,
+            );
+            Ok(created)
+        }
+
+        #[cfg(not(test))]
+        fn position_satellite(
+            &self,
+            view_id: FlutterRustViewId,
+            parent_view_id: FlutterRustViewId,
+            anchor_rect: Option<(f64, f64, f64, f64)>,
+            parent_anchor: PopupAnchor,
+            gravity: PopupAnchor,
+            offset: (f64, f64),
+        ) {
+            let Some(child) = self.view(view_id).map(|view| Arc::clone(&view.window)) else {
+                return;
+            };
+            let Some(parent) = self
+                .view(parent_view_id)
+                .map(|view| Arc::clone(&view.window))
+            else {
+                return;
+            };
+            // Standard Wayland deliberately does not expose absolute toplevel
+            // placement. X11 and other backends that do expose it honor the
+            // initial WindowPositioner here.
+            let Ok(parent_position) = parent.outer_position() else {
+                return;
+            };
+            let scale = parent.scale_factor();
+            let parent_position = parent_position.to_logical::<f64>(scale);
+            let parent_size = parent.outer_size().to_logical::<f64>(scale);
+            let (x, y, width, height) =
+                anchor_rect.unwrap_or((0.0, 0.0, parent_size.width, parent_size.height));
+            let (anchor_x, anchor_y) = anchor_point(x, y, width, height, parent_anchor);
+            let child_size = child.outer_size().to_logical::<f64>(child.scale_factor());
+            let (child_x, child_y) = child_origin_offset(child_size, gravity);
+            child.set_outer_position(winit::dpi::Position::Logical(
+                winit::dpi::LogicalPosition::new(
+                    parent_position.x + anchor_x + child_x + offset.0,
+                    parent_position.y + anchor_y + child_y + offset.1,
+                ),
+            ));
+        }
+
+        #[cfg(not(test))]
+        fn reparent_satellite(
+            &mut self,
+            view_id: FlutterRustViewId,
+            parent_view_id: FlutterRustViewId,
+        ) -> Result<(), String> {
+            if view_id == parent_view_id || parent_view_id < FlutterRustViewId::IMPLICIT {
+                return Err("invalid satellite parent".to_owned());
+            }
+            let child = self
+                .view(view_id)
+                .ok_or_else(|| "satellite does not belong to this engine".to_owned())?;
+            if child.kind != NativeWindowKind::Satellite {
+                return Err("only satellite windows can be reparented".to_owned());
+            }
+            let mut ancestor = Some(parent_view_id);
+            while let Some(candidate) = ancestor {
+                if candidate == view_id {
+                    return Err("satellite reparenting would create a cycle".to_owned());
+                }
+                ancestor = self.view(candidate).and_then(|view| view.parent_view_id);
+            }
+            let parent_window = {
+                let parent = self
+                    .view(parent_view_id)
+                    .ok_or_else(|| "satellite parent does not belong to this engine".to_owned())?;
+                if !matches!(
+                    parent.kind,
+                    NativeWindowKind::Regular | NativeWindowKind::Dialog
+                ) {
+                    return Err("satellite parent must be a regular or dialog window".to_owned());
+                }
+                Arc::clone(&parent.window)
+            };
+            let window_id = *self
+                .view_windows
+                .get(&view_id)
+                .ok_or_else(|| "satellite view index is missing".to_owned())?;
+            let child = self
+                .views
+                .get_mut(&window_id)
+                .ok_or_else(|| "satellite native window is missing".to_owned())?;
+            set_native_dialog_parent(child.window.as_ref(), parent_window.as_ref())?;
+            child.parent_view_id = Some(parent_view_id);
+            child._parent_window = Some(parent_window);
+            self.update_satellite_visibility(parent_view_id);
+            Ok(())
+        }
+
+        #[cfg(not(test))]
+        fn update_satellite_visibility(&self, parent_view_id: FlutterRustViewId) {
+            let Some(parent) = self.view(parent_view_id) else {
+                return;
+            };
+            let hidden = parent.window.is_maximized() || parent.window.fullscreen().is_some();
+            let children = self
+                .views
+                .values()
+                .filter(|view| {
+                    view.kind == NativeWindowKind::Satellite
+                        && view.parent_view_id == Some(parent_view_id)
+                })
+                .map(|view| Arc::clone(&view.window))
+                .collect::<Vec<_>>();
+            for window in children {
+                window.set_visible(!hidden);
+            }
         }
 
         fn take_view_state(&mut self, view_id: FlutterRustViewId) -> Option<RemovedViewState> {
@@ -3381,12 +3699,10 @@ mod linux {
         }
     }
 
-    #[cfg(not(test))]
     fn valid_window_size(width: f64, height: f64) -> bool {
         width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0
     }
 
-    #[cfg(not(test))]
     fn valid_constraints(min_width: f64, min_height: f64, max_width: f64, max_height: f64) -> bool {
         min_width.is_finite()
             && min_height.is_finite()
@@ -3404,6 +3720,36 @@ mod linux {
             f64::from(i32::MAX)
         } else {
             value
+        }
+    }
+
+    #[cfg(not(test))]
+    fn anchor_point(x: f64, y: f64, width: f64, height: f64, anchor: PopupAnchor) -> (f64, f64) {
+        match anchor {
+            PopupAnchor::None => (x + width / 2.0, y + height / 2.0),
+            PopupAnchor::Top => (x + width / 2.0, y),
+            PopupAnchor::Bottom => (x + width / 2.0, y + height),
+            PopupAnchor::Left => (x, y + height / 2.0),
+            PopupAnchor::Right => (x + width, y + height / 2.0),
+            PopupAnchor::TopLeft => (x, y),
+            PopupAnchor::BottomLeft => (x, y + height),
+            PopupAnchor::TopRight => (x + width, y),
+            PopupAnchor::BottomRight => (x + width, y + height),
+        }
+    }
+
+    #[cfg(not(test))]
+    fn child_origin_offset(size: winit::dpi::LogicalSize<f64>, gravity: PopupAnchor) -> (f64, f64) {
+        match gravity {
+            PopupAnchor::None => (-size.width / 2.0, -size.height / 2.0),
+            PopupAnchor::Top => (-size.width / 2.0, -size.height),
+            PopupAnchor::Bottom => (-size.width / 2.0, 0.0),
+            PopupAnchor::Left => (-size.width, -size.height / 2.0),
+            PopupAnchor::Right => (0.0, -size.height / 2.0),
+            PopupAnchor::TopLeft => (-size.width, -size.height),
+            PopupAnchor::BottomLeft => (-size.width, 0.0),
+            PopupAnchor::TopRight => (0.0, -size.height),
+            PopupAnchor::BottomRight => (0.0, 0.0),
         }
     }
 
@@ -3546,6 +3892,212 @@ mod linux {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[derive(Debug, PartialEq, Eq)]
+        struct RecordedWindowCreation {
+            kind: NativeWindowKind,
+            parent: Option<FlutterRustViewId>,
+            title: String,
+        }
+
+        #[derive(Debug, PartialEq, Eq)]
+        struct RecordedPopupCreation {
+            kind: NativeWindowKind,
+            parent: FlutterRustViewId,
+            constraint_adjustment: u32,
+        }
+
+        #[derive(Debug, PartialEq, Eq)]
+        struct RecordedSatelliteCreation {
+            parent: FlutterRustViewId,
+            has_anchor_rect: bool,
+            constraint_adjustment: u32,
+        }
+
+        #[derive(Default)]
+        struct FakeWindowingHost {
+            windows: RefCell<Vec<RecordedWindowCreation>>,
+            popups: RefCell<Vec<RecordedPopupCreation>>,
+            satellites: RefCell<Vec<RecordedSatelliteCreation>>,
+            destroyed: RefCell<Vec<FlutterRustViewId>>,
+        }
+
+        impl WindowingCallbackHost for FakeWindowingHost {
+            fn create_window(
+                &self,
+                request: NativeWindowRequest,
+                kind: NativeWindowKind,
+                parent: Option<FlutterRustViewId>,
+            ) -> FlutterRustViewId {
+                self.windows.borrow_mut().push(RecordedWindowCreation {
+                    kind,
+                    parent,
+                    title: request.title,
+                });
+                FlutterRustViewId(41)
+            }
+
+            fn create_popup(&self, request: NativePopupRequest) -> FlutterRustViewId {
+                self.popups.borrow_mut().push(RecordedPopupCreation {
+                    kind: request.kind,
+                    parent: request.parent_view_id,
+                    constraint_adjustment: request.constraint_adjustment,
+                });
+                FlutterRustViewId(42)
+            }
+
+            fn create_satellite(&self, request: NativeSatelliteRequest) -> FlutterRustViewId {
+                self.satellites
+                    .borrow_mut()
+                    .push(RecordedSatelliteCreation {
+                        parent: request.parent_view_id,
+                        has_anchor_rect: request.anchor_rect.is_some(),
+                        constraint_adjustment: request._constraint_adjustment,
+                    });
+                FlutterRustViewId(43)
+            }
+
+            fn destroy_window(&self, view_id: FlutterRustViewId) {
+                self.destroyed.borrow_mut().push(view_id);
+            }
+        }
+
+        fn regular_request(title: &[u8]) -> FlutterRustRegularWindowRequest {
+            FlutterRustRegularWindowRequest {
+                has_size: 1,
+                width: 320.0,
+                height: 240.0,
+                title: title.as_ptr(),
+                title_length: title.len() as u64,
+                resizable: 1,
+                has_constraints: 0,
+                min_width: 0.0,
+                min_height: 0.0,
+                max_width: f64::INFINITY,
+                max_height: f64::INFINITY,
+            }
+        }
+
+        #[test]
+        fn window_callbacks_decode_through_an_injected_host() {
+            let host = FakeWindowingHost::default();
+            let regular = regular_request(b"typed regular");
+            assert_eq!(
+                dispatch_create_regular(&host, &regular),
+                FlutterRustViewId(41)
+            );
+
+            let dialog = FlutterRustDialogWindowRequest {
+                window: regular_request(b"typed dialog"),
+                has_parent: 1,
+                parent_view_id: FlutterRustViewId(9),
+            };
+            assert_eq!(
+                dispatch_create_dialog(&host, &dialog),
+                FlutterRustViewId(41)
+            );
+
+            let windows = host.windows.borrow();
+            assert_eq!(
+                windows[0],
+                RecordedWindowCreation {
+                    kind: NativeWindowKind::Regular,
+                    parent: None,
+                    title: "typed regular".to_owned(),
+                }
+            );
+            assert_eq!(
+                windows[1],
+                RecordedWindowCreation {
+                    kind: NativeWindowKind::Dialog,
+                    parent: Some(FlutterRustViewId(9)),
+                    title: "typed dialog".to_owned(),
+                }
+            );
+        }
+
+        #[test]
+        fn popup_and_destroy_callbacks_validate_before_dispatch() {
+            let host = FakeWindowingHost::default();
+            let mut popup = FlutterRustPopupWindowRequest {
+                kind: 1,
+                parent_view_id: FlutterRustViewId(9),
+                min_width: 0.0,
+                min_height: 0.0,
+                max_width: f64::INFINITY,
+                max_height: f64::INFINITY,
+                anchor_x: 10.0,
+                anchor_y: 20.0,
+                anchor_width: 30.0,
+                anchor_height: 40.0,
+                parent_anchor: 6,
+                child_anchor: 5,
+                offset_x: 2.0,
+                offset_y: 3.0,
+                constraint_adjustment: 0x3f,
+            };
+            assert_eq!(dispatch_create_popup(&host, &popup), FlutterRustViewId(42));
+            assert_eq!(
+                host.popups.borrow()[0],
+                RecordedPopupCreation {
+                    kind: NativeWindowKind::Popup,
+                    parent: FlutterRustViewId(9),
+                    constraint_adjustment: 0x3f,
+                }
+            );
+
+            popup.kind = 99;
+            assert_eq!(dispatch_create_popup(&host, &popup), FlutterRustViewId(-1));
+            assert_eq!(host.popups.borrow().len(), 1);
+            assert_eq!(
+                dispatch_create_regular(&host, std::ptr::null()),
+                FlutterRustViewId(-1)
+            );
+
+            dispatch_destroy(&host, FlutterRustViewId::IMPLICIT);
+            dispatch_destroy(&host, FlutterRustViewId(42));
+            assert_eq!(&*host.destroyed.borrow(), &[FlutterRustViewId(42)]);
+        }
+
+        #[test]
+        fn satellite_callback_decodes_through_an_injected_host() {
+            let host = FakeWindowingHost::default();
+            let mut satellite = FlutterRustSatelliteWindowRequest {
+                window: regular_request(b"typed satellite"),
+                parent_view_id: FlutterRustViewId(9),
+                has_anchor_rect: 1,
+                anchor_x: 10.0,
+                anchor_y: 20.0,
+                anchor_width: 30.0,
+                anchor_height: 40.0,
+                parent_anchor: 6,
+                child_anchor: 5,
+                offset_x: 2.0,
+                offset_y: 3.0,
+                constraint_adjustment: 0x3f,
+            };
+
+            assert_eq!(
+                dispatch_create_satellite(&host, &satellite),
+                FlutterRustViewId(43)
+            );
+            assert_eq!(
+                host.satellites.borrow()[0],
+                RecordedSatelliteCreation {
+                    parent: FlutterRustViewId(9),
+                    has_anchor_rect: true,
+                    constraint_adjustment: 0x3f,
+                }
+            );
+
+            satellite.parent_view_id = FlutterRustViewId::IMPLICIT;
+            assert_eq!(
+                dispatch_create_satellite(&host, &satellite),
+                FlutterRustViewId(-1)
+            );
+            assert_eq!(host.satellites.borrow().len(), 1);
+        }
+
         #[test]
         fn has_a_stable_default_window_title() {
             assert_eq!(ShellConfig::default().title, "Flutter Rust Shell");

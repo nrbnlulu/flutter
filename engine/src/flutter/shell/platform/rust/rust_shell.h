@@ -82,6 +82,8 @@ class RustShell final {
       const FlutterRustDialogWindowRequest* request);
   FlutterRustViewId CreatePopupWindow(
       const FlutterRustPopupWindowRequest* request);
+  FlutterRustViewId CreateSatelliteWindow(
+      const FlutterRustSatelliteWindowRequest* request);
   void DestroyWindow(FlutterRustViewId view_id);
   bool GetWindowState(FlutterRustViewId view_id, FlutterRustWindowState* state);
   void SetWindowSize(FlutterRustViewId view_id, double width, double height);
@@ -99,6 +101,8 @@ class RustShell final {
   void SetWindowMinimized(FlutterRustViewId view_id, bool minimized);
   void SetWindowFullscreen(FlutterRustViewId view_id, bool fullscreen);
   void SetWindowEventCallback(FlutterRustWindowEventCallback callback);
+  bool SetWindowParent(FlutterRustViewId view_id,
+                       FlutterRustViewId parent_view_id);
 
  private:
   RustShell(std::unique_ptr<ThreadHost> thread_host,
