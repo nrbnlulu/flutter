@@ -31,9 +31,13 @@ namespace flutter {
 namespace {
 
 ViewportMetrics ToViewportMetrics(const FlutterRustViewMetrics& metrics) {
-  return ViewportMetrics(metrics.pixel_ratio, metrics.width, metrics.height,
-                         /*p_physical_touch_slop=*/-1.0,
-                         /*display_id=*/0);
+  ViewportMetrics result(metrics.pixel_ratio, metrics.width, metrics.height,
+                         /*p_physical_touch_slop=*/-1.0, /*display_id=*/0);
+  result.physical_min_width_constraint = metrics.min_width;
+  result.physical_max_width_constraint = metrics.max_width;
+  result.physical_min_height_constraint = metrics.min_height;
+  result.physical_max_height_constraint = metrics.max_height;
+  return result;
 }
 
 void CompleteViewOperation(FlutterRustViewOperationCallbacks callbacks,
@@ -346,6 +350,15 @@ FlutterRustViewId RustShell::CreateDialogWindow(
       windowing_callbacks_.user_data, request);
 }
 
+FlutterRustViewId RustShell::CreatePopupWindow(
+    const FlutterRustPopupWindowRequest* request) {
+  if (!request || !windowing_callbacks_.create_popup_window) {
+    return -1;
+  }
+  return windowing_callbacks_.create_popup_window(
+      windowing_callbacks_.user_data, request);
+}
+
 void RustShell::DestroyWindow(FlutterRustViewId view_id) {
   if (view_id <= kFlutterImplicitViewId ||
       !windowing_callbacks_.destroy_window) {
@@ -652,6 +665,16 @@ extern "C" FlutterRustViewId FlutterRustShellWindowCreateDialog(
     return -1;
   }
   return reinterpret_cast<flutter::RustShell*>(engine_id)->CreateDialogWindow(
+      request);
+}
+
+extern "C" FlutterRustViewId FlutterRustShellWindowCreatePopup(
+    int64_t engine_id,
+    const FlutterRustPopupWindowRequest* request) {
+  if (engine_id == 0) {
+    return -1;
+  }
+  return reinterpret_cast<flutter::RustShell*>(engine_id)->CreatePopupWindow(
       request);
 }
 

@@ -80,6 +80,8 @@ class RustShell final {
       const FlutterRustRegularWindowRequest* request);
   FlutterRustViewId CreateDialogWindow(
       const FlutterRustDialogWindowRequest* request);
+  FlutterRustViewId CreatePopupWindow(
+      const FlutterRustPopupWindowRequest* request);
   void DestroyWindow(FlutterRustViewId view_id);
   bool GetWindowState(FlutterRustViewId view_id, FlutterRustWindowState* state);
   void SetWindowSize(FlutterRustViewId view_id, double width, double height);

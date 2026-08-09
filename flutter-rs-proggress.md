@@ -14,7 +14,7 @@ input/IME plumbing and compositor-driven Wayland vsync are implemented and
 validated. The current milestone is single-engine multi-view: one Flutter
 engine and Dart isolate per application, with one native winit window and GPU
 presentation surface per Flutter view. Regular windows and required application
-shutdown now work end to end; additional window kinds, main-thread dispatch,
+shutdown now work end to end; satellite windows, main-thread dispatch,
 and deterministic startup/shutdown coverage follow that milestone.
 
 ## Status
@@ -24,7 +24,7 @@ and deterministic startup/shutdown coverage follow that milestone.
 | Existing shells remain available | Complete | The Rust target is opt-in and is not added to the existing platform-selection group. |
 | In-tree Rust platform target | Complete | `//flutter/shell/platform/rust:flutter_rust_shell` builds. |
 | Internal PlatformView adapter | Complete | `PlatformViewRust` builds and its focused tests pass. |
-| Rust/C++ ABI | Multi-view regular-window extension complete | ABI v5 adds typed view IDs, per-view metrics, pointer and focus routing, asynchronous add/remove-view operations, per-view Vulkan presentation registration, and a typed synchronous regular-window control surface with asynchronous lifecycle events. |
+| Rust/C++ ABI | Multi-view child-window extension complete | ABI v6 adds typed view IDs, loose per-view layout constraints, pointer and focus routing, asynchronous add/remove-view operations, per-view Vulkan presentation registration, and typed synchronous regular, dialog, tooltip, and popup creation surfaces with asynchronous lifecycle events. |
 | Rust workspace and `flutter-plugin-sdk` | Complete for foundation | Workspace uses Rust edition 2024, concrete toolchain 1.93.1, and passes its tests. |
 | Winit event loop | Complete for phase 0 | Linux host owns the window and event loop, dispatches Flutter task batons, and drives the Rust-owned Vulkan presentation loop end to end. |
 | Merged UI/platform task runner | Complete for phase 0 | `RustTaskRunner` queues batons for the Rust host, winit returns due batons through opaque C++ handles, and it now also drives Dart's per-task microtask flush (see below). |
@@ -36,7 +36,7 @@ and deterministic startup/shutdown coverage follow that milestone.
 | Keyboard input | Complete for phase 1 raw events | Winit physical/logical keys, down/up/repeat, characters, modifier sides, and synthesized state cross the private ABI as Flutter `KeyData` packets. |
 | Text input and IME | Complete for phase 1 plumbing | The Rust host handles the standard `flutter/textinput` protocol with typed commands and validated UTF-16 editing state, controls winit IME activation/cursor geometry, translates preedit/commit events, and sends `TextInputClient.updateEditingState` back to Flutter. Ordinary typing, Backspace, and Ctrl+A were verified interactively; a legacy `flutter/keyevent` terminator keeps Flutter's modern key-data queue moving. |
 | Vsync | Complete for the Linux Wayland host | Flutter's waiter requests a winit redraw through the private ABI. Wayland `RedrawRequested` pulses are throttled by compositor frame callbacks registered immediately before actual wgpu presentation; C++ timestamps each pulse in the FML clock domain and uses the active monitor's nominal interval as its target. Non-Wayland backends retain `VsyncWaiterFallback`. |
-| Multi-window | Regular and dialog windows working end to end | View `0` remains the implicit engine view. Positive-ID winit windows share one engine, root isolate, plugin registry, task runner, and wgpu device while owning independent surfaces, metrics, input, and presentation state. Flutter's experimental `WindowController`, `DialogWindowController`, and `WindowManager` APIs select the Rust owner automatically in the Rust runner. Parented dialogs use native Wayland/X11 transient relationships and are removed with their parent. Popup, tooltip, and satellite window kinds remain unsupported. |
+| Multi-window | Regular, dialog, tooltip, and popup windows implemented | View `0` remains the implicit engine view. Positive-ID winit windows share one engine, root isolate, plugin registry, task runner, and wgpu device while owning independent surfaces, metrics, input, and presentation state. Flutter's experimental window controllers select the Rust owner automatically in the Rust runner. Dialogs use native transient relationships. On Wayland, tooltip and popup views use real compositor-positioned `xdg_popup` roles; popup grabs are serial-bound and compositor dismissal enters the normal asynchronous Flutter view-removal path. Satellite windows remain unsupported. |
 
 ## Implementation log
 
@@ -351,6 +351,25 @@ and deterministic startup/shutdown coverage follow that milestone.
   host retains the parent's native window handle for the child's lifetime and
   removes descendants before their parent, so asynchronous Flutter view
   teardown cannot leave a dangling compositor relationship.
+- Migrated the host from winit 0.30 to exact `0.31.0-beta.2`, including the
+  beta's object-safe windows, surface lifecycle callback, unified pointer
+  events, and untyped wake proxy. Kept a narrowly vendored copy of only
+  `winit-wayland` so the Rust shell can add the missing role-aware constructor
+  without forking the rest of winit.
+- Bumped the private ABI to v6 and added a validated popup request carrying
+  kind, parent view, layout constraints, anchor rectangle, parent/child
+  anchors, offset, and the six xdg constraint-adjustment flags. Dart enum
+  values are checked before becoming Rust enums, and parents must be live
+  views in the same engine.
+- Implemented real Wayland `xdg_positioner`/`xdg_popup` roles for tooltip and
+  popup controllers. Render and input use the popup's actual `wl_surface`;
+  interactive popups use the pointer's latest nonzero button serial for
+  `xdg_popup.grab`, and compositor `popup_done` requests normal controller
+  destruction.
+- Carried loose min/max viewport constraints into Flutter instead of making
+  child views permanently tight at their bootstrap surface size. This lets
+  tooltip and popup widget trees choose their content dimensions, which flow
+  through the existing layer-tree-sized Vulkan acquire path.
 
 ## Validation
 
@@ -420,14 +439,21 @@ and deterministic startup/shutdown coverage follow that milestone.
   one engine. Hyprland treated the Wayland transient as a native floating
   dialog; closing the parent removed the modal child while the modeless dialog
   remained alive. The temporary source was removed after validation.
+- Rebuilt and ran the unmodified `examples/multiple_windows` app after the
+  winit migration and ABI v6 change. The regular view remained live, and its
+  Show Popup control created a compositor-positioned, independently rendered
+  child surface whose content size exceeded the one-pixel bootstrap size.
+- Re-ran `task stress-rust-shell` after the winit 0.31 migration: keyboard
+  frame liveness, 500 compositor resizes, hide/restore, fullscreen changes,
+  immediate teardown, and Vulkan validation all passed.
 
 ## Next implementation steps (phase 1)
 
 1. Add automated framework/host coverage for regular-window create, state,
    delegated close, and asynchronous destruction rather than relying only on
    the end-to-end compositor smoke test.
-2. Implement the remaining native window kinds required by the reference app,
-   starting with popup/tooltip positioning; satellite windows follow.
+2. Implement satellite windows, the remaining native window kind required by
+   the reference app.
 3. Implement the cancelable `System.requestAppExit` response round trip.
 4. Complete interactive non-Latin composition checks with a configured system
    IME.

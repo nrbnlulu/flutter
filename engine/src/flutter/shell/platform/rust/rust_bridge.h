@@ -19,7 +19,7 @@ extern "C" {
 
 // This private ABI is lockstep-versioned with the Flutter fork. It is not the
 // Flutter Embedder API and is never exposed to application plugins.
-#define FLUTTER_RUST_SHELL_ABI_VERSION 5u
+#define FLUTTER_RUST_SHELL_ABI_VERSION 6u
 #define FLUTTER_RUST_PLUGIN_SDK_API_VERSION 1u
 
 typedef struct FlutterRustShellAbi {
@@ -33,6 +33,10 @@ typedef int64_t FlutterRustViewId;
 typedef struct FlutterRustViewMetrics {
   double width;
   double height;
+  double min_width;
+  double max_width;
+  double min_height;
+  double max_height;
   double pixel_ratio;
   double display_width;
   double display_height;
@@ -69,6 +73,29 @@ typedef struct FlutterRustDialogWindowRequest {
   FlutterRustViewId parent_view_id;
 } FlutterRustDialogWindowRequest;
 
+typedef enum FlutterRustPopupWindowKind {
+  kFlutterRustPopupWindowKindTooltip = 0,
+  kFlutterRustPopupWindowKindPopup = 1,
+} FlutterRustPopupWindowKind;
+
+typedef struct FlutterRustPopupWindowRequest {
+  int32_t kind;
+  FlutterRustViewId parent_view_id;
+  double min_width;
+  double min_height;
+  double max_width;
+  double max_height;
+  double anchor_x;
+  double anchor_y;
+  double anchor_width;
+  double anchor_height;
+  int32_t parent_anchor;
+  int32_t child_anchor;
+  double offset_x;
+  double offset_y;
+  uint32_t constraint_adjustment;
+} FlutterRustPopupWindowRequest;
+
 typedef struct FlutterRustWindowState {
   double width;
   double height;
@@ -93,6 +120,9 @@ typedef FlutterRustViewId (*FlutterRustCreateRegularWindowCallback)(
 typedef FlutterRustViewId (*FlutterRustCreateDialogWindowCallback)(
     void* user_data,
     const FlutterRustDialogWindowRequest* request);
+typedef FlutterRustViewId (*FlutterRustCreatePopupWindowCallback)(
+    void* user_data,
+    const FlutterRustPopupWindowRequest* request);
 typedef void (*FlutterRustDestroyWindowCallback)(void* user_data,
                                                  FlutterRustViewId view_id);
 typedef int (*FlutterRustGetWindowStateCallback)(void* user_data,
@@ -125,6 +155,7 @@ typedef struct FlutterRustWindowingCallbacks {
   void* user_data;
   FlutterRustCreateRegularWindowCallback create_regular_window;
   FlutterRustCreateDialogWindowCallback create_dialog_window;
+  FlutterRustCreatePopupWindowCallback create_popup_window;
   FlutterRustDestroyWindowCallback destroy_window;
   FlutterRustGetWindowStateCallback get_window_state;
   FlutterRustSetWindowSizeCallback set_window_size;
@@ -339,6 +370,9 @@ FLUTTER_RUST_SHELL_EXPORT FlutterRustViewId FlutterRustShellWindowCreateRegular(
 FLUTTER_RUST_SHELL_EXPORT FlutterRustViewId FlutterRustShellWindowCreateDialog(
     int64_t engine_id,
     const FlutterRustDialogWindowRequest* request);
+FLUTTER_RUST_SHELL_EXPORT FlutterRustViewId
+FlutterRustShellWindowCreatePopup(int64_t engine_id,
+                                  const FlutterRustPopupWindowRequest* request);
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowDestroy(
     int64_t engine_id,
     FlutterRustViewId view_id);

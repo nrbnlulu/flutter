@@ -20,8 +20,7 @@ pollster = "=0.4.0"
 # entire upstream wgpu dependency graph coherent by depending on the fixed
 # workspace revision: https://github.com/gfx-rs/wgpu/pull/9878
 wgpu = { git = "https://github.com/gfx-rs/wgpu.git", rev = "014d9e84813a2946febfa4888694c0b70565b2f5", default-features = false, features = ["vulkan", "wgsl"] }
-winit = { version = "=0.30.13", default-features = false, features = [
-  "rwh_06",
+winit = { version = "=0.31.0-beta.2", default-features = false, features = [
   "wayland",
   "wayland-csd-adwaita",
   "wayland-dlopen",

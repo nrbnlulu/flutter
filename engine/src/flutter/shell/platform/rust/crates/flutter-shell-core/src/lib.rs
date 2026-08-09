@@ -12,7 +12,7 @@ use flutter_plugin_sdk::PLUGIN_SDK_API_VERSION;
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 5;
+pub const SHELL_ABI_VERSION: u32 = 6;
 
 /// Engine-scoped identity of one Flutter view/native window pair.
 #[repr(transparent)]
@@ -29,6 +29,10 @@ impl FlutterRustViewId {
 pub struct FlutterRustViewMetrics {
     pub width: f64,
     pub height: f64,
+    pub min_width: f64,
+    pub max_width: f64,
+    pub min_height: f64,
+    pub max_height: f64,
     pub pixel_ratio: f64,
     pub display_width: f64,
     pub display_height: f64,
@@ -66,6 +70,33 @@ pub struct FlutterRustDialogWindowRequest {
     pub parent_view_id: FlutterRustViewId,
 }
 
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlutterRustPopupWindowKind {
+    Tooltip = 0,
+    Popup = 1,
+}
+
+/// Synchronous compositor-positioned child-window request.
+#[repr(C)]
+pub struct FlutterRustPopupWindowRequest {
+    pub kind: i32,
+    pub parent_view_id: FlutterRustViewId,
+    pub min_width: f64,
+    pub min_height: f64,
+    pub max_width: f64,
+    pub max_height: f64,
+    pub anchor_x: f64,
+    pub anchor_y: f64,
+    pub anchor_width: f64,
+    pub anchor_height: f64,
+    pub parent_anchor: i32,
+    pub child_anchor: i32,
+    pub offset_x: f64,
+    pub offset_y: f64,
+    pub constraint_adjustment: u32,
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FlutterRustWindowState {
@@ -95,6 +126,9 @@ pub struct FlutterRustWindowingCallbacks {
     >,
     pub create_dialog_window: Option<
         extern "C" fn(*mut c_void, *const FlutterRustDialogWindowRequest) -> FlutterRustViewId,
+    >,
+    pub create_popup_window: Option<
+        extern "C" fn(*mut c_void, *const FlutterRustPopupWindowRequest) -> FlutterRustViewId,
     >,
     pub destroy_window: Option<extern "C" fn(*mut c_void, FlutterRustViewId)>,
     pub get_window_state:

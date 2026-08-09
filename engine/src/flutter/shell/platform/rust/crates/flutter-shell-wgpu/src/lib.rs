@@ -44,7 +44,7 @@ mod linux {
         surface: wgpu::Surface<'static>,
         // Retained both for the unsafe surface lifetime and so presentation
         // can notify winit immediately before the Vulkan WSI commit.
-        window: std::sync::Arc<winit::window::Window>,
+        window: std::sync::Arc<dyn winit::window::Window>,
         surface_state: Mutex<SurfaceState>,
         presentation_stats: Option<Mutex<PresentationStats>>,
     }
@@ -127,7 +127,7 @@ mod linux {
 
     impl GpuContext {
         fn new_for_window(
-            window: &std::sync::Arc<winit::window::Window>,
+            window: &std::sync::Arc<dyn winit::window::Window>,
         ) -> Result<std::sync::Arc<Self>, String> {
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::VULKAN,
@@ -137,11 +137,8 @@ mod linux {
             // application's initial native window.
             let surface = unsafe {
                 instance.create_surface_unsafe(
-                    wgpu::SurfaceTargetUnsafe::from_display_and_window(
-                        window.as_ref(),
-                        window.as_ref(),
-                    )
-                    .map_err(|error| error.to_string())?,
+                    wgpu::SurfaceTargetUnsafe::from_display_and_window(window, window)
+                        .map_err(|error| error.to_string())?,
                 )
             }
             .map_err(|error| error.to_string())?;
@@ -172,7 +169,7 @@ mod linux {
 
     impl GpuBroker {
         pub fn new(
-            window: std::sync::Arc<winit::window::Window>,
+            window: std::sync::Arc<dyn winit::window::Window>,
             presentation_stats_path: Option<PathBuf>,
         ) -> Result<Self, String> {
             let context = GpuContext::new_for_window(&window)?;
@@ -181,18 +178,15 @@ mod linux {
 
         pub fn from_context(
             context: std::sync::Arc<GpuContext>,
-            window: std::sync::Arc<winit::window::Window>,
+            window: std::sync::Arc<dyn winit::window::Window>,
             presentation_stats_path: Option<PathBuf>,
         ) -> Result<Self, String> {
             // SAFETY: the broker retains the window until after this surface
             // has been destroyed.
             let surface = unsafe {
                 context.instance.create_surface_unsafe(
-                    wgpu::SurfaceTargetUnsafe::from_display_and_window(
-                        window.as_ref(),
-                        window.as_ref(),
-                    )
-                    .map_err(|error| error.to_string())?,
+                    wgpu::SurfaceTargetUnsafe::from_display_and_window(&window, &window)
+                        .map_err(|error| error.to_string())?,
                 )
             }
             .map_err(|error| error.to_string())?;
