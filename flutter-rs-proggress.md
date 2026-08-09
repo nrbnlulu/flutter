@@ -285,6 +285,11 @@ startup/shutdown coverage.
   swapchain images now return to wgpu in `PRESENT_SRC_KHR`, Impeller's incoming
   render-pass dependency includes early depth/stencil writes, and resize
   configurations are coalesced and applied only at a safe acquire boundary.
+- Frame-liveness validation then exposed a resize-generation race: a newer
+  deferred swapchain size could be paired with depth/stencil attachments from
+  an older Flutter layer tree. The acquire callback now treats Flutter's
+  requested dimensions as the current frame generation, configures exactly
+  that size, and preserves a newer winit resize for the following frame.
 - Pinned the complete wgpu workspace to upstream revision
   `014d9e84813a2946febfa4888694c0b70565b2f5` until the fix after 30.0.0 is
   released. That revision stops Linux from passing wgpu's Windows-only reusable
@@ -310,16 +315,19 @@ startup/shutdown coverage.
   ABI consumers with the host-debug compile commands, then completed a full
   `flutter_rust_shell_runner` host-debug build using the engine's bundled
   depot_tools and the locally managed Python bypass.
-- Added `task build-rust-shell` and `task stress-rust-shell`. The stress task
-  launches the real sample, drives 500 Hyprland compositor resizes with
-  periodic hide/restore and fullscreen transitions, closes immediately after
-  the burst to overlap teardown with queued work, and rejects known Vulkan,
-  wgpu, and Impeller synchronization diagnostics. The default run passed and
-  the runner exited cleanly. After installing
+- Added `task build-rust-shell` and `task stress-rust-shell`. With the opt-in
+  `FLUTTER_RUST_PRESENTATION_STATS` stream, the stress task now proves an
+  initial presentation, a new presentation after a compositor-delivered Tab
+  key, and a newly sized presentation after 500 Hyprland resizes with periodic
+  hide/restore and fullscreen transitions. It then closes immediately to
+  overlap teardown with queued work and rejects known Vulkan, wgpu, and
+  Impeller synchronization diagnostics. This liveness assertion caught both
+  the compositor frame-callback deadlock and the layer-tree/swapchain resize
+  race that process-only stress had missed. After installing
   `vulkan-validation-layers` 1.4.350.1-1, the current 500-resize run passed
   with `VK_LAYER_KHRONOS_validation` explicitly enabled and no Vulkan, wgpu,
   or Impeller synchronization diagnostics, including no acquire-fence reuse
-  VUIDs.
+  VUIDs. Three consecutive synchronization-and-liveness runs passed.
 - Rebuilt both the standalone runner and `libflutter_rust_engine.so`, then
   rebuilt and launched the sample's `runner-rs` target against ABI v4.
   Ordinary typing, Backspace, and Ctrl+A selection work in the visible text

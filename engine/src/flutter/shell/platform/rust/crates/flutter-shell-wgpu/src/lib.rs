@@ -9,6 +9,9 @@ mod linux {
     use flutter_shell_core::{FlutterRustVulkanImage, FlutterRustVulkanPresentationCallbacks};
     use std::collections::VecDeque;
     use std::ffi::c_void;
+    use std::fs::File;
+    use std::io::Write;
+    use std::path::PathBuf;
     use std::sync::Mutex;
 
     /// Borrowed Vulkan object values suitable only for an immediate C++ call.
@@ -38,6 +41,30 @@ mod linux {
         device: wgpu::Device,
         queue: wgpu::Queue,
         surface_state: Mutex<SurfaceState>,
+        presentation_stats: Option<Mutex<PresentationStats>>,
+    }
+
+    struct PresentationStats {
+        file: File,
+        count: u64,
+    }
+
+    impl PresentationStats {
+        fn create(path: PathBuf) -> Result<Self, String> {
+            let file = File::create(&path).map_err(|error| {
+                format!(
+                    "failed to create presentation stats file {}: {error}",
+                    path.display()
+                )
+            })?;
+            Ok(Self { file, count: 0 })
+        }
+
+        fn record(&mut self, width: u32, height: u32) {
+            self.count += 1;
+            let _ = writeln!(self.file, "{} {width} {height}", self.count);
+            let _ = self.file.flush();
+        }
     }
 
     struct SurfaceState {
@@ -94,7 +121,10 @@ mod linux {
     }
 
     impl GpuBroker {
-        pub fn new(window: std::sync::Arc<winit::window::Window>) -> Result<Self, String> {
+        pub fn new(
+            window: std::sync::Arc<winit::window::Window>,
+            presentation_stats_path: Option<PathBuf>,
+        ) -> Result<Self, String> {
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::VULKAN,
                 ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -127,6 +157,10 @@ mod linux {
                     ..Default::default()
                 }))
                 .map_err(|error| error.to_string())?;
+            let presentation_stats = presentation_stats_path
+                .map(PresentationStats::create)
+                .transpose()?
+                .map(Mutex::new);
             Ok(Self {
                 _instance: instance,
                 surface,
@@ -140,6 +174,7 @@ mod linux {
                     deferred_configuration: None,
                     retired_frames: VecDeque::new(),
                 }),
+                presentation_stats,
             })
         }
 
@@ -271,12 +306,40 @@ mod linux {
         /// The returned handle stays valid until [`Self::present_image`] is
         /// called; the broker keeps the underlying `SurfaceTexture` alive in
         /// the meantime. Only one frame may be in flight at a time.
-        pub fn acquire_image(&self) -> Option<AcquiredImage> {
+        pub fn acquire_image(
+            &self,
+            requested_width: u32,
+            requested_height: u32,
+        ) -> Option<AcquiredImage> {
             let mut state = self.surface_state.lock().expect("surface lock poisoned");
             if state.pending_frame.is_some() {
                 return None;
             }
-            if let Some(configuration) = state.deferred_configuration.take() {
+            // The dimensions Flutter passes here belong to the layer tree that
+            // Impeller is about to render. A newer winit resize may already be
+            // queued, but applying that newer size would combine a swapchain
+            // color image with depth/stencil attachments from this older
+            // layer-tree generation. Configure this acquire to the requested
+            // generation and retain a newer deferred size for the next frame.
+            let deferred_matches_request =
+                state
+                    .deferred_configuration
+                    .as_ref()
+                    .is_some_and(|configuration| {
+                        configuration.width == requested_width
+                            && configuration.height == requested_height
+                    });
+            let configuration_changed = state.configuration.as_ref().is_none_or(|configuration| {
+                configuration.width != requested_width || configuration.height != requested_height
+            });
+            if configuration_changed {
+                let mut configuration = if deferred_matches_request {
+                    state.deferred_configuration.take()?
+                } else {
+                    state.configuration.clone()?
+                };
+                configuration.width = requested_width;
+                configuration.height = requested_height;
                 while let Some(retired) = state.retired_frames.pop_front() {
                     if !self.wait_and_destroy(retired) {
                         return None;
@@ -284,6 +347,10 @@ mod linux {
                 }
                 self.surface.configure(&self.device, &configuration);
                 state.configuration = Some(configuration);
+            } else if deferred_matches_request {
+                // A matching deferred request has now reached its layer-tree
+                // generation; the existing swapchain already has that size.
+                state.deferred_configuration = None;
             }
             // Three pairs cover the configured two-frame surface latency plus
             // the frame being acquired. Recycle the oldest pair only after its
@@ -310,6 +377,11 @@ mod linux {
                 }
                 _ => return None,
             };
+            if surface_texture.texture.width() != requested_width
+                || surface_texture.texture.height() != requested_height
+            {
+                return None;
+            }
             if suboptimal && state.deferred_configuration.is_none() {
                 state.deferred_configuration = Some(configuration);
             }
@@ -419,6 +491,14 @@ mod linux {
             // intentionally produced no frame.
             self.window.pre_present_notify();
             self.queue.present(pending.texture);
+            if let (Some(stats), Some(configuration)) =
+                (&self.presentation_stats, &state.configuration)
+            {
+                stats
+                    .lock()
+                    .expect("presentation stats lock poisoned")
+                    .record(configuration.width, configuration.height);
+            }
             state.retired_frames.push_back(RetiredFrame {
                 submission,
                 sync: pending.sync,
@@ -474,14 +554,14 @@ mod linux {
 
     extern "C" fn acquire_image_callback(
         user_data: *mut c_void,
-        _width: u32,
-        _height: u32,
+        width: u32,
+        height: u32,
         out_image: *mut FlutterRustVulkanImage,
     ) -> i32 {
         // SAFETY: presentation_callbacks() sets user_data to a GpuBroker
         // address that outlives every call through this callback table.
         let broker = unsafe { &*user_data.cast::<GpuBroker>() };
-        match broker.acquire_image() {
+        match broker.acquire_image(width, height) {
             Some(image) => {
                 // SAFETY: the C++ caller supplies a valid output pointer for
                 // the duration of this call.

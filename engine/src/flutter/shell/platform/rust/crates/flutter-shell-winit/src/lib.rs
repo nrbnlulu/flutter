@@ -10,6 +10,7 @@ mod linux {
     use std::{
         collections::{BTreeMap, VecDeque},
         ffi::c_void,
+        path::PathBuf,
         sync::Arc,
         sync::{
             Mutex,
@@ -245,6 +246,9 @@ mod linux {
         pub title: String,
         pub assets_path: String,
         pub icu_data_path: String,
+        /// Optional append-only stream of `frame width height` records used by
+        /// integration tests to verify that presentation remains live.
+        pub presentation_stats_path: Option<PathBuf>,
     }
 
     impl Default for ShellConfig {
@@ -253,6 +257,7 @@ mod linux {
                 title: "Flutter Rust Shell".to_owned(),
                 assets_path: String::new(),
                 icu_data_path: String::new(),
+                presentation_stats_path: None,
             }
         }
     }
@@ -1616,6 +1621,8 @@ mod linux {
                 icu_data_path: std::ffi::CStr::from_ptr(icu_data_path)
                     .to_string_lossy()
                     .into_owned(),
+                presentation_stats_path: std::env::var_os("FLUTTER_RUST_PRESENTATION_STATS")
+                    .map(PathBuf::from),
                 ..ShellConfig::default()
             }
         };
@@ -1729,8 +1736,11 @@ mod linux {
                         .create_window(attributes)
                         .expect("winit failed to create the Flutter Rust Shell window"),
                 );
-                let gpu_broker = GpuBroker::new(Arc::clone(&window))
-                    .expect("winit Vulkan surface creation failed");
+                let gpu_broker = GpuBroker::new(
+                    Arc::clone(&window),
+                    self.config.presentation_stats_path.clone(),
+                )
+                .expect("winit Vulkan surface creation failed");
                 let size = window.inner_size();
                 gpu_broker
                     .configure(size.width, size.height)

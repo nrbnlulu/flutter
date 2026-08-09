@@ -31,7 +31,7 @@ tasks:
             flutter_rust_shell_runner libflutter_rust_engine.so
 
   stress-rust-shell:
-    desc: Stress Vulkan handoff synchronization with compositor-driven resize, hide, restore, fullscreen, and close events.
+    desc: Stress Vulkan synchronization and verify input/resize frame liveness under compositor-driven timing.
     deps: [build-rust-shell]
     preconditions:
       - sh: command -v hyprctl >/dev/null
@@ -46,6 +46,7 @@ tasks:
         assets={{.RUST_SHELL_SAMPLE}}/build/flutter_assets
         icu={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/icudtl.dat
         stress_log=$(mktemp /tmp/flutter-rust-vulkan-stress.XXXXXX.log)
+        presentation_stats=$(mktemp /tmp/flutter-rust-presentation-stats.XXXXXX.log)
         validation_layer=""
         if vulkaninfo 2>/dev/null | grep -q VK_LAYER_KHRONOS_validation; then
           validation_layer=VK_LAYER_KHRONOS_validation
@@ -54,6 +55,7 @@ tasks:
         fi
 
         VK_INSTANCE_LAYERS="$validation_layer" \
+        FLUTTER_RUST_PRESENTATION_STATS="$presentation_stats" \
         RUST_LOG=wgpu_core=warn,wgpu_hal=warn \
           "$runner" "$assets" "$icu" >"$stress_log" 2>&1 &
         runner_pid=""
@@ -82,6 +84,38 @@ tasks:
           exit 1
         fi
 
+        for _ in $(seq 1 100); do
+          [ -s "$presentation_stats" ] && break
+          sleep 0.05
+        done
+        if [ ! -s "$presentation_stats" ]; then
+          echo "Flutter Rust shell did not present its initial frame; stats: $presentation_stats; log: $stress_log" >&2
+          exit 1
+        fi
+
+        # Focus the sample, let focus-driven frames settle, then send a real
+        # Wayland keyboard shortcut. Moving focus into its text field must
+        # produce another presented frame; receiving input without repainting
+        # is the compositor-vsync deadlock this test is designed to catch.
+        hyprctl dispatch focuswindow "address:$address" >/dev/null
+        sleep 0.75
+        set -- $(tail -n1 "$presentation_stats")
+        input_baseline=$1
+        hyprctl dispatch sendshortcut ",TAB,address:$address" >/dev/null
+        input_presented=false
+        for _ in $(seq 1 100); do
+          set -- $(tail -n1 "$presentation_stats")
+          if [ "$1" -gt "$input_baseline" ]; then
+            input_presented=true
+            break
+          fi
+          sleep 0.05
+        done
+        if [ "$input_presented" != true ]; then
+          echo "Keyboard input produced no presented frame; stats: $presentation_stats; log: $stress_log" >&2
+          exit 1
+        fi
+
         workspace=$(hyprctl clients -j | jq -r --arg address "$address" \
           '.[] | select(.address == $address) | .workspace.id')
         hyprctl dispatch togglefloating "address:$address" >/dev/null
@@ -101,6 +135,31 @@ tasks:
             hyprctl dispatch fullscreen "0,address:$address" >/dev/null
           fi
         done
+
+        # Require a post-burst presentation whose configured framebuffer size
+        # differs from the initial one. This catches a live process displaying
+        # a permanently frozen pre-resize surface.
+        set -- $(head -n1 "$presentation_stats")
+        initial_width=$2
+        initial_height=$3
+        set -- $(tail -n1 "$presentation_stats")
+        resize_baseline=$1
+        hyprctl dispatch resizewindowpixel \
+          "exact 911 677,address:$address" >/dev/null
+        resize_presented=false
+        for _ in $(seq 1 100); do
+          set -- $(tail -n1 "$presentation_stats")
+          if [ "$1" -gt "$resize_baseline" ] && \
+             { [ "$2" -ne "$initial_width" ] || [ "$3" -ne "$initial_height" ]; }; then
+            resize_presented=true
+            break
+          fi
+          sleep 0.05
+        done
+        if [ "$resize_presented" != true ]; then
+          echo "Resize produced no newly sized presented frame; stats: $presentation_stats; log: $stress_log" >&2
+          exit 1
+        fi
 
         # Close immediately after the resize burst so teardown overlaps work
         # already queued by the compositor and raster thread.
@@ -122,4 +181,4 @@ tasks:
           cat "$stress_log" >&2
           exit 1
         fi
-        echo "Vulkan synchronization stress passed ({{.RESIZE_ITERATIONS}} resizes); log: $stress_log"
+        echo "Vulkan synchronization and frame-liveness stress passed ({{.RESIZE_ITERATIONS}} resizes); stats: $presentation_stats; log: $stress_log"
