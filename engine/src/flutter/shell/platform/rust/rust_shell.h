@@ -41,10 +41,21 @@ class RustShell final {
   // root isolate's widget binding has no valid view to schedule frames for,
   // so PlatformView::NotifyCreated alone is not enough to see any content.
   // Must run on the merged Rust UI/platform task runner.
-  void SetViewportMetrics(double width, double height, double pixel_ratio);
+  void SetViewportMetrics(double width,
+                          double height,
+                          double pixel_ratio,
+                          double display_width,
+                          double display_height,
+                          double display_refresh_rate);
 
   // Dispatches one Rust-hosted pointer event to the implicit view.
   void SendPointerEvent(const FlutterRustPointerEvent& event);
+
+  // Dispatches a private-ABI lifecycle state on flutter/lifecycle.
+  void SendLifecycleEvent(uint32_t state);
+
+  // Dispatches a private-ABI physical keyboard event.
+  void SendKeyEvent(const FlutterRustKeyEvent& event);
 
  private:
   RustShell(std::unique_ptr<ThreadHost> thread_host,

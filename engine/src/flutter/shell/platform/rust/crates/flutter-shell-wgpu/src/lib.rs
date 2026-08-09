@@ -33,11 +33,19 @@ mod linux {
         _adapter: wgpu::Adapter,
         device: wgpu::Device,
         queue: wgpu::Queue,
-        configured_format: Mutex<Option<wgpu::TextureFormat>>,
+        surface_state: Mutex<SurfaceState>,
+    }
+
+    struct SurfaceState {
+        configuration: Option<wgpu::SurfaceConfiguration>,
         // Holds the acquired frame between `acquire_image` and `present_image`.
         // wgpu must not destroy the swapchain image while Impeller is drawing
         // into it through the raw handle handed to C++.
-        pending_frame: Mutex<Option<wgpu::SurfaceTexture>>,
+        pending_frame: Option<wgpu::SurfaceTexture>,
+        // Wgpu forbids reconfiguration while a SurfaceTexture is outstanding.
+        // Resize events therefore replace this with the latest requested
+        // configuration, which is applied immediately after presentation.
+        deferred_configuration: Option<wgpu::SurfaceConfiguration>,
     }
 
     /// A Vulkan swapchain image borrowed from the broker's current frame.
@@ -99,8 +107,11 @@ mod linux {
                 _adapter: adapter,
                 device,
                 queue,
-                configured_format: Mutex::new(None),
-                pending_frame: Mutex::new(None),
+                surface_state: Mutex::new(SurfaceState {
+                    configuration: None,
+                    pending_frame: None,
+                    deferred_configuration: None,
+                }),
             })
         }
 
@@ -142,31 +153,36 @@ mod linux {
             if width == 0 || height == 0 {
                 return Ok(());
             }
+            let mut state = self.surface_state.lock().expect("surface lock poisoned");
             let capabilities = self.surface.get_capabilities(&self._adapter);
             // Impeller's Vulkan backend only recognizes these two swapchain
             // formats (see VkFormatToImpellerFormat); sRGB and other variants
             // the surface may prefer are rejected at frame-acquire time.
-            let format = [wgpu::TextureFormat::Bgra8Unorm, wgpu::TextureFormat::Rgba8Unorm]
-                .into_iter()
-                .find(|format| capabilities.formats.contains(format))
-                .ok_or_else(|| {
-                    "Vulkan surface has no format Impeller supports".to_owned()
-                })?;
-            self.surface.configure(
-                &self.device,
-                &wgpu::SurfaceConfiguration {
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    format,
-                    color_space: wgpu::SurfaceColorSpace::Auto,
-                    width,
-                    height,
-                    present_mode: wgpu::PresentMode::Fifo,
-                    alpha_mode: capabilities.alpha_modes[0],
-                    view_formats: vec![],
-                    desired_maximum_frame_latency: 2,
-                },
-            );
-            *self.configured_format.lock().expect("format lock poisoned") = Some(format);
+            let format = [
+                wgpu::TextureFormat::Bgra8Unorm,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ]
+            .into_iter()
+            .find(|format| capabilities.formats.contains(format))
+            .ok_or_else(|| "Vulkan surface has no format Impeller supports".to_owned())?;
+            let configuration = wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format,
+                color_space: wgpu::SurfaceColorSpace::Auto,
+                width,
+                height,
+                present_mode: wgpu::PresentMode::Fifo,
+                alpha_mode: capabilities.alpha_modes[0],
+                view_formats: vec![],
+                desired_maximum_frame_latency: 2,
+            };
+            if state.pending_frame.is_some() {
+                state.deferred_configuration = Some(configuration);
+                return Ok(());
+            }
+            self.surface.configure(&self.device, &configuration);
+            state.configuration = Some(configuration);
+            state.deferred_configuration = None;
             Ok(())
         }
 
@@ -176,20 +192,65 @@ mod linux {
         /// called; the broker keeps the underlying `SurfaceTexture` alive in
         /// the meantime. Only one frame may be in flight at a time.
         pub fn acquire_image(&self) -> Option<AcquiredImage> {
-            let format = (*self.configured_format.lock().expect("format lock poisoned"))?;
+            let mut state = self.surface_state.lock().expect("surface lock poisoned");
+            if state.pending_frame.is_some() {
+                return None;
+            }
+            let configuration = state.configuration.clone()?;
+            let format = configuration.format;
             let vk_format = vulkan_format(format)?;
-            let surface_texture = match self.surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(texture)
-                | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
+            let (surface_texture, suboptimal) = match self.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(texture) => (texture, false),
+                wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
+                wgpu::CurrentSurfaceTexture::Outdated => {
+                    self.surface.configure(&self.device, &configuration);
+                    match self.surface.get_current_texture() {
+                        wgpu::CurrentSurfaceTexture::Success(texture) => (texture, false),
+                        wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
+                        _ => return None,
+                    }
+                }
                 _ => return None,
             };
+            if suboptimal && state.deferred_configuration.is_none() {
+                state.deferred_configuration = Some(configuration);
+            }
+            // Register a real wgpu write to the acquired image before handing
+            // its raw handle to Impeller. This makes wgpu's submission wait on
+            // the swapchain acquire semaphore and marks the texture initialized;
+            // otherwise Queue::present clears the image because Impeller's raw
+            // Vulkan commands are invisible to wgpu's resource tracker.
+            let view = surface_texture
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Flutter Rust Shell acquire barrier"),
+                });
+            {
+                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Flutter Rust Shell acquire barrier"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+            }
+            self.queue.submit([encoder.finish()]);
             // SAFETY: the returned guard is dropped immediately after copying
             // the raw handle; the image itself outlives it in `pending_frame`.
             let image = unsafe {
                 let guard = surface_texture.texture.as_hal::<wgpu::hal::vulkan::Api>()?;
                 guard.raw_handle()
             };
-            *self.pending_frame.lock().expect("frame lock poisoned") = Some(surface_texture);
+            state.pending_frame = Some(surface_texture);
             Some(AcquiredImage {
                 image: image.as_raw(),
                 format: vk_format.as_raw() as u32,
@@ -203,12 +264,15 @@ mod linux {
         /// this present is a known gap carried forward from the interop broker
         /// design and is not part of proving the phase 0 seam.
         pub fn present_image(&self) -> bool {
-            let Some(surface_texture) =
-                self.pending_frame.lock().expect("frame lock poisoned").take()
-            else {
+            let mut state = self.surface_state.lock().expect("surface lock poisoned");
+            let Some(surface_texture) = state.pending_frame.take() else {
                 return false;
             };
             self.queue.present(surface_texture);
+            if let Some(configuration) = state.deferred_configuration.take() {
+                self.surface.configure(&self.device, &configuration);
+                state.configuration = Some(configuration);
+            }
             true
         }
 

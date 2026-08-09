@@ -5,6 +5,7 @@
 #include "flutter/shell/platform/rust/platform_view_rust.h"
 #include "flutter/shell/platform/rust/rust_bridge.h"
 
+#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -172,6 +173,63 @@ TEST(PlatformViewRustTest, RejectsUnknownPrivateAbiPointerEnums) {
   event.signal_kind = kFlutterRustPointerSignalKindNone;
 
   EXPECT_EQ(CreateRustPointerDataPacket(event), nullptr);
+}
+
+TEST(PlatformViewRustTest, ConvertsPrivateAbiLifecycleStates) {
+  EXPECT_STREQ(GetRustLifecycleStateName(kFlutterRustLifecycleStateDetached),
+               "AppLifecycleState.detached");
+  EXPECT_STREQ(GetRustLifecycleStateName(kFlutterRustLifecycleStateResumed),
+               "AppLifecycleState.resumed");
+  EXPECT_STREQ(GetRustLifecycleStateName(kFlutterRustLifecycleStateInactive),
+               "AppLifecycleState.inactive");
+  EXPECT_STREQ(GetRustLifecycleStateName(kFlutterRustLifecycleStateHidden),
+               "AppLifecycleState.hidden");
+  EXPECT_STREQ(GetRustLifecycleStateName(kFlutterRustLifecycleStatePaused),
+               "AppLifecycleState.paused");
+  EXPECT_EQ(GetRustLifecycleStateName(99), nullptr);
+}
+
+TEST(PlatformViewRustTest, ConvertsPrivateAbiKeyEvents) {
+  FlutterRustKeyEvent event = {};
+  event.timestamp_micros = 1234;
+  event.event_type = kFlutterRustKeyEventTypeDown;
+  event.physical = 0x00070004;
+  event.logical = 0x61;
+  event.synthesized = 1;
+  event.character_length = 1;
+  event.character[0] = 'A';
+
+  auto packet = CreateRustKeyDataPacket(event);
+
+  ASSERT_NE(packet, nullptr);
+  uint64_t character_length = 0;
+  KeyData data = {};
+  std::memcpy(&character_length, packet->data().data(), sizeof(uint64_t));
+  std::memcpy(&data, packet->data().data() + sizeof(uint64_t), sizeof(KeyData));
+  EXPECT_EQ(character_length, 1u);
+  EXPECT_EQ(data.timestamp, 1234u);
+  EXPECT_EQ(data.type, KeyEventType::kDown);
+  EXPECT_EQ(data.physical, 0x00070004u);
+  EXPECT_EQ(data.logical, 0x61u);
+  EXPECT_EQ(data.synthesized, 1u);
+  EXPECT_EQ(data.device_type, KeyEventDeviceType::kKeyboard);
+  EXPECT_EQ(packet->data().back(), 'A');
+}
+
+TEST(PlatformViewRustTest, RejectsInvalidPrivateAbiKeyEvents) {
+  FlutterRustKeyEvent event = {};
+  event.event_type = 99;
+  event.physical = 0x00070004;
+  event.logical = 0x61;
+  EXPECT_EQ(CreateRustKeyDataPacket(event), nullptr);
+
+  event.event_type = kFlutterRustKeyEventTypeDown;
+  event.character_length = FLUTTER_RUST_KEY_CHARACTER_CAPACITY + 1;
+  EXPECT_EQ(CreateRustKeyDataPacket(event), nullptr);
+
+  event.character_length = 1;
+  event.character[0] = '\0';
+  EXPECT_EQ(CreateRustKeyDataPacket(event), nullptr);
 }
 
 }  // namespace

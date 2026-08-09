@@ -1,0 +1,16 @@
+# Copyright 2026 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Linker script for the application-facing Rust engine library. Keep this
+# boundary limited to the private shell ABI and the VM snapshot symbols that
+# Dart discovers in the loaded library.
+
+{
+  global:
+    FlutterRustShell*;
+    kDartSnapshotData;
+    kDartSnapshotText;
+  local:
+    *;
+};

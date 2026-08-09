@@ -18,6 +18,15 @@ namespace flutter {
 std::unique_ptr<PointerDataPacket> CreateRustPointerDataPacket(
     const FlutterRustPointerEvent& event);
 
+// Returns the framework-facing lifecycle string for a private-ABI value, or
+// null when the value is not understood by this engine revision.
+const char* GetRustLifecycleStateName(uint32_t state);
+
+// Converts one validated private-ABI keyboard event into Flutter's key-data
+// packet. Returns null for invalid types, identifiers, or character data.
+std::unique_ptr<KeyDataPacket> CreateRustKeyDataPacket(
+    const FlutterRustKeyEvent& event);
+
 // The in-tree platform view used by the optional Rust shell.
 //
 // This class is deliberately a narrow C++ adapter. The Rust runtime owns

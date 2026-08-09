@@ -138,6 +138,36 @@ typedef struct FlutterRustPointerEvent {
   int64_t buttons;
 } FlutterRustPointerEvent;
 
+// Lifecycle values are translated explicitly into Flutter's framework-facing
+// strings by C++; Rust does not send string pointers across the ABI.
+typedef enum FlutterRustLifecycleState {
+  kFlutterRustLifecycleStateDetached = 0,
+  kFlutterRustLifecycleStateResumed = 1,
+  kFlutterRustLifecycleStateInactive = 2,
+  kFlutterRustLifecycleStateHidden = 3,
+  kFlutterRustLifecycleStatePaused = 4,
+} FlutterRustLifecycleState;
+
+typedef enum FlutterRustKeyEventType {
+  kFlutterRustKeyEventTypeDown = 0,
+  kFlutterRustKeyEventTypeUp = 1,
+  kFlutterRustKeyEventTypeRepeat = 2,
+} FlutterRustKeyEventType;
+
+#define FLUTTER_RUST_KEY_CHARACTER_CAPACITY 64u
+
+// Text is stored inline to keep keyboard delivery value-only. character_length
+// is a byte length and must not exceed FLUTTER_RUST_KEY_CHARACTER_CAPACITY.
+typedef struct FlutterRustKeyEvent {
+  uint64_t timestamp_micros;
+  uint32_t event_type;
+  uint64_t physical;
+  uint64_t logical;
+  int32_t synthesized;
+  uint32_t character_length;
+  uint8_t character[FLUTTER_RUST_KEY_CHARACTER_CAPACITY];
+} FlutterRustKeyEvent;
+
 // Creates the private engine-side half of one Rust-hosted Flutter
 // application. `task_runner` must be a handle previously returned by
 // FlutterRustShellCreateTaskRunner and is used as the merged UI/platform task
@@ -161,13 +191,28 @@ FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSetViewportMetrics(
     void* shell,
     double width,
     double height,
-    double pixel_ratio);
+    double pixel_ratio,
+    double display_width,
+    double display_height,
+    double display_refresh_rate);
 
 // Dispatches one mouse or touch event to the implicit Flutter view. Must run
 // on the merged Rust UI/platform task runner.
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSendPointerEvent(
     void* shell,
     FlutterRustPointerEvent event);
+
+// Reports one application lifecycle transition. Unknown numeric enum values
+// are ignored. Must run on the merged Rust UI/platform task runner.
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSendLifecycleEvent(
+    void* shell,
+    uint32_t state);
+
+// Dispatches one physical keyboard event to Flutter's key-data channel. Must
+// run on the merged Rust UI/platform task runner.
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSendKeyEvent(
+    void* shell,
+    FlutterRustKeyEvent event);
 
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellDestroyShell(void* shell);
 

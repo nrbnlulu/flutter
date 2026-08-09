@@ -121,6 +121,42 @@ pub struct FlutterRustPointerEvent {
     pub buttons: i64,
 }
 
+/// Application lifecycle states accepted by the private engine bridge.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlutterRustLifecycleState {
+    Detached = 0,
+    Resumed = 1,
+    Inactive = 2,
+    Hidden = 3,
+    Paused = 4,
+}
+
+/// Key event types accepted by the private engine bridge.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlutterRustKeyEventType {
+    Down = 0,
+    Up = 1,
+    Repeat = 2,
+}
+
+/// Maximum UTF-8 payload carried inline by one private-ABI key event.
+pub const FLUTTER_RUST_KEY_CHARACTER_CAPACITY: usize = 64;
+
+/// One winit key event, ABI-compatible with `FlutterRustKeyEvent`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlutterRustKeyEvent {
+    pub timestamp_micros: u64,
+    pub event_type: u32,
+    pub physical: u64,
+    pub logical: u64,
+    pub synthesized: i32,
+    pub character_length: u32,
+    pub character: [u8; FLUTTER_RUST_KEY_CHARACTER_CAPACITY],
+}
+
 /// Returns the ABI versions compiled into the Rust shell runtime.
 #[unsafe(no_mangle)]
 pub extern "C" fn FlutterRustShellGetAbi() -> FlutterRustShellAbi {

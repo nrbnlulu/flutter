@@ -4,6 +4,8 @@
 
 #include "flutter/shell/platform/rust/platform_view_rust.h"
 
+#include <algorithm>
+#include <string>
 #include <utility>
 
 #include "flutter/common/constants.h"
@@ -75,6 +77,61 @@ std::unique_ptr<PointerDataPacket> CreateRustPointerDataPacket(
   auto packet = std::make_unique<PointerDataPacket>(1);
   packet->SetPointerData(0, data);
   return packet;
+}
+
+const char* GetRustLifecycleStateName(uint32_t state) {
+  switch (state) {
+    case kFlutterRustLifecycleStateDetached:
+      return "AppLifecycleState.detached";
+    case kFlutterRustLifecycleStateResumed:
+      return "AppLifecycleState.resumed";
+    case kFlutterRustLifecycleStateInactive:
+      return "AppLifecycleState.inactive";
+    case kFlutterRustLifecycleStateHidden:
+      return "AppLifecycleState.hidden";
+    case kFlutterRustLifecycleStatePaused:
+      return "AppLifecycleState.paused";
+    default:
+      return nullptr;
+  }
+}
+
+std::unique_ptr<KeyDataPacket> CreateRustKeyDataPacket(
+    const FlutterRustKeyEvent& event) {
+  if (event.physical == 0 || event.logical == 0 ||
+      event.character_length > FLUTTER_RUST_KEY_CHARACTER_CAPACITY) {
+    return nullptr;
+  }
+  KeyData data;
+  data.Clear();
+  data.timestamp = event.timestamp_micros;
+  switch (event.event_type) {
+    case kFlutterRustKeyEventTypeDown:
+      data.type = KeyEventType::kDown;
+      break;
+    case kFlutterRustKeyEventTypeUp:
+      data.type = KeyEventType::kUp;
+      break;
+    case kFlutterRustKeyEventTypeRepeat:
+      data.type = KeyEventType::kRepeat;
+      break;
+    default:
+      return nullptr;
+  }
+  data.physical = event.physical;
+  data.logical = event.logical;
+  data.synthesized = event.synthesized != 0;
+  data.device_type = KeyEventDeviceType::kKeyboard;
+
+  const auto character_length = static_cast<size_t>(event.character_length);
+  if (std::find(event.character, event.character + character_length, '\0') !=
+      event.character + character_length) {
+    return nullptr;
+  }
+  const std::string character(reinterpret_cast<const char*>(event.character),
+                              character_length);
+  return std::make_unique<KeyDataPacket>(
+      data, character.empty() ? nullptr : character.c_str());
 }
 
 PlatformViewRust::PlatformViewRust(Delegate& delegate,

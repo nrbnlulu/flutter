@@ -6,9 +6,10 @@ for the architectural plan.
 
 ## Current focus
 
-Phase 0 is complete. Phase 1 — winit platform host — is in progress. Pointer
-input is wired; keyboard, lifecycle, complete resize/display metrics, and real
-vsync integration beyond the fallback timer are next.
+Phase 0 is complete. Phase 1 — winit platform host — is in progress. Pointer,
+window metrics, display updates, lifecycle, raw keyboard events, and a rendered
+Impeller/wgpu frame are working. The next load-bearing item is completing GPU
+handoff synchronization; text input/IME and real vsync follow.
 
 ## Status
 
@@ -16,14 +17,17 @@ vsync integration beyond the fallback timer are next.
 | --- | --- | --- |
 | Existing shells remain available | Complete | The Rust target is opt-in and is not added to the existing platform-selection group. |
 | In-tree Rust platform target | Complete | `//flutter/shell/platform/rust:flutter_rust_shell` builds. |
-| Internal PlatformView adapter | Complete | `PlatformViewRust` builds and its four focused tests pass. |
-| Rust/C++ ABI | Complete for phase 0 | ABI v1 covers task-runner callbacks, Vulkan context/presentation callbacks, shell create/run/destroy, and viewport metrics. |
+| Internal PlatformView adapter | Complete | `PlatformViewRust` builds and its focused tests pass. |
+| Rust/C++ ABI | Complete for phase 1 plumbing | ABI v1 covers task-runner callbacks, Vulkan context/presentation callbacks, shell create/run/destroy, viewport/display metrics, lifecycle, pointer, and raw keyboard events. |
 | Rust workspace and `flutter-plugin-sdk` | Complete for foundation | Workspace uses Rust edition 2024, concrete toolchain 1.93.1, and passes its tests. |
 | Winit event loop | Complete for phase 0 | Linux host owns the window and event loop, dispatches Flutter task batons, and drives the Rust-owned Vulkan presentation loop end to end. |
 | Merged UI/platform task runner | Complete for phase 0 | `RustTaskRunner` queues batons for the Rust host, winit returns due batons through opaque C++ handles, and it now also drives Dart's per-task microtask flush (see below). |
-| Impeller/wgpu interop | Working, unsynchronized | wgpu owns the Vulkan device/surface; C++ creates `ContextVK` from borrowed handles plus the in-tree Impeller Vulkan shader bundle. Acquire/present round-trip real swapchain images. Cross-queue synchronization between wgpu's present and Impeller's independent submission is not implemented (tracked as a phase 2 GPU-interop-broker concern, not a phase 0 gap). |
-| Linux runnable shell | Complete | `flutter_rust_shell_runner` boots a real kernel-snapshot Flutter app, and the compositor reports its window mapped and visible at the correct size. |
+| Impeller/wgpu interop | Working, synchronization incomplete | wgpu owns the Vulkan device/surface; C++ creates `ContextVK` from borrowed handles plus the in-tree Impeller Vulkan shader bundle. An acquire barrier now prevents black frames, and resize reconfiguration is deferred until the outstanding frame is presented. Rapid resize stress still reports Impeller fence/invalid-image errors; explicit completion/semaphore ownership remains the next GPU milestone. |
+| Linux runnable shell | Complete for rendered-frame proof | `flutter_rust_shell_runner` boots a real kernel-snapshot Flutter app; a live Hyprland capture shows the Flutter title, text field, button, and debug banner rendered in the Rust shell. |
 | Pointer input | Complete for phase 1 plumbing | Winit mouse, wheel, and touch events cross the private ABI and are converted into Flutter `PointerDataPacket`s; Rust translation and C++ conversion tests pass. |
+| Window and display metrics | Complete for phase 1 plumbing | Initial, resize, and scale-factor changes report physical viewport size, the real device-pixel ratio, and current-monitor size/refresh rate; zero-sized surfaces are not configured. |
+| Lifecycle | Complete for phase 1 plumbing | Focus, minimize/restore, winit suspend/resume, and shutdown are deduplicated in Rust and forwarded through `flutter/lifecycle`; Rust transition and C++ ABI conversion tests pass. |
+| Keyboard input | Complete for phase 1 raw events | Winit physical/logical keys, down/up/repeat, characters, modifier sides, and synthesized state cross the private ABI as Flutter `KeyData` packets; IME/text editing remains separate. |
 
 ## Implementation log
 
@@ -168,6 +172,51 @@ vsync integration beyond the fallback timer are next.
 - Declared directly linked Rust archives as GN inputs so Rust-only changes
   reliably relink the native runner and ABI test executable.
 
+### Phase 1 — window metrics and lifecycle
+
+- Replaced the hardcoded `1.0` viewport device-pixel ratio with winit's real
+  window scale factor, including `ScaleFactorChanged` handling.
+- Added current-monitor physical size and refresh rate to the private metrics
+  call. C++ publishes those through `Shell::OnDisplayUpdates` before updating
+  the implicit view's viewport metrics.
+- Kept Vulkan surface configuration gated on non-zero physical dimensions and
+  used zero-sized resize events to represent a hidden/minimized window.
+- Added a Rust lifecycle state machine that combines application activity,
+  window visibility, and focus into deduplicated resumed, inactive, hidden,
+  paused, and detached transitions.
+- Added an explicitly translated private lifecycle enum and forwarded valid
+  states through the engine's `flutter/lifecycle` channel. Unknown values are
+  ignored rather than cast across the ABI.
+- Added Rust lifecycle transition tests and C++ lifecycle enum conversion
+  coverage.
+
+### Phase 1 — keyboard input
+
+- Added a value-only private key-event ABI and dispatched validated Flutter
+  `KeyDataPacket`s over the engine's `flutter/keydata` channel.
+- Translated the common winit `KeyCode` set to Flutter USB HID physical key
+  IDs, including left/right modifier identity, and used Flutter logical key
+  constants for named and numpad keys.
+- Forwarded down, up, repeat, character, and synthesized-event state. Unknown
+  XKB keys use the same private GTK key plane convention as Flutter's Linux
+  keyboard implementation; unrepresentable native keys are dropped.
+- Added Rust translation tests and C++ packet-layout/invalid-input tests. Text
+  editing and IME composition remain the next, separate input layer.
+
+### Phase 1 — rendered frame and resize safety
+
+- Added the missing Rust-engine export script and assigned a stable engine ID
+  during `RustShell::Run`, allowing Flutter's Linux windowing initialization to
+  complete in the standalone Rust shell.
+- Added a wgpu acquire barrier/initialization submission before handing a raw
+  swapchain image to Impeller. This fixes the previously observed black frame.
+- Serialized surface state, deferred resize configuration while a frame is in
+  flight, rejected overlapping acquisitions, and recovered once from an
+  `Outdated` surface result.
+- Verified a rendered Flutter window and a 100-event resize smoke test. The
+  remaining fence/invalid-image messages under aggressive resize are tracked as
+  incomplete GPU interop synchronization rather than hidden as success.
+
 ## Validation
 
 - `git diff --check` passes.
@@ -177,31 +226,26 @@ vsync integration beyond the fallback timer are next.
   `//flutter/shell/platform/rust:flutter_shell_winit_rust`, and
   `//flutter/shell/platform/rust:flutter_rust_shell_runner` with the
   host-debug GN configuration (`et build`-managed `out/host_debug`).
-- Ran `flutter_rust_shell_unittests`: 11 tests passed.
+- Ran `flutter_rust_shell_unittests`: 14 tests passed.
 - Ran `cargo +1.93.1 test --workspace --locked`: all crate and documentation
   tests pass.
-- Ran `flutter_rust_shell_runner <flutter_assets> <icudtl.dat>` against a real
-  app's JIT kernel snapshot for several seconds: zero stderr/stdout output,
-  process stays alive, and the compositor reports the window mapped and
-  visible at the correct physical size. No public Embedder API involved; the
-  existing GTK Linux shell target is untouched.
+- Ran `task run-flutter` through the app's `runner-rs` Cargo target against a
+  real JIT kernel snapshot: the process stays alive, the Rust-shell window is
+  mapped and visible, and a live capture shows rendered Flutter content. No
+  public Embedder API is involved; the existing GTK Linux shell target remains
+  untouched. Aggressive resize still produces the known GPU handoff errors.
 
 ## Next implementation steps (phase 1)
 
-1. Add keyboard and lifecycle event forwarding, and complete resize/display
-   metrics beyond the minimal viewport-metrics-on-resize wiring phase 0 added.
-2. Replace the vsync fallback timer with a real winit/compositor-driven vsync
+1. Complete Vulkan acquire/render/present synchronization between wgpu and
+   Impeller, including fence/semaphore ownership across resize and teardown.
+2. Add text input and IME integration on top of the raw keyboard event path.
+3. Replace the vsync fallback timer with a real winit/compositor-driven vsync
    source.
-3. Add main-thread dispatch for background isolate and Rust-worker callbacks,
+4. Add main-thread dispatch for background isolate and Rust-worker callbacks,
    and test synchronous FFI reentrancy and main-thread starvation behavior.
-4. Add deterministic startup and shutdown ownership tests for the merged
+5. Add deterministic startup and shutdown ownership tests for the merged
    runner.
-5. Design and implement the Vulkan interop broker's actual cross-queue
-   synchronization between wgpu's swapchain present and Impeller's Vulkan
-   submission (currently unsynchronized — see the status table). This is
-   listed as a phase 2 item in `flutter-rs.md`, but the phase 0/1 boundary is
-   the point at which it starts being load-bearing for correctness rather than
-   only for the seam proof.
 
 ## Constraints carried into implementation
 

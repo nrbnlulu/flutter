@@ -9,10 +9,13 @@
 #include "flutter/common/constants.h"
 #include "flutter/common/task_runners.h"
 #include "flutter/fml/command_line.h"
+#include "flutter/fml/mapping.h"
 #include "flutter/fml/memory/ref_ptr.h"
+#include "flutter/lib/ui/window/platform_message.h"
 #include "flutter/lib/ui/window/viewport_metrics.h"
 #include "flutter/runtime/dart_vm.h"
 #include "flutter/runtime/platform_data.h"
+#include "flutter/shell/common/display.h"
 #include "flutter/shell/common/run_configuration.h"
 #include "flutter/shell/common/shell.h"
 #include "flutter/shell/common/switches.h"
@@ -106,6 +109,11 @@ bool RustShell::Run() {
   if (!run_configuration.IsValid()) {
     return false;
   }
+  // Desktop framework initialization expects every engine to publish a
+  // non-null identity through PlatformDispatcher.engineId. Keep the identity
+  // stable for this RustShell's lifetime, matching the desktop embedders'
+  // use of their engine object address.
+  run_configuration.SetEngineId(reinterpret_cast<int64_t>(this));
   shell_->RunEngine(std::move(run_configuration));
   auto platform_view = shell_->GetPlatformView();
   if (!platform_view) {
@@ -118,10 +126,18 @@ bool RustShell::Run() {
 
 void RustShell::SetViewportMetrics(double width,
                                    double height,
-                                   double pixel_ratio) {
+                                   double pixel_ratio,
+                                   double display_width,
+                                   double display_height,
+                                   double display_refresh_rate) {
   if (!shell_) {
     return;
   }
+  std::vector<std::unique_ptr<Display>> displays;
+  displays.push_back(std::make_unique<Display>(
+      /*display_id=*/0, display_refresh_rate, display_width, display_height,
+      pixel_ratio));
+  shell_->OnDisplayUpdates(std::move(displays));
   auto platform_view = shell_->GetPlatformView();
   if (!platform_view) {
     return;
@@ -145,6 +161,37 @@ void RustShell::SendPointerEvent(const FlutterRustPointerEvent& event) {
   if (packet) {
     platform_view->DispatchPointerDataPacket(std::move(packet));
   }
+}
+
+void RustShell::SendLifecycleEvent(uint32_t state) {
+  if (!shell_) {
+    return;
+  }
+  auto platform_view = shell_->GetPlatformView();
+  const char* state_name = GetRustLifecycleStateName(state);
+  if (!platform_view || !state_name) {
+    return;
+  }
+  const std::string state_string(state_name);
+  platform_view->DispatchPlatformMessage(std::make_unique<PlatformMessage>(
+      "flutter/lifecycle",
+      fml::MallocMapping::Copy(state_string.data(), state_string.size()),
+      fml::RefPtr<PlatformMessageResponse>()));
+}
+
+void RustShell::SendKeyEvent(const FlutterRustKeyEvent& event) {
+  if (!shell_) {
+    return;
+  }
+  auto platform_view = shell_->GetPlatformView();
+  auto packet = CreateRustKeyDataPacket(event);
+  if (!platform_view || !packet) {
+    return;
+  }
+  platform_view->DispatchPlatformMessage(std::make_unique<PlatformMessage>(
+      "flutter/keydata",
+      fml::MallocMapping::Copy(packet->data().data(), packet->data().size()),
+      fml::RefPtr<PlatformMessageResponse>()));
 }
 
 }  // namespace flutter
@@ -237,15 +284,20 @@ extern "C" int FlutterRustShellRunShell(void* shell) {
   return static_cast<flutter::RustShell*>(shell)->Run() ? 1 : 0;
 }
 
-extern "C" void FlutterRustShellSetViewportMetrics(void* shell,
-                                                   double width,
-                                                   double height,
-                                                   double pixel_ratio) {
+extern "C" void FlutterRustShellSetViewportMetrics(
+    void* shell,
+    double width,
+    double height,
+    double pixel_ratio,
+    double display_width,
+    double display_height,
+    double display_refresh_rate) {
   if (!shell) {
     return;
   }
-  static_cast<flutter::RustShell*>(shell)->SetViewportMetrics(width, height,
-                                                              pixel_ratio);
+  static_cast<flutter::RustShell*>(shell)->SetViewportMetrics(
+      width, height, pixel_ratio, display_width, display_height,
+      display_refresh_rate);
 }
 
 extern "C" void FlutterRustShellSendPointerEvent(
@@ -255,6 +307,22 @@ extern "C" void FlutterRustShellSendPointerEvent(
     return;
   }
   static_cast<flutter::RustShell*>(shell)->SendPointerEvent(event);
+}
+
+extern "C" void FlutterRustShellSendLifecycleEvent(void* shell,
+                                                   uint32_t state) {
+  if (!shell) {
+    return;
+  }
+  static_cast<flutter::RustShell*>(shell)->SendLifecycleEvent(state);
+}
+
+extern "C" void FlutterRustShellSendKeyEvent(void* shell,
+                                             FlutterRustKeyEvent event) {
+  if (!shell) {
+    return;
+  }
+  static_cast<flutter::RustShell*>(shell)->SendKeyEvent(event);
 }
 
 extern "C" void FlutterRustShellDestroyShell(void* shell) {
