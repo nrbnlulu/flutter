@@ -391,12 +391,7 @@ mod linux {
     }
 
     const TEXT_INPUT_CHANNEL: &[u8] = b"flutter/textinput";
-
-    fn trace_text_input(arguments: std::fmt::Arguments<'_>) {
-        if std::env::var_os("FLUTTER_RUST_TRACE_TEXT_INPUT").is_some() {
-            eprintln!("[flutter-rust text-input] {arguments}");
-        }
-    }
+    const KEY_EVENT_CHANNEL: &[u8] = b"flutter/keyevent";
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(transparent)]
@@ -689,10 +684,8 @@ mod linux {
             unsafe { std::slice::from_raw_parts(message, message_size) }
         };
         let Some(command) = TextInputCommand::decode(message) else {
-            trace_text_input(format_args!("rejected framework message"));
             return 0;
         };
-        trace_text_input(format_args!("framework -> host: {command:?}"));
         // SAFETY: callbacks() uses the stable address of the boxed inbox, and
         // ShellApplication destroys the C++ shell before dropping that inbox.
         let inbox = unsafe { &*user_data.cast::<TextInputInbox>() };
@@ -1014,6 +1007,65 @@ mod linux {
                 event.repeat,
                 synthesized,
             )
+        }
+
+        fn raw_event_message(&self, event: &FlutterRustKeyEvent) -> Vec<u8> {
+            #[derive(Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct LinuxRawKeyEvent {
+                #[serde(rename = "type")]
+                event_type: &'static str,
+                keymap: &'static str,
+                toolkit: &'static str,
+                scan_code: u64,
+                key_code: u64,
+                modifiers: u32,
+                specified_logical_key: u64,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                unicode_scalar_values: Option<u32>,
+            }
+
+            let character =
+                std::str::from_utf8(&event.character[..event.character_length as usize])
+                    .ok()
+                    .and_then(|text| {
+                        let mut characters = text.chars();
+                        let character = characters.next()?;
+                        (characters.next().is_none() && !character.is_control())
+                            .then_some(character as u32)
+                    });
+            let mut modifiers = 0;
+            if self.modifiers.shift_key() {
+                modifiers |= 1 << 0;
+            }
+            if self.modifiers.control_key() {
+                modifiers |= 1 << 2;
+            }
+            if self.modifiers.alt_key() {
+                modifiers |= 1 << 3;
+            }
+            if self.modifiers.super_key() {
+                modifiers |= 1 << 26;
+            }
+            serde_json::to_vec(&LinuxRawKeyEvent {
+                event_type: if event.event_type == FlutterRustKeyEventType::Up as u32 {
+                    "keyup"
+                } else {
+                    "keydown"
+                },
+                keymap: "linux",
+                toolkit: "gtk",
+                // The modern key-data packet immediately preceding this
+                // compatibility message is authoritative. Preserve the USB
+                // usage as a distinct legacy scan code without pretending it
+                // is a native GDK keycode.
+                scan_code: event.physical & 0xffff,
+                key_code: event.logical,
+                modifiers,
+                specified_logical_key: event.logical,
+                unicode_scalar_values: character,
+            })
+            .expect("typed raw key event must serialize")
         }
     }
 
@@ -1725,13 +1777,14 @@ mod linux {
                     is_synthetic,
                     ..
                 } => {
-                    trace_text_input(format_args!("keyboard: {event:?}"));
                     let committed_text = self
                         .keyboard_state
                         .committed_text(&event)
                         .map(str::to_owned);
                     if let Some(event) = self.keyboard_state.event(&event, is_synthetic) {
+                        let raw_message = self.keyboard_state.raw_event_message(&event);
                         self.send_key_event(event);
+                        self.send_raw_key_event(&raw_message);
                     }
                     if let Some(message) = committed_text
                         .as_deref()
@@ -1744,7 +1797,6 @@ mod linux {
                     self.keyboard_state.modifiers_changed(modifiers.state());
                 }
                 WindowEvent::Ime(event) => {
-                    trace_text_input(format_args!("IME: {event:?}"));
                     if let Some(message) = self.text_input_session.ime(event) {
                         self.send_text_input_update(&message);
                     }
@@ -1826,6 +1878,15 @@ mod linux {
             let _ = event;
         }
 
+        fn send_raw_key_event(&self, message: &[u8]) {
+            #[cfg(not(test))]
+            if let Some(shell) = self.shell {
+                send_cpp_platform_message(shell, KEY_EVENT_CHANNEL, message);
+            }
+            #[cfg(test)]
+            let _ = message;
+        }
+
         fn apply_text_input_commands(&mut self) {
             for command in self.text_input_inbox.drain() {
                 let effect = self.text_input_session.apply(command);
@@ -1848,10 +1909,6 @@ mod linux {
         }
 
         fn send_text_input_update(&self, message: &[u8]) {
-            trace_text_input(format_args!(
-                "host -> framework: {}",
-                String::from_utf8_lossy(message)
-            ));
             #[cfg(not(test))]
             if let Some(shell) = self.shell {
                 send_cpp_platform_message(shell, TEXT_INPUT_CHANNEL, message);
@@ -1868,6 +1925,7 @@ mod linux {
         fn has_a_stable_default_window_title() {
             assert_eq!(ShellConfig::default().title, "Flutter Rust Shell");
             assert_eq!(TEXT_INPUT_CHANNEL, b"flutter/textinput");
+            assert_eq!(KEY_EVENT_CHANNEL, b"flutter/keyevent");
         }
 
         #[test]
@@ -2060,6 +2118,32 @@ mod linux {
             session.editing_state.composing_base = 1;
             session.editing_state.composing_extent = 2;
             assert!(session.keyboard_text("x").is_none());
+        }
+
+        #[test]
+        fn raw_key_message_terminates_the_modern_key_packet() {
+            let mut keyboard = KeyboardState::new();
+            keyboard.modifiers_changed(ModifiersState::CONTROL);
+            let event = make_key_event(
+                1234,
+                PhysicalKey::Code(KeyCode::KeyA),
+                &Key::Character("a".into()),
+                Some("a"),
+                ElementState::Pressed,
+                false,
+                false,
+            )
+            .expect("key A should be supported");
+
+            let message: Value = serde_json::from_slice(&keyboard.raw_event_message(&event))
+                .expect("valid raw key JSON");
+            assert_eq!(message["type"], "keydown");
+            assert_eq!(message["keymap"], "linux");
+            assert_eq!(message["toolkit"], "gtk");
+            assert_eq!(message["scanCode"], 4);
+            assert_eq!(message["specifiedLogicalKey"], u64::from('a'));
+            assert_eq!(message["modifiers"], 1 << 2);
+            assert_eq!(message["unicodeScalarValues"], u64::from('a'));
         }
 
         #[test]
