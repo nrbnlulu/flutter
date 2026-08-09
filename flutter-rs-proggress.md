@@ -11,8 +11,11 @@ window metrics, display updates, lifecycle, raw keyboard events, and a rendered
 Impeller/wgpu frame are working. The explicit Vulkan semaphore broker is now
 implemented and passes rapid-resize and in-flight teardown stress. Typed text
 input/IME plumbing and compositor-driven Wayland vsync are implemented and
-validated. Remaining phase-1 work is main-thread dispatch and deterministic
-startup/shutdown coverage.
+validated. The current milestone is single-engine multi-view: one Flutter
+engine and Dart isolate per application, with one native winit window and GPU
+presentation surface per Flutter view. Regular windows and required application
+shutdown now work end to end; additional window kinds, main-thread dispatch,
+and deterministic startup/shutdown coverage follow that milestone.
 
 ## Status
 
@@ -21,7 +24,7 @@ startup/shutdown coverage.
 | Existing shells remain available | Complete | The Rust target is opt-in and is not added to the existing platform-selection group. |
 | In-tree Rust platform target | Complete | `//flutter/shell/platform/rust:flutter_rust_shell` builds. |
 | Internal PlatformView adapter | Complete | `PlatformViewRust` builds and its focused tests pass. |
-| Rust/C++ ABI | Complete for phase 1 plumbing | ABI v4 covers task-runner callbacks, Vulkan context/presentation callbacks and per-frame semaphores, bidirectional platform messages, compositor-vsync requests, shell create/run/destroy, viewport/display metrics, lifecycle, pointer, and raw keyboard events. |
+| Rust/C++ ABI | Multi-view regular-window extension complete | ABI v5 adds typed view IDs, per-view metrics, pointer and focus routing, asynchronous add/remove-view operations, per-view Vulkan presentation registration, and a typed synchronous regular-window control surface with asynchronous lifecycle events. |
 | Rust workspace and `flutter-plugin-sdk` | Complete for foundation | Workspace uses Rust edition 2024, concrete toolchain 1.93.1, and passes its tests. |
 | Winit event loop | Complete for phase 0 | Linux host owns the window and event loop, dispatches Flutter task batons, and drives the Rust-owned Vulkan presentation loop end to end. |
 | Merged UI/platform task runner | Complete for phase 0 | `RustTaskRunner` queues batons for the Rust host, winit returns due batons through opaque C++ handles, and it now also drives Dart's per-task microtask flush (see below). |
@@ -32,7 +35,8 @@ startup/shutdown coverage.
 | Lifecycle | Complete for phase 1 plumbing | Focus, minimize/restore, winit suspend/resume, and shutdown are deduplicated in Rust and forwarded through `flutter/lifecycle`; Rust transition and C++ ABI conversion tests pass. |
 | Keyboard input | Complete for phase 1 raw events | Winit physical/logical keys, down/up/repeat, characters, modifier sides, and synthesized state cross the private ABI as Flutter `KeyData` packets. |
 | Text input and IME | Complete for phase 1 plumbing | The Rust host handles the standard `flutter/textinput` protocol with typed commands and validated UTF-16 editing state, controls winit IME activation/cursor geometry, translates preedit/commit events, and sends `TextInputClient.updateEditingState` back to Flutter. Ordinary typing, Backspace, and Ctrl+A were verified interactively; a legacy `flutter/keyevent` terminator keeps Flutter's modern key-data queue moving. |
-| Vsync | Complete for the Linux Wayland host | Flutter's waiter requests a winit redraw through ABI v4. Wayland `RedrawRequested` pulses are throttled by compositor frame callbacks registered immediately before actual wgpu presentation; C++ timestamps each pulse in the FML clock domain and uses the active monitor's nominal interval as its target. Non-Wayland backends retain `VsyncWaiterFallback`. |
+| Vsync | Complete for the Linux Wayland host | Flutter's waiter requests a winit redraw through the private ABI. Wayland `RedrawRequested` pulses are throttled by compositor frame callbacks registered immediately before actual wgpu presentation; C++ timestamps each pulse in the FML clock domain and uses the active monitor's nominal interval as its target. Non-Wayland backends retain `VsyncWaiterFallback`. |
+| Multi-window | Regular and dialog windows working end to end | View `0` remains the implicit engine view. Positive-ID winit windows share one engine, root isolate, plugin registry, task runner, and wgpu device while owning independent surfaces, metrics, input, and presentation state. Flutter's experimental `WindowController`, `DialogWindowController`, and `WindowManager` APIs select the Rust owner automatically in the Rust runner. Parented dialogs use native Wayland/X11 transient relationships and are removed with their parent. Popup, tooltip, and satellite window kinds remain unsupported. |
 
 ## Implementation log
 
@@ -296,6 +300,58 @@ startup/shutdown coverage.
   fence to `vkAcquireNextImageKHR`; pinning the whole workspace keeps its
   internal Rust types coherent.
 
+### Phase 1 — single-engine multi-view seam
+
+- Defined multi-window as Flutter multi-view: view `0` is the implicit main
+  window and every additional native window is a positive view ID inside the
+  same `Shell`, engine, root isolate, plugin registry, and task runner.
+- Bumped the private ABI to v5 and added layout-compatible Rust/C types for
+  view IDs, physical metrics, focus state/direction, and asynchronous
+  add/remove completion callbacks.
+- Routed viewport metrics and pointer packets by view ID and forwarded native
+  focus changes through Flutter's `ViewFocusEvent` API.
+- Added engine-private `PlatformView::AddView` and `RemoveView` entry points;
+  duplicate or invalid presentation registration fails before a Flutter view
+  can be left without a render target, and failed Flutter additions roll their
+  presentation registration back.
+- Added a default-no-op active-view hook to `Surface`, forwarded it through
+  `GPUSurfaceVulkanImpeller`, and made `RustVulkanPresentation` select separate
+  callback and semaphore state for each view. This preserves all existing
+  single-view surfaces while allowing one rasterizer to acquire and present
+  the swapchain belonging to the layer tree's view ID.
+- Replaced the single winit window with bidirectional view/window maps. Every
+  positive view owns a stable `GpuBroker`, native window, pointer state, and
+  keyboard state; all brokers share one application-wide wgpu instance,
+  adapter, device, and queue.
+- Added a typed Dart FFI regular-window contract for creation, destruction,
+  state queries, sizing, constraints, titles, activation, maximize/minimize,
+  and fullscreen. The standalone runner explicitly exports only that window
+  surface plus the VM snapshot symbols needed by `DynamicLibrary.process()`.
+- Added `WindowingOwnerRust` and `WindowControllerRust`. The ordinary
+  `WindowController` factory selects them only when the Rust-shell symbol is
+  present, preserving the GTK Linux owner in existing Linux embedders.
+- Routed state, close-requested, and destroyed events through one typed
+  `NativeCallable.listener` per engine. Close requests honor the framework
+  delegate and retain the native window and presentation surface until
+  Flutter's asynchronous `RemoveView` completion succeeds.
+- Removed registry borrows from every call into C++ and from native window
+  destruction. This permits Dart delegate callbacks, engine view removal, and
+  synchronous winit destruction events to re-enter the host without RefCell
+  panics.
+- Extended the typed platform-message boundary to handle
+  `System.exitApplication` and `SystemNavigator.pop`. Required exits are queued
+  through winit before the event loop terminates; cancelable exits remain
+  conservatively canceled until the shell implements the framework's
+  `System.requestAppExit` response round trip.
+- Added a typed dialog request alongside the regular-window request. The Dart
+  controller accepts only Rust-owned parents, while the host independently
+  verifies that the parent is a live view in the same engine.
+- Applied native transient relationships with `xdg_toplevel.set_parent` on
+  Wayland and `XSetTransientForHint` plus the dialog window type on X11. The
+  host retains the parent's native window handle for the child's lifetime and
+  removes descendants before their parent, so asynchronous Flutter view
+  teardown cannot leave a dangling compositor relationship.
+
 ## Validation
 
 - `git diff --check` passes.
@@ -309,8 +365,11 @@ startup/shutdown coverage.
 - Ran `cargo +1.93.1 test --workspace --locked`: all crate and documentation
   tests pass, including typed text-input decoding, invalid UTF-16 range
   rejection, Unicode selection replacement, hidden-cursor composition, and
-  framework update serialization. The winit crate now has 18 passing tests,
-  including monitor-refresh-to-frame-interval conversion.
+  framework update serialization. The winit crate now has 20 passing tests,
+  including monitor-refresh-to-frame-interval conversion, target-view
+  preservation for pointer events, and application-exit decoding.
+- Ran the focused Vulkan surface test proving that the raster surface forwards
+  the selected Flutter view ID to its presentation delegate.
 - Compiled the changed Rust Vulkan presentation C++ translation unit and its
   ABI consumers with the host-debug compile commands, then completed a full
   `flutter_rust_shell_runner` host-debug build using the engine's bundled
@@ -329,7 +388,8 @@ startup/shutdown coverage.
   or Impeller synchronization diagnostics, including no acquire-fence reuse
   VUIDs. Three consecutive synchronization-and-liveness runs passed.
 - Rebuilt both the standalone runner and `libflutter_rust_engine.so`, then
-  rebuilt and launched the sample's `runner-rs` target against ABI v4.
+  rebuilt and launched the sample's `runner-rs` target against the then-current
+  ABI v4 (multi-view work subsequently advances the lockstep ABI to v5).
   Ordinary typing, Backspace, and Ctrl+A selection work in the visible text
   field.
 - Repeated the interactive check with compositor vsync enabled after moving
@@ -343,21 +403,50 @@ startup/shutdown coverage.
   untouched. The synchronization broker and validation-layer stress run above
   supersede the GPU handoff errors observed before explicit semaphores were
   added.
+- Built and ran the repository's unmodified `examples/multiple_windows` app
+  with windowing enabled. Its initial regular window rendered through the Rust
+  shell as Flutter view `1`, including the reference app's controls and window
+  registry UI.
+- Built a temporary two-controller smoke entry point from the same example.
+  Two mapped native windows (views `1` and `2`) rendered simultaneously in one
+  process; closing view `1` left view `2` alive, and closing view `2` completed
+  both asynchronous removals without a panic. The temporary source was removed
+  after validation.
+- Closed the unmodified reference app's delegated main window and verified
+  that its subsequent required `System.exitApplication` request terminates the
+  Rust-shell process without an external signal.
+- Built a temporary dialog smoke target with one regular parent, one modal
+  dialog, and one modeless dialog. All three rendered concurrently as views in
+  one engine. Hyprland treated the Wayland transient as a native floating
+  dialog; closing the parent removed the modal child while the modeless dialog
+  remained alive. The temporary source was removed after validation.
 
 ## Next implementation steps (phase 1)
 
-1. Complete interactive non-Latin composition checks with a configured system
+1. Add automated framework/host coverage for regular-window create, state,
+   delegated close, and asynchronous destruction rather than relying only on
+   the end-to-end compositor smoke test.
+2. Implement the remaining native window kinds required by the reference app,
+   starting with popup/tooltip positioning; satellite windows follow.
+3. Implement the cancelable `System.requestAppExit` response round trip.
+4. Complete interactive non-Latin composition checks with a configured system
    IME.
-2. Add main-thread dispatch for background isolate and Rust-worker callbacks,
+5. Add main-thread dispatch for background isolate and Rust-worker callbacks,
    and test synchronous FFI reentrancy and main-thread starvation behavior.
-3. Add deterministic startup and shutdown ownership tests for the merged
+6. Add deterministic startup and shutdown ownership tests for the merged
    runner.
+7. After windowing feature coverage is complete, replace the broad
+   `cfg(not(test))` callback guards with an injected shell/view-operation
+   interface so Cargo tests can exercise the real create/destroy callback
+   paths using a fake C++ bridge.
 
 ## Constraints carried into implementation
 
 - The Rust shell is optional; existing Flutter shells remain buildable.
 - Impeller remains Flutter's renderer permanently.
 - The public Flutter Embedder API is not used.
+- Multi-window means Flutter multi-view: one engine/root isolate per
+  application, never one engine per native window.
 - Plugin-facing GPU types come from the semantically versioned
   `flutter-plugin-sdk` crate.
 - `flutter_rust_shell_runner`'s `main.cc` is a phase 0 expedient (GN owns the

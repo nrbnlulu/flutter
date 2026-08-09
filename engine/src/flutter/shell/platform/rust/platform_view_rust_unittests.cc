@@ -141,6 +141,7 @@ TEST(PlatformViewRustTest, LinksThePrivateRustAbi) {
 
 TEST(PlatformViewRustTest, ConvertsPrivateAbiPointerEvents) {
   FlutterRustPointerEvent event = {};
+  event.view_id = 42;
   event.timestamp_micros = 1234;
   event.phase = kFlutterRustPointerPhaseMove;
   event.device_kind = kFlutterRustPointerDeviceKindMouse;
@@ -167,7 +168,7 @@ TEST(PlatformViewRustTest, ConvertsPrivateAbiPointerEvents) {
   EXPECT_EQ(data.scroll_delta_x, 53.0);
   EXPECT_EQ(data.scroll_delta_y, -106.0);
   EXPECT_EQ(data.buttons, kPointerButtonMousePrimary);
-  EXPECT_EQ(data.view_id, kFlutterImplicitViewId);
+  EXPECT_EQ(data.view_id, 42);
 }
 
 TEST(PlatformViewRustTest, RejectsUnknownPrivateAbiPointerEnums) {

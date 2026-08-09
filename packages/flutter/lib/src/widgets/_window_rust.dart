@@ -1,0 +1,765 @@
+// Copyright 2014 The Flutter Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+import 'dart:convert';
+import 'dart:ffi' as ffi;
+import 'dart:io';
+import 'dart:ui' show Display, FlutterView, Rect, Size;
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/rendering.dart' show BoxConstraints;
+
+import '_window.dart';
+import '_window_positioner.dart';
+import 'binding.dart';
+
+const String _createRegularSymbol = 'FlutterRustShellWindowCreateRegular';
+const String _createDialogSymbol = 'FlutterRustShellWindowCreateDialog';
+
+/// Whether this process is hosted by Flutter's Rust shell.
+@internal
+bool get isRustShellWindowingAvailable {
+  return Platform.isLinux && ffi.DynamicLibrary.process().providesSymbol(_createRegularSymbol);
+}
+
+@internal
+class WindowingOwnerRust extends WindowingOwner {
+  @internal
+  WindowingOwnerRust() {
+    if (!isRustShellWindowingAvailable) {
+      throw UnsupportedError('The Flutter Rust windowing backend is unavailable.');
+    }
+    // Winit events are delivered outside a Dart invocation even though the
+    // host and isolate share a thread. A listener callable safely schedules
+    // the event into the owning isolate instead of re-entering it directly.
+    _eventCallback = ffi.NativeCallable<_WindowEventNative>.listener(_handleWindowEvent);
+    _RustWindowing.setEventCallback(_engineId, _eventCallback.nativeFunction);
+  }
+
+  final Map<int, _RustLifecycleController> _controllers = <int, _RustLifecycleController>{};
+  late final ffi.NativeCallable<_WindowEventNative> _eventCallback;
+
+  int get _engineId => WidgetsBinding.instance.platformDispatcher.engineId!;
+
+  @override
+  WindowController createWindowController({
+    required WindowControllerDelegate delegate,
+    Size? size,
+    BoxConstraints? constraints,
+    required bool resizable,
+    String? title,
+  }) {
+    final controller = WindowControllerRust(
+      owner: this,
+      delegate: delegate,
+      size: size,
+      constraints: constraints,
+      resizable: resizable,
+      title: title,
+    );
+    _controllers[controller.rootView.viewId] = controller;
+    return controller;
+  }
+
+  void _handleWindowEvent(int viewId, int event) {
+    final _RustLifecycleController? controller = _controllers[viewId];
+    if (controller == null) {
+      return;
+    }
+    switch (_WindowEvent.fromNative(event)) {
+      case _WindowEvent.stateChanged:
+        controller._stateChanged();
+        return;
+      case _WindowEvent.closeRequested:
+        controller._closeRequested();
+        return;
+      case _WindowEvent.destroyed:
+        _controllers.remove(viewId);
+        controller._windowDestroyed();
+        return;
+    }
+  }
+
+  @override
+  DialogWindowController createDialogWindowController({
+    required DialogWindowControllerDelegate delegate,
+    Size? size,
+    BoxConstraints? constraints,
+    required bool resizable,
+    BaseWindowController? parent,
+    String? title,
+  }) {
+    if (parent != null &&
+        parent is! WindowControllerRust &&
+        parent is! DialogWindowControllerRust) {
+      throw ArgumentError.value(parent, 'parent', 'must be owned by the Rust shell');
+    }
+    final controller = DialogWindowControllerRust(
+      owner: this,
+      delegate: delegate,
+      size: size,
+      constraints: constraints,
+      resizable: resizable,
+      parent: parent,
+      title: title,
+    );
+    _controllers[controller.rootView.viewId] = controller;
+    return controller;
+  }
+
+  @override
+  TooltipWindowController createTooltipWindowController({
+    required TooltipWindowControllerDelegate delegate,
+    required BoxConstraints constraints,
+    required Rect anchorRect,
+    required WindowPositioner positioner,
+    required BaseWindowController parent,
+  }) => throw UnsupportedError('The Rust shell does not support tooltip windows yet.');
+
+  @override
+  PopupWindowController createPopupWindowController({
+    required PopupWindowControllerDelegate delegate,
+    required BoxConstraints constraints,
+    required Rect anchorRect,
+    required WindowPositioner positioner,
+    required BaseWindowController parent,
+  }) => throw UnsupportedError('The Rust shell does not support popup windows yet.');
+
+  @override
+  SatelliteWindowController createSatelliteWindowController({
+    required SatelliteWindowControllerDelegate delegate,
+    required BaseWindowController parent,
+    required WindowPositioner initialPositioner,
+    Rect? initialAnchorRect,
+    Size? size,
+    BoxConstraints? constraints,
+    required bool resizable,
+    String? title,
+  }) => throw UnsupportedError('The Rust shell does not support satellite windows yet.');
+}
+
+abstract interface class _RustLifecycleController {
+  void _stateChanged();
+  void _closeRequested();
+  void _windowDestroyed();
+}
+
+@internal
+class WindowControllerRust extends WindowController implements _RustLifecycleController {
+  WindowControllerRust({
+    required WindowingOwnerRust owner,
+    required WindowControllerDelegate delegate,
+    required bool resizable,
+    Size? size,
+    BoxConstraints? constraints,
+    String? title,
+  }) : _owner = owner,
+       _delegate = delegate,
+       _title = title ?? 'Flutter',
+       super.empty() {
+    final int viewId = _RustWindowing.createRegularWindow(
+      engineId: _owner._engineId,
+      size: size,
+      constraints: constraints,
+      title: _title,
+      resizable: resizable,
+    );
+    if (viewId < 0) {
+      throw StateError('The Rust shell failed to create a regular window.');
+    }
+    rootView = WidgetsBinding.instance.platformDispatcher.views.firstWhere(
+      (FlutterView view) => view.viewId == viewId,
+    );
+  }
+
+  final WindowingOwnerRust _owner;
+  final WindowControllerDelegate _delegate;
+  String _title;
+  bool _destroyRequested = false;
+  bool _destroyed = false;
+
+  void _ensureNotDestroyed() {
+    if (_destroyed) {
+      throw StateError('Window has been destroyed.');
+    }
+  }
+
+  _WindowStateValue get _state {
+    _ensureNotDestroyed();
+    return _RustWindowing.getWindowState(_owner._engineId, rootView.viewId);
+  }
+
+  @override
+  Size get contentSize {
+    final _WindowStateValue state = _state;
+    return Size(state.width, state.height);
+  }
+
+  @override
+  bool get isDestroyed => _destroyed;
+
+  @override
+  String get title {
+    _ensureNotDestroyed();
+    return _title;
+  }
+
+  @override
+  bool get isActivated => _state.focused != 0;
+
+  @override
+  bool get isMaximized => _state.maximized != 0;
+
+  @override
+  bool get isMinimized => _state.minimized != 0;
+
+  @override
+  bool get isFullscreen => _state.fullscreen != 0;
+
+  @override
+  void destroy() {
+    if (_destroyed || _destroyRequested) {
+      return;
+    }
+    _destroyRequested = true;
+    _RustWindowing.destroyWindow(_owner._engineId, rootView.viewId);
+  }
+
+  @override
+  void setSize(Size size) {
+    _ensureNotDestroyed();
+    _RustWindowing.setSize(_owner._engineId, rootView.viewId, size.width, size.height);
+  }
+
+  @override
+  void setConstraints(BoxConstraints constraints) {
+    _ensureNotDestroyed();
+    _RustWindowing.setConstraints(_owner._engineId, rootView.viewId, constraints);
+  }
+
+  @override
+  void setTitle(String title) {
+    _ensureNotDestroyed();
+    _RustWindowing.setTitle(_owner._engineId, rootView.viewId, title);
+    _title = title;
+    notifyListeners();
+  }
+
+  @override
+  void activate() {
+    _ensureNotDestroyed();
+    _RustWindowing.activate(_owner._engineId, rootView.viewId);
+  }
+
+  @override
+  void setMaximized(bool maximized) {
+    _ensureNotDestroyed();
+    _RustWindowing.setMaximized(_owner._engineId, rootView.viewId, maximized);
+  }
+
+  @override
+  void setMinimized(bool minimized) {
+    _ensureNotDestroyed();
+    _RustWindowing.setMinimized(_owner._engineId, rootView.viewId, minimized);
+  }
+
+  @override
+  void setFullscreen(bool fullscreen, {Display? display}) {
+    _ensureNotDestroyed();
+    _RustWindowing.setFullscreen(_owner._engineId, rootView.viewId, fullscreen);
+  }
+
+  @override
+  void _stateChanged() {
+    if (!_destroyed) {
+      notifyListeners();
+    }
+  }
+
+  @override
+  void _closeRequested() {
+    if (!_destroyed && !_destroyRequested) {
+      _delegate.onWindowCloseRequested(this);
+    }
+  }
+
+  @override
+  void _windowDestroyed() {
+    if (_destroyed) {
+      return;
+    }
+    _destroyed = true;
+    notifyListeners();
+    _delegate.onWindowDestroyed();
+  }
+}
+
+@internal
+class DialogWindowControllerRust extends DialogWindowController
+    implements _RustLifecycleController {
+  DialogWindowControllerRust({
+    required WindowingOwnerRust owner,
+    required DialogWindowControllerDelegate delegate,
+    required bool resizable,
+    required this.parent,
+    Size? size,
+    BoxConstraints? constraints,
+    String? title,
+  }) : _owner = owner,
+       _delegate = delegate,
+       _title = title ?? 'Flutter',
+       super.empty() {
+    final int viewId = _RustWindowing.createDialogWindow(
+      engineId: _owner._engineId,
+      size: size,
+      constraints: constraints,
+      title: _title,
+      resizable: resizable,
+      parentViewId: parent?.rootView.viewId,
+    );
+    if (viewId < 0) {
+      throw StateError('The Rust shell failed to create a dialog window.');
+    }
+    rootView = WidgetsBinding.instance.platformDispatcher.views.firstWhere(
+      (FlutterView view) => view.viewId == viewId,
+    );
+  }
+
+  final WindowingOwnerRust _owner;
+  final DialogWindowControllerDelegate _delegate;
+  @override
+  final BaseWindowController? parent;
+  String _title;
+  bool _destroyRequested = false;
+  bool _destroyed = false;
+
+  void _ensureNotDestroyed() {
+    if (_destroyed) {
+      throw StateError('Window has been destroyed.');
+    }
+  }
+
+  _WindowStateValue get _state {
+    _ensureNotDestroyed();
+    return _RustWindowing.getWindowState(_owner._engineId, rootView.viewId);
+  }
+
+  @override
+  Size get contentSize => Size(_state.width, _state.height);
+
+  @override
+  bool get isDestroyed => _destroyed;
+
+  @override
+  String get title {
+    _ensureNotDestroyed();
+    return _title;
+  }
+
+  @override
+  bool get isActivated => _state.focused != 0;
+
+  @override
+  bool get isMinimized => _state.minimized != 0;
+
+  @override
+  void destroy() {
+    if (_destroyed || _destroyRequested) {
+      return;
+    }
+    _destroyRequested = true;
+    _RustWindowing.destroyWindow(_owner._engineId, rootView.viewId);
+  }
+
+  @override
+  void setSize(Size size) {
+    _ensureNotDestroyed();
+    _RustWindowing.setSize(_owner._engineId, rootView.viewId, size.width, size.height);
+  }
+
+  @override
+  void setConstraints(BoxConstraints constraints) {
+    _ensureNotDestroyed();
+    _RustWindowing.setConstraints(_owner._engineId, rootView.viewId, constraints);
+  }
+
+  @override
+  void setTitle(String title) {
+    _ensureNotDestroyed();
+    _RustWindowing.setTitle(_owner._engineId, rootView.viewId, title);
+    _title = title;
+    notifyListeners();
+  }
+
+  @override
+  void activate() {
+    _ensureNotDestroyed();
+    _RustWindowing.activate(_owner._engineId, rootView.viewId);
+  }
+
+  @override
+  void setMinimized(bool minimized) {
+    _ensureNotDestroyed();
+    _RustWindowing.setMinimized(_owner._engineId, rootView.viewId, minimized);
+  }
+
+  @override
+  void _stateChanged() {
+    if (!_destroyed) {
+      notifyListeners();
+    }
+  }
+
+  @override
+  void _closeRequested() {
+    if (!_destroyed && !_destroyRequested) {
+      _delegate.onWindowCloseRequested(this);
+    }
+  }
+
+  @override
+  void _windowDestroyed() {
+    if (_destroyed) {
+      return;
+    }
+    _destroyed = true;
+    notifyListeners();
+    _delegate.onWindowDestroyed();
+  }
+}
+
+enum _WindowEvent {
+  stateChanged(0),
+  closeRequested(1),
+  destroyed(2);
+
+  const _WindowEvent(this.nativeValue);
+  final int nativeValue;
+
+  static _WindowEvent fromNative(int value) {
+    return values.firstWhere(
+      (_WindowEvent event) => event.nativeValue == value,
+      orElse: () => throw StateError('Unknown Rust window event: $value'),
+    );
+  }
+}
+
+final class _RegularWindowRequest extends ffi.Struct {
+  @ffi.Int32()
+  external int hasSize;
+
+  @ffi.Double()
+  external double width;
+
+  @ffi.Double()
+  external double height;
+
+  external ffi.Pointer<ffi.Uint8> title;
+
+  @ffi.Uint64()
+  external int titleLength;
+
+  @ffi.Int32()
+  external int resizable;
+
+  @ffi.Int32()
+  external int hasConstraints;
+
+  @ffi.Double()
+  external double minWidth;
+
+  @ffi.Double()
+  external double minHeight;
+
+  @ffi.Double()
+  external double maxWidth;
+
+  @ffi.Double()
+  external double maxHeight;
+}
+
+final class _DialogWindowRequest extends ffi.Struct {
+  external _RegularWindowRequest window;
+
+  @ffi.Int32()
+  external int hasParent;
+
+  @ffi.Int64()
+  external int parentViewId;
+}
+
+final class _WindowState extends ffi.Struct {
+  @ffi.Double()
+  external double width;
+
+  @ffi.Double()
+  external double height;
+
+  @ffi.Int32()
+  external int focused;
+
+  @ffi.Int32()
+  external int maximized;
+
+  @ffi.Int32()
+  external int minimized;
+
+  @ffi.Int32()
+  external int fullscreen;
+}
+
+typedef _WindowEventNative = ffi.Void Function(ffi.Int64 viewId, ffi.Int32 event);
+typedef _WindowStateValue = ({
+  double width,
+  double height,
+  int focused,
+  int maximized,
+  int minimized,
+  int fullscreen,
+});
+
+final class _RustWindowing {
+  static int createRegularWindow({
+    required int engineId,
+    required Size? size,
+    required BoxConstraints? constraints,
+    required String title,
+    required bool resizable,
+  }) {
+    final List<int> titleBytes = utf8.encode(title);
+    final ffi.Pointer<_RegularWindowRequest> request = _malloc(
+      ffi.sizeOf<_RegularWindowRequest>(),
+    ).cast<_RegularWindowRequest>();
+    if (request == ffi.nullptr) {
+      throw StateError('Native allocation failed.');
+    }
+    final ffi.Pointer<ffi.Uint8> titlePointer = _allocateBytes(titleBytes.length);
+    if (titleBytes.isNotEmpty) {
+      titlePointer.asTypedList(titleBytes.length).setAll(0, titleBytes);
+    }
+    request.ref
+      ..hasSize = size == null ? 0 : 1
+      ..width = size?.width ?? 0
+      ..height = size?.height ?? 0
+      ..title = titlePointer
+      ..titleLength = titleBytes.length
+      ..resizable = resizable ? 1 : 0
+      ..hasConstraints = constraints == null ? 0 : 1
+      ..minWidth = constraints?.minWidth ?? 0
+      ..minHeight = constraints?.minHeight ?? 0
+      ..maxWidth = constraints?.maxWidth ?? 0
+      ..maxHeight = constraints?.maxHeight ?? 0;
+    try {
+      return _createRegular(engineId, request);
+    } finally {
+      if (titlePointer != ffi.nullptr) {
+        _free(titlePointer.cast());
+      }
+      _free(request.cast());
+    }
+  }
+
+  static int createDialogWindow({
+    required int engineId,
+    required Size? size,
+    required BoxConstraints? constraints,
+    required String title,
+    required bool resizable,
+    required int? parentViewId,
+  }) {
+    final List<int> titleBytes = utf8.encode(title);
+    final ffi.Pointer<_DialogWindowRequest> request = _malloc(
+      ffi.sizeOf<_DialogWindowRequest>(),
+    ).cast<_DialogWindowRequest>();
+    if (request == ffi.nullptr) {
+      throw StateError('Native allocation failed.');
+    }
+    final ffi.Pointer<ffi.Uint8> titlePointer = _allocateBytes(titleBytes.length);
+    if (titleBytes.isNotEmpty) {
+      titlePointer.asTypedList(titleBytes.length).setAll(0, titleBytes);
+    }
+    request.ref.window
+      ..hasSize = size == null ? 0 : 1
+      ..width = size?.width ?? 0
+      ..height = size?.height ?? 0
+      ..title = titlePointer
+      ..titleLength = titleBytes.length
+      ..resizable = resizable ? 1 : 0
+      ..hasConstraints = constraints == null ? 0 : 1
+      ..minWidth = constraints?.minWidth ?? 0
+      ..minHeight = constraints?.minHeight ?? 0
+      ..maxWidth = constraints?.maxWidth ?? 0
+      ..maxHeight = constraints?.maxHeight ?? 0;
+    request.ref
+      ..hasParent = parentViewId == null ? 0 : 1
+      ..parentViewId = parentViewId ?? 0;
+    try {
+      return _createDialog(engineId, request);
+    } finally {
+      if (titlePointer != ffi.nullptr) {
+        _free(titlePointer.cast());
+      }
+      _free(request.cast());
+    }
+  }
+
+  static _WindowStateValue getWindowState(int engineId, int viewId) {
+    final ffi.Pointer<_WindowState> state = _malloc(
+      ffi.sizeOf<_WindowState>(),
+    ).cast<_WindowState>();
+    if (state == ffi.nullptr) {
+      throw StateError('Native allocation failed.');
+    }
+    if (_getState(engineId, viewId, state) == 0) {
+      _free(state.cast());
+      throw StateError('The Rust shell no longer has window $viewId.');
+    }
+    final _WindowStateValue result = (
+      width: state.ref.width,
+      height: state.ref.height,
+      focused: state.ref.focused,
+      maximized: state.ref.maximized,
+      minimized: state.ref.minimized,
+      fullscreen: state.ref.fullscreen,
+    );
+    _free(state.cast());
+    return result;
+  }
+
+  static void setConstraints(int engineId, int viewId, BoxConstraints constraints) {
+    _setConstraints(
+      engineId,
+      viewId,
+      1,
+      constraints.minWidth,
+      constraints.minHeight,
+      constraints.maxWidth,
+      constraints.maxHeight,
+    );
+  }
+
+  static void setTitle(int engineId, int viewId, String title) {
+    final List<int> bytes = utf8.encode(title);
+    final ffi.Pointer<ffi.Uint8> pointer = _allocateBytes(bytes.length);
+    if (bytes.isNotEmpty) {
+      pointer.asTypedList(bytes.length).setAll(0, bytes);
+    }
+    try {
+      _setTitle(engineId, viewId, pointer, bytes.length);
+    } finally {
+      if (pointer != ffi.nullptr) {
+        _free(pointer.cast());
+      }
+    }
+  }
+
+  static ffi.Pointer<ffi.Uint8> _allocateBytes(int length) {
+    if (length == 0) {
+      return ffi.nullptr;
+    }
+    final ffi.Pointer<ffi.Uint8> result = _malloc(length).cast<ffi.Uint8>();
+    if (result == ffi.nullptr) {
+      throw StateError('Native allocation failed.');
+    }
+    return result;
+  }
+
+  @ffi.Native<ffi.Pointer<ffi.Void> Function(ffi.IntPtr)>(symbol: 'malloc')
+  external static ffi.Pointer<ffi.Void> _malloc(int size);
+
+  @ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Void>)>(symbol: 'free')
+  external static void _free(ffi.Pointer<ffi.Void> pointer);
+
+  @ffi.Native<ffi.Int64 Function(ffi.Int64, ffi.Pointer<_RegularWindowRequest>)>(
+    symbol: _createRegularSymbol,
+  )
+  external static int _createRegular(int engineId, ffi.Pointer<_RegularWindowRequest> request);
+
+  @ffi.Native<ffi.Int64 Function(ffi.Int64, ffi.Pointer<_DialogWindowRequest>)>(
+    symbol: _createDialogSymbol,
+  )
+  external static int _createDialog(int engineId, ffi.Pointer<_DialogWindowRequest> request);
+
+  @ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int64)>(symbol: 'FlutterRustShellWindowDestroy')
+  external static void destroyWindow(int engineId, int viewId);
+
+  @ffi.Native<ffi.Int32 Function(ffi.Int64, ffi.Int64, ffi.Pointer<_WindowState>)>(
+    symbol: 'FlutterRustShellWindowGetState',
+  )
+  external static int _getState(int engineId, int viewId, ffi.Pointer<_WindowState> state);
+
+  @ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int64, ffi.Double, ffi.Double)>(
+    symbol: 'FlutterRustShellWindowSetSize',
+  )
+  external static void setSize(int engineId, int viewId, double width, double height);
+
+  @ffi.Native<
+    ffi.Void Function(
+      ffi.Int64,
+      ffi.Int64,
+      ffi.Int32,
+      ffi.Double,
+      ffi.Double,
+      ffi.Double,
+      ffi.Double,
+    )
+  >(symbol: 'FlutterRustShellWindowSetConstraints')
+  external static void _setConstraints(
+    int engineId,
+    int viewId,
+    int hasConstraints,
+    double minWidth,
+    double minHeight,
+    double maxWidth,
+    double maxHeight,
+  );
+
+  @ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int64, ffi.Pointer<ffi.Uint8>, ffi.Uint64)>(
+    symbol: 'FlutterRustShellWindowSetTitle',
+  )
+  external static void _setTitle(
+    int engineId,
+    int viewId,
+    ffi.Pointer<ffi.Uint8> title,
+    int titleLength,
+  );
+
+  @ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int64)>(symbol: 'FlutterRustShellWindowActivate')
+  external static void activate(int engineId, int viewId);
+
+  @ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int64, ffi.Int32)>(
+    symbol: 'FlutterRustShellWindowSetMaximized',
+  )
+  external static void _setMaximized(int engineId, int viewId, int maximized);
+
+  static void setMaximized(int engineId, int viewId, bool maximized) {
+    _setMaximized(engineId, viewId, maximized ? 1 : 0);
+  }
+
+  @ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int64, ffi.Int32)>(
+    symbol: 'FlutterRustShellWindowSetMinimized',
+  )
+  external static void _setMinimized(int engineId, int viewId, int minimized);
+
+  static void setMinimized(int engineId, int viewId, bool minimized) {
+    _setMinimized(engineId, viewId, minimized ? 1 : 0);
+  }
+
+  @ffi.Native<ffi.Void Function(ffi.Int64, ffi.Int64, ffi.Int32)>(
+    symbol: 'FlutterRustShellWindowSetFullscreen',
+  )
+  external static void _setFullscreen(int engineId, int viewId, int fullscreen);
+
+  static void setFullscreen(int engineId, int viewId, bool fullscreen) {
+    _setFullscreen(engineId, viewId, fullscreen ? 1 : 0);
+  }
+
+  @ffi.Native<ffi.Void Function(ffi.Int64, ffi.Pointer<ffi.NativeFunction<_WindowEventNative>>)>(
+    symbol: 'FlutterRustShellWindowSetEventCallback',
+  )
+  external static void setEventCallback(
+    int engineId,
+    ffi.Pointer<ffi.NativeFunction<_WindowEventNative>> callback,
+  );
+}

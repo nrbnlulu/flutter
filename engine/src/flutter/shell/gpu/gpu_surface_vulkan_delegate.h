@@ -34,6 +34,11 @@ class GPUSurfaceVulkanDelegate {
   ///
   virtual const vulkan::VulkanProcTable& vk() = 0;
 
+  /// @brief  Select the Flutter view targeted by the next image acquisition.
+  ///
+  /// Single-view delegates intentionally ignore this notification.
+  virtual void SetActiveViewId(int64_t view_id);
+
   /// @brief  Called by the engine to fetch a VkImage for writing the next
   ///         frame.
   ///

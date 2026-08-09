@@ -19,13 +19,134 @@ extern "C" {
 
 // This private ABI is lockstep-versioned with the Flutter fork. It is not the
 // Flutter Embedder API and is never exposed to application plugins.
-#define FLUTTER_RUST_SHELL_ABI_VERSION 4u
+#define FLUTTER_RUST_SHELL_ABI_VERSION 5u
 #define FLUTTER_RUST_PLUGIN_SDK_API_VERSION 1u
 
 typedef struct FlutterRustShellAbi {
   uint32_t shell_abi_version;
   uint32_t plugin_sdk_api_version;
 } FlutterRustShellAbi;
+
+typedef int64_t FlutterRustViewId;
+#define FLUTTER_RUST_IMPLICIT_VIEW_ID ((FlutterRustViewId)0)
+
+typedef struct FlutterRustViewMetrics {
+  double width;
+  double height;
+  double pixel_ratio;
+  double display_width;
+  double display_height;
+  double display_refresh_rate;
+} FlutterRustViewMetrics;
+
+typedef void (*FlutterRustViewOperationCompleteCallback)(
+    void* user_data,
+    FlutterRustViewId view_id,
+    int success);
+
+typedef struct FlutterRustViewOperationCallbacks {
+  void* user_data;
+  FlutterRustViewOperationCompleteCallback complete;
+} FlutterRustViewOperationCallbacks;
+
+typedef struct FlutterRustRegularWindowRequest {
+  int32_t has_size;
+  double width;
+  double height;
+  const uint8_t* title;
+  uint64_t title_length;
+  int32_t resizable;
+  int32_t has_constraints;
+  double min_width;
+  double min_height;
+  double max_width;
+  double max_height;
+} FlutterRustRegularWindowRequest;
+
+typedef struct FlutterRustDialogWindowRequest {
+  FlutterRustRegularWindowRequest window;
+  int32_t has_parent;
+  FlutterRustViewId parent_view_id;
+} FlutterRustDialogWindowRequest;
+
+typedef struct FlutterRustWindowState {
+  double width;
+  double height;
+  int32_t focused;
+  int32_t maximized;
+  int32_t minimized;
+  int32_t fullscreen;
+} FlutterRustWindowState;
+
+typedef enum FlutterRustWindowEvent {
+  kFlutterRustWindowEventStateChanged = 0,
+  kFlutterRustWindowEventCloseRequested = 1,
+  kFlutterRustWindowEventDestroyed = 2,
+} FlutterRustWindowEvent;
+
+typedef void (*FlutterRustWindowEventCallback)(FlutterRustViewId view_id,
+                                               FlutterRustWindowEvent event);
+
+typedef FlutterRustViewId (*FlutterRustCreateRegularWindowCallback)(
+    void* user_data,
+    const FlutterRustRegularWindowRequest* request);
+typedef FlutterRustViewId (*FlutterRustCreateDialogWindowCallback)(
+    void* user_data,
+    const FlutterRustDialogWindowRequest* request);
+typedef void (*FlutterRustDestroyWindowCallback)(void* user_data,
+                                                 FlutterRustViewId view_id);
+typedef int (*FlutterRustGetWindowStateCallback)(void* user_data,
+                                                 FlutterRustViewId view_id,
+                                                 FlutterRustWindowState* state);
+typedef void (*FlutterRustSetWindowSizeCallback)(void* user_data,
+                                                 FlutterRustViewId view_id,
+                                                 double width,
+                                                 double height);
+typedef void (*FlutterRustSetWindowConstraintsCallback)(
+    void* user_data,
+    FlutterRustViewId view_id,
+    int32_t has_constraints,
+    double min_width,
+    double min_height,
+    double max_width,
+    double max_height);
+typedef void (*FlutterRustSetWindowTitleCallback)(void* user_data,
+                                                  FlutterRustViewId view_id,
+                                                  const uint8_t* title,
+                                                  uint64_t title_length);
+typedef void (*FlutterRustSetWindowFlagCallback)(void* user_data,
+                                                 FlutterRustViewId view_id,
+                                                 int32_t enabled);
+typedef void (*FlutterRustSetWindowEventCallback)(
+    void* user_data,
+    FlutterRustWindowEventCallback callback);
+
+typedef struct FlutterRustWindowingCallbacks {
+  void* user_data;
+  FlutterRustCreateRegularWindowCallback create_regular_window;
+  FlutterRustCreateDialogWindowCallback create_dialog_window;
+  FlutterRustDestroyWindowCallback destroy_window;
+  FlutterRustGetWindowStateCallback get_window_state;
+  FlutterRustSetWindowSizeCallback set_window_size;
+  FlutterRustSetWindowConstraintsCallback set_window_constraints;
+  FlutterRustSetWindowTitleCallback set_window_title;
+  FlutterRustDestroyWindowCallback activate_window;
+  FlutterRustSetWindowFlagCallback set_window_maximized;
+  FlutterRustSetWindowFlagCallback set_window_minimized;
+  FlutterRustSetWindowFlagCallback set_window_fullscreen;
+  FlutterRustSetWindowEventCallback set_window_event_callback;
+} FlutterRustWindowingCallbacks;
+
+typedef enum FlutterRustViewFocusState {
+  kFlutterRustViewFocusStateUnfocused = 0,
+  kFlutterRustViewFocusStateFocused = 1,
+} FlutterRustViewFocusState;
+
+typedef enum FlutterRustViewFocusDirection {
+  kFlutterRustViewFocusDirectionUndefined = 0,
+  kFlutterRustViewFocusDirectionForward = 1,
+  kFlutterRustViewFocusDirectionBackward = 2,
+} FlutterRustViewFocusDirection;
 
 // A callback table owned by the Rust host for one merged Flutter UI/platform
 // task runner. Times are relative delays so C++ and Rust need not share a
@@ -155,6 +276,7 @@ typedef enum FlutterRustPointerSignalKind {
 } FlutterRustPointerSignalKind;
 
 typedef struct FlutterRustPointerEvent {
+  FlutterRustViewId view_id;
   uint64_t timestamp_micros;
   uint32_t phase;
   uint32_t device_kind;
@@ -207,28 +329,95 @@ FLUTTER_RUST_SHELL_EXPORT void* FlutterRustShellCreateShell(
     FlutterRustVulkanPresentationCallbacks presentation_callbacks,
     FlutterRustPlatformMessageCallbacks platform_message_callbacks,
     FlutterRustVsyncCallbacks vsync_callbacks,
+    FlutterRustWindowingCallbacks windowing_callbacks,
     FlutterRustShellSettings settings);
+
+// Dart FFI entry points backing Flutter's WindowController on the Rust shell.
+FLUTTER_RUST_SHELL_EXPORT FlutterRustViewId FlutterRustShellWindowCreateRegular(
+    int64_t engine_id,
+    const FlutterRustRegularWindowRequest* request);
+FLUTTER_RUST_SHELL_EXPORT FlutterRustViewId FlutterRustShellWindowCreateDialog(
+    int64_t engine_id,
+    const FlutterRustDialogWindowRequest* request);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowDestroy(
+    int64_t engine_id,
+    FlutterRustViewId view_id);
+FLUTTER_RUST_SHELL_EXPORT int FlutterRustShellWindowGetState(
+    int64_t engine_id,
+    FlutterRustViewId view_id,
+    FlutterRustWindowState* state);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowSetSize(
+    int64_t engine_id,
+    FlutterRustViewId view_id,
+    double width,
+    double height);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowSetConstraints(
+    int64_t engine_id,
+    FlutterRustViewId view_id,
+    int32_t has_constraints,
+    double min_width,
+    double min_height,
+    double max_width,
+    double max_height);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowSetTitle(
+    int64_t engine_id,
+    FlutterRustViewId view_id,
+    const uint8_t* title,
+    uint64_t title_length);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowActivate(
+    int64_t engine_id,
+    FlutterRustViewId view_id);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowSetMaximized(
+    int64_t engine_id,
+    FlutterRustViewId view_id,
+    int32_t maximized);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowSetMinimized(
+    int64_t engine_id,
+    FlutterRustViewId view_id,
+    int32_t minimized);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowSetFullscreen(
+    int64_t engine_id,
+    FlutterRustViewId view_id,
+    int32_t fullscreen);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowSetEventCallback(
+    int64_t engine_id,
+    FlutterRustWindowEventCallback callback);
 
 // Starts the root isolate and attaches the Vulkan presentation surface. Must
 // run on the merged Rust UI/platform task runner. Returns non-zero on
 // success.
 FLUTTER_RUST_SHELL_EXPORT int FlutterRustShellRunShell(void* shell);
 
-// Reports the implicit view's size to the running engine. Call once after
-// FlutterRustShellRunShell succeeds and again on every resize; without this
-// the root isolate has no valid view to schedule frames for. Must run on the
-// merged Rust UI/platform task runner.
+// Reports one view's size to the running engine. Call for the implicit view
+// after FlutterRustShellRunShell succeeds and again whenever any view resizes.
+// Must run on the merged Rust UI/platform task runner.
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSetViewportMetrics(
     void* shell,
-    double width,
-    double height,
-    double pixel_ratio,
-    double display_width,
-    double display_height,
-    double display_refresh_rate);
+    FlutterRustViewId view_id,
+    FlutterRustViewMetrics metrics);
 
-// Dispatches one mouse or touch event to the implicit Flutter view. Must run
-// on the merged Rust UI/platform task runner.
+// Adds/removes a non-implicit view in the shared engine. Completion is
+// asynchronous and returns on the merged Rust UI/platform task runner. The
+// callback owner must remain alive until completion.
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellAddView(
+    void* shell,
+    FlutterRustViewId view_id,
+    FlutterRustViewMetrics metrics,
+    FlutterRustVulkanPresentationCallbacks presentation_callbacks,
+    FlutterRustViewOperationCallbacks callbacks);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellRemoveView(
+    void* shell,
+    FlutterRustViewId view_id,
+    FlutterRustViewOperationCallbacks callbacks);
+
+// Reports native focus changes for one Flutter view.
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSendViewFocusEvent(
+    void* shell,
+    FlutterRustViewId view_id,
+    uint32_t state,
+    uint32_t direction);
+
+// Dispatches one mouse or touch event to the event's target Flutter view.
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSendPointerEvent(
     void* shell,
     FlutterRustPointerEvent event);

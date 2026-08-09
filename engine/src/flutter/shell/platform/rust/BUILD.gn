@@ -172,7 +172,12 @@ executable("flutter_rust_shell_runner") {
   # currently loaded process; this makes them visible despite the default
   # hidden-visibility build config. See shell_host_executable in
   # //flutter/shell/common/BUILD.gn for the same requirement.
-  public_configs = [ "//flutter:export_dynamic_symbols" ]
+  if (is_linux) {
+    inputs = [ "rust_runner_exports.sym" ]
+    ldflags = [ "-Wl,--dynamic-list=" + rebase_path(inputs[0], root_build_dir) ]
+  } else {
+    public_configs = [ "//flutter:export_dynamic_symbols" ]
+  }
 
   deps = [
     ":flutter_rust_shell",
@@ -184,8 +189,8 @@ executable("flutter_rust_shell_runner") {
   # The Rust archive is passed directly to the linker, so declare it as an
   # input as well as depending on its producing action. Otherwise changes to
   # Rust-only event handling do not cause the native runner to relink.
-  inputs = [ _flutter_shell_winit_output ]
-  ldflags = [ rebase_path(_flutter_shell_winit_output, root_build_dir) ]
+  inputs += [ _flutter_shell_winit_output ]
+  ldflags += [ rebase_path(_flutter_shell_winit_output, root_build_dir) ]
 
   libs = [
     "dl",

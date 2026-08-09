@@ -38,6 +38,10 @@ class TestGPUSurfaceVulkanDelegate : public GPUSurfaceVulkanDelegate {
 
   const vulkan::VulkanProcTable& vk() override { return *vk_; }
 
+  void SetActiveViewId(int64_t view_id) override { active_view_id_ = view_id; }
+
+  int64_t GetActiveViewId() const { return active_view_id_; }
+
   FlutterVulkanImage AcquireImage(const DlISize& size) override {
     if (!test_surface_ || surface_size_ != size) {
       test_surface_ = TestVulkanSurface::Create(*test_context_, size);
@@ -60,7 +64,21 @@ class TestGPUSurfaceVulkanDelegate : public GPUSurfaceVulkanDelegate {
   fml::RefPtr<TestVulkanContext> test_context_;
   std::unique_ptr<TestVulkanSurface> test_surface_;
   DlISize surface_size_ = {};
+  int64_t active_view_id_ = 0;
 };
+
+TEST(GPUSurfaceVulkanImpeller, ForwardsActiveViewIdToDelegate) {
+  impeller::ContextVK::Settings context_settings;
+  context_settings.proc_address_callback = vkGetInstanceProcAddr;
+  context_settings.shader_libraries_data = ShaderLibraryMappings();
+  auto context = impeller::ContextVK::Create(std::move(context_settings));
+  TestGPUSurfaceVulkanDelegate delegate;
+  auto surface = std::make_unique<GPUSurfaceVulkanImpeller>(&delegate, context);
+
+  surface->SetActiveViewId(42);
+
+  EXPECT_EQ(delegate.GetActiveViewId(), 42);
+}
 
 TEST(GPUSurfaceVulkanImpeller, DisposesThreadLocalResources) {
   impeller::ContextVK::Settings context_settings;

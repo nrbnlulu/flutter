@@ -8,9 +8,11 @@
 #[cfg(target_os = "linux")]
 mod linux {
     use std::{
-        collections::{BTreeMap, VecDeque},
+        cell::RefCell,
+        collections::{BTreeMap, HashMap, HashSet, VecDeque},
         ffi::c_void,
         path::PathBuf,
+        rc::Rc,
         sync::Arc,
         sync::{
             Mutex,
@@ -24,19 +26,37 @@ mod linux {
         FLUTTER_RUST_KEY_CHARACTER_CAPACITY, FlutterRustKeyEvent, FlutterRustKeyEventType,
         FlutterRustLifecycleState, FlutterRustPointerDeviceKind, FlutterRustPointerEvent,
         FlutterRustPointerPhase, FlutterRustPointerSignalKind, FlutterRustTaskRunnerCallbacks,
-        FlutterRustVsyncCallbacks,
+        FlutterRustViewId, FlutterRustVsyncCallbacks, FlutterRustWindowEventCallback,
     };
     #[cfg(not(test))]
     use flutter_shell_core::{
-        FlutterRustPlatformMessageCallbacks, FlutterRustShellSettings, FlutterRustVulkanContextData,
+        FlutterRustDialogWindowRequest, FlutterRustPlatformMessageCallbacks,
+        FlutterRustRegularWindowRequest, FlutterRustShellSettings, FlutterRustViewFocusDirection,
+        FlutterRustViewFocusState, FlutterRustViewMetrics, FlutterRustViewOperationCallbacks,
+        FlutterRustVulkanContextData, FlutterRustVulkanPresentationCallbacks,
+        FlutterRustWindowEvent, FlutterRustWindowState, FlutterRustWindowingCallbacks,
     };
     use flutter_shell_wgpu::GpuBroker;
+    #[cfg(not(test))]
+    use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
     use serde::{Deserialize, Serialize, de::IgnoredAny};
     use serde_json::Value;
     #[cfg(not(test))]
     use std::ffi::CString;
     #[cfg(not(test))]
-    use winit::platform::wayland::ActiveEventLoopExtWayland;
+    use std::rc::Weak;
+    #[cfg(not(test))]
+    use wayland_sys::{
+        client::{wayland_client_handle, wl_proxy},
+        ffi_dispatch,
+    };
+    #[cfg(not(test))]
+    use winit::platform::{
+        wayland::{ActiveEventLoopExtWayland, WindowExtWayland},
+        x11::{WindowAttributesExtX11, WindowType},
+    };
+    #[cfg(not(test))]
+    use winit::window::Fullscreen;
     use winit::{
         application::ApplicationHandler,
         dpi::{LogicalPosition, LogicalSize},
@@ -54,6 +74,441 @@ mod linux {
     enum HostEvent {
         TaskScheduled,
         VsyncRequested,
+        ViewOperationCompleted {
+            view_id: FlutterRustViewId,
+            operation: ViewOperation,
+            succeeded: bool,
+        },
+        ExitRequested,
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ViewOperation {
+        Add,
+        Remove,
+    }
+
+    #[cfg(not(test))]
+    struct ViewOperationContext {
+        wake_proxy: EventLoopProxy<HostEvent>,
+        operation: ViewOperation,
+    }
+
+    #[cfg(not(test))]
+    struct ActiveWindowingContext {
+        event_loop: *const ActiveEventLoop,
+        windows: Weak<RefCell<WindowRegistry>>,
+    }
+
+    #[cfg(not(test))]
+    thread_local! {
+        static ACTIVE_WINDOWING_CONTEXT: RefCell<Option<ActiveWindowingContext>> = const {
+            RefCell::new(None)
+        };
+    }
+
+    #[cfg(not(test))]
+    fn with_active_windowing_context<T>(
+        event_loop: &ActiveEventLoop,
+        windows: &Rc<RefCell<WindowRegistry>>,
+        callback: impl FnOnce() -> T,
+    ) -> T {
+        ACTIVE_WINDOWING_CONTEXT.with(|slot| {
+            assert!(slot.borrow().is_none(), "nested Rust windowing context");
+            *slot.borrow_mut() = Some(ActiveWindowingContext {
+                event_loop,
+                windows: Rc::downgrade(windows),
+            });
+        });
+        let result = callback();
+        ACTIVE_WINDOWING_CONTEXT.with(|slot| *slot.borrow_mut() = None);
+        result
+    }
+
+    #[cfg(not(test))]
+    struct NativeWindowRequest {
+        title: String,
+        width: f64,
+        height: f64,
+        resizable: bool,
+        constraints: Option<(f64, f64, f64, f64)>,
+    }
+
+    #[cfg(not(test))]
+    fn decode_window_request(
+        request: &FlutterRustRegularWindowRequest,
+    ) -> Option<NativeWindowRequest> {
+        let title = if request.title_length == 0 {
+            "Flutter".to_owned()
+        } else {
+            if request.title.is_null() {
+                return None;
+            }
+            let length = usize::try_from(request.title_length).ok()?;
+            // SAFETY: the caller guarantees a readable byte range for this
+            // synchronous callback.
+            let bytes = unsafe { std::slice::from_raw_parts(request.title, length) };
+            std::str::from_utf8(bytes).ok()?.to_owned()
+        };
+        let (width, height) = if request.has_size != 0 {
+            (request.width, request.height)
+        } else {
+            (800.0, 600.0)
+        };
+        if !valid_window_size(width, height) {
+            return None;
+        }
+        let constraints = if request.has_constraints != 0 {
+            if !valid_constraints(
+                request.min_width,
+                request.min_height,
+                request.max_width,
+                request.max_height,
+            ) {
+                return None;
+            }
+            Some((
+                request.min_width,
+                request.min_height,
+                request.max_width,
+                request.max_height,
+            ))
+        } else {
+            None
+        };
+        Some(NativeWindowRequest {
+            title,
+            width,
+            height,
+            resizable: request.resizable != 0,
+            constraints,
+        })
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn create_regular_window_callback(
+        _user_data: *mut c_void,
+        request: *const FlutterRustRegularWindowRequest,
+    ) -> FlutterRustViewId {
+        if request.is_null() {
+            return FlutterRustViewId(-1);
+        }
+        // SAFETY: C++ borrows this Dart-allocated request only for the
+        // duration of the synchronous callback.
+        let Some(request) = decode_window_request(unsafe { &*request }) else {
+            return FlutterRustViewId(-1);
+        };
+        ACTIVE_WINDOWING_CONTEXT.with(|slot| {
+            let context = slot.borrow();
+            let Some(context) = context.as_ref() else {
+                return FlutterRustViewId(-1);
+            };
+            let Some(windows) = context.windows.upgrade() else {
+                return FlutterRustViewId(-1);
+            };
+            // SAFETY: with_active_windowing_context installs this pointer only
+            // while winit is executing a callback with a live ActiveEventLoop.
+            let event_loop = unsafe { &*context.event_loop };
+            let created = windows
+                .borrow_mut()
+                .create_regular_view(event_loop, request, NativeWindowKind::Regular, None)
+                .map_err(|error| log::error!("failed to create Flutter window: {error}"));
+            let Ok(created) = created else {
+                return FlutterRustViewId(-1);
+            };
+            add_cpp_shell_view(
+                created.shell,
+                created.view_id,
+                created.metrics,
+                created.presentation_callbacks,
+                created.event_proxy,
+            );
+            created.view_id
+        })
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn create_dialog_window_callback(
+        _user_data: *mut c_void,
+        request: *const FlutterRustDialogWindowRequest,
+    ) -> FlutterRustViewId {
+        if request.is_null() {
+            return FlutterRustViewId(-1);
+        }
+        // SAFETY: C++ borrows the complete request for this synchronous call.
+        let request = unsafe { &*request };
+        let Some(window_request) = decode_window_request(&request.window) else {
+            return FlutterRustViewId(-1);
+        };
+        let parent = (request.has_parent != 0).then_some(request.parent_view_id);
+        ACTIVE_WINDOWING_CONTEXT.with(|slot| {
+            let context = slot.borrow();
+            let Some(context) = context.as_ref() else {
+                return FlutterRustViewId(-1);
+            };
+            let Some(windows) = context.windows.upgrade() else {
+                return FlutterRustViewId(-1);
+            };
+            // SAFETY: the context pointer is installed only for the duration
+            // of a live ActiveEventLoop callback.
+            let event_loop = unsafe { &*context.event_loop };
+            let created = windows.borrow_mut().create_regular_view(
+                event_loop,
+                window_request,
+                NativeWindowKind::Dialog,
+                parent,
+            );
+            let Ok(created) = created else {
+                return FlutterRustViewId(-1);
+            };
+            add_cpp_shell_view(
+                created.shell,
+                created.view_id,
+                created.metrics,
+                created.presentation_callbacks,
+                created.event_proxy,
+            );
+            created.view_id
+        })
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn destroy_window_callback(_user_data: *mut c_void, view_id: FlutterRustViewId) {
+        ACTIVE_WINDOWING_CONTEXT.with(|slot| {
+            let context = slot.borrow();
+            let Some(windows) = context
+                .as_ref()
+                .and_then(|context| context.windows.upgrade())
+            else {
+                return;
+            };
+            let removals = { windows.borrow_mut().begin_remove_views(view_id) };
+            for (view_id, shell, event_proxy) in removals {
+                remove_cpp_shell_view(shell, view_id, event_proxy);
+            }
+        });
+    }
+
+    #[cfg(not(test))]
+    fn with_window_registry<T>(callback: impl FnOnce(&mut WindowRegistry) -> T) -> Option<T> {
+        ACTIVE_WINDOWING_CONTEXT.with(|slot| {
+            let windows = slot
+                .borrow()
+                .as_ref()
+                .and_then(|context| context.windows.upgrade())?;
+            Some(callback(&mut windows.borrow_mut()))
+        })
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn get_window_state_callback(
+        _user_data: *mut c_void,
+        view_id: FlutterRustViewId,
+        state: *mut FlutterRustWindowState,
+    ) -> i32 {
+        if state.is_null() {
+            return 0;
+        }
+        with_window_registry(|windows| {
+            let Some(view) = windows.view(view_id) else {
+                return 0;
+            };
+            let logical_size = view
+                .window
+                .inner_size()
+                .to_logical(view.window.scale_factor());
+            let value = FlutterRustWindowState {
+                width: logical_size.width,
+                height: logical_size.height,
+                focused: i32::from(view.focused),
+                maximized: i32::from(view.window.is_maximized()),
+                minimized: i32::from(view.window.is_minimized().unwrap_or(false)),
+                fullscreen: i32::from(view.window.fullscreen().is_some()),
+            };
+            // SAFETY: the synchronous caller provides writable storage for one
+            // FlutterRustWindowState and retains it for this callback.
+            unsafe { state.write(value) };
+            1
+        })
+        .unwrap_or(0)
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn set_window_size_callback(
+        _user_data: *mut c_void,
+        view_id: FlutterRustViewId,
+        width: f64,
+        height: f64,
+    ) {
+        if !valid_window_size(width, height) {
+            return;
+        }
+        let _ = with_window_registry(|windows| {
+            if let Some(view) = windows.view(view_id) {
+                let _ = view
+                    .window
+                    .request_inner_size(LogicalSize::new(width, height));
+            }
+        });
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn set_window_constraints_callback(
+        _user_data: *mut c_void,
+        view_id: FlutterRustViewId,
+        has_constraints: i32,
+        min_width: f64,
+        min_height: f64,
+        max_width: f64,
+        max_height: f64,
+    ) {
+        let _ = with_window_registry(|windows| {
+            let Some(view) = windows.view(view_id) else {
+                return;
+            };
+            if has_constraints == 0 {
+                view.window.set_min_inner_size(None::<LogicalSize<f64>>);
+                view.window.set_max_inner_size(None::<LogicalSize<f64>>);
+                return;
+            }
+            if !valid_constraints(min_width, min_height, max_width, max_height) {
+                return;
+            }
+            view.window
+                .set_min_inner_size(Some(LogicalSize::new(min_width, min_height)));
+            view.window.set_max_inner_size(Some(LogicalSize::new(
+                finite_maximum(max_width),
+                finite_maximum(max_height),
+            )));
+        });
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn set_window_title_callback(
+        _user_data: *mut c_void,
+        view_id: FlutterRustViewId,
+        title: *const u8,
+        title_length: u64,
+    ) {
+        let Ok(length) = usize::try_from(title_length) else {
+            return;
+        };
+        if length != 0 && title.is_null() {
+            return;
+        }
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: C++ borrows this Dart-owned range only for the duration
+            // of the synchronous callback.
+            unsafe { std::slice::from_raw_parts(title, length) }
+        };
+        let Ok(title) = std::str::from_utf8(bytes) else {
+            return;
+        };
+        let _ = with_window_registry(|windows| {
+            if let Some(view) = windows.view(view_id) {
+                view.window.set_title(title);
+            }
+        });
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn activate_window_callback(_user_data: *mut c_void, view_id: FlutterRustViewId) {
+        let _ = with_window_registry(|windows| {
+            if let Some(view) = windows.view(view_id) {
+                view.window.focus_window();
+            }
+        });
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn set_window_maximized_callback(
+        _user_data: *mut c_void,
+        view_id: FlutterRustViewId,
+        enabled: i32,
+    ) {
+        let _ = with_window_registry(|windows| {
+            if let Some(view) = windows.view(view_id) {
+                view.window.set_maximized(enabled != 0);
+            }
+        });
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn set_window_minimized_callback(
+        _user_data: *mut c_void,
+        view_id: FlutterRustViewId,
+        enabled: i32,
+    ) {
+        let _ = with_window_registry(|windows| {
+            if let Some(view) = windows.view(view_id) {
+                view.window.set_minimized(enabled != 0);
+            }
+        });
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn set_window_fullscreen_callback(
+        _user_data: *mut c_void,
+        view_id: FlutterRustViewId,
+        enabled: i32,
+    ) {
+        let _ = with_window_registry(|windows| {
+            if let Some(view) = windows.view(view_id) {
+                let fullscreen = (enabled != 0).then_some(Fullscreen::Borderless(None));
+                view.window.set_fullscreen(fullscreen);
+            }
+        });
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn set_window_event_callback(
+        _user_data: *mut c_void,
+        callback: Option<FlutterRustWindowEventCallback>,
+    ) {
+        let _ = with_window_registry(|windows| windows.window_event_callback = callback);
+    }
+
+    #[cfg(not(test))]
+    fn windowing_callbacks() -> FlutterRustWindowingCallbacks {
+        FlutterRustWindowingCallbacks {
+            user_data: std::ptr::null_mut(),
+            create_regular_window: Some(create_regular_window_callback),
+            create_dialog_window: Some(create_dialog_window_callback),
+            destroy_window: Some(destroy_window_callback),
+            get_window_state: Some(get_window_state_callback),
+            set_window_size: Some(set_window_size_callback),
+            set_window_constraints: Some(set_window_constraints_callback),
+            set_window_title: Some(set_window_title_callback),
+            activate_window: Some(activate_window_callback),
+            set_window_maximized: Some(set_window_maximized_callback),
+            set_window_minimized: Some(set_window_minimized_callback),
+            set_window_fullscreen: Some(set_window_fullscreen_callback),
+            set_window_event_callback: Some(set_window_event_callback),
+        }
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn complete_view_operation(
+        user_data: *mut c_void,
+        view_id: FlutterRustViewId,
+        succeeded: i32,
+    ) {
+        if user_data.is_null() {
+            return;
+        }
+        // SAFETY: add/remove_cpp_shell_view allocate exactly one context and
+        // C++ guarantees exactly one asynchronous completion callback.
+        let context = unsafe { Box::from_raw(user_data.cast::<ViewOperationContext>()) };
+        let _ = context
+            .wake_proxy
+            .send_event(HostEvent::ViewOperationCompleted {
+                view_id,
+                operation: context.operation,
+                succeeded: succeeded != 0,
+            });
     }
 
     #[cfg(not(test))]
@@ -105,6 +560,7 @@ mod linux {
         presentation_callbacks: flutter_shell_core::FlutterRustVulkanPresentationCallbacks,
         platform_message_callbacks: FlutterRustPlatformMessageCallbacks,
         vsync_callbacks: FlutterRustVsyncCallbacks,
+        windowing_callbacks: FlutterRustWindowingCallbacks,
         settings: FlutterRustShellSettings,
     ) -> *mut c_void {
         unsafe extern "C" {
@@ -114,6 +570,7 @@ mod linux {
                 presentation_callbacks: flutter_shell_core::FlutterRustVulkanPresentationCallbacks,
                 platform_message_callbacks: FlutterRustPlatformMessageCallbacks,
                 vsync_callbacks: FlutterRustVsyncCallbacks,
+                windowing_callbacks: FlutterRustWindowingCallbacks,
                 settings: FlutterRustShellSettings,
             ) -> *mut c_void;
         }
@@ -125,6 +582,7 @@ mod linux {
                 presentation_callbacks,
                 platform_message_callbacks,
                 vsync_callbacks,
+                windowing_callbacks,
                 settings,
             )
         }
@@ -149,30 +607,80 @@ mod linux {
     }
 
     #[cfg(not(test))]
-    fn set_cpp_shell_viewport_metrics(shell: *mut c_void, metrics: WindowMetrics) {
+    fn set_cpp_shell_viewport_metrics(
+        shell: *mut c_void,
+        view_id: FlutterRustViewId,
+        metrics: WindowMetrics,
+    ) {
         unsafe extern "C" {
             fn FlutterRustShellSetViewportMetrics(
                 shell: *mut c_void,
-                width: f64,
-                height: f64,
-                pixel_ratio: f64,
-                display_width: f64,
-                display_height: f64,
-                display_refresh_rate: f64,
+                view_id: FlutterRustViewId,
+                metrics: FlutterRustViewMetrics,
             );
         }
         // SAFETY: `shell` was returned by create_cpp_shell and not yet destroyed.
         unsafe {
-            FlutterRustShellSetViewportMetrics(
-                shell,
-                metrics.width as f64,
-                metrics.height as f64,
-                metrics.pixel_ratio,
-                metrics.display_width as f64,
-                metrics.display_height as f64,
-                metrics.display_refresh_rate,
+            FlutterRustShellSetViewportMetrics(shell, view_id, metrics.into());
+        }
+    }
+
+    #[cfg(not(test))]
+    fn add_cpp_shell_view(
+        shell: *mut c_void,
+        view_id: FlutterRustViewId,
+        metrics: WindowMetrics,
+        presentation_callbacks: flutter_shell_core::FlutterRustVulkanPresentationCallbacks,
+        wake_proxy: EventLoopProxy<HostEvent>,
+    ) {
+        unsafe extern "C" {
+            fn FlutterRustShellAddView(
+                shell: *mut c_void,
+                view_id: FlutterRustViewId,
+                metrics: FlutterRustViewMetrics,
+                presentation_callbacks: flutter_shell_core::FlutterRustVulkanPresentationCallbacks,
+                callbacks: FlutterRustViewOperationCallbacks,
             );
         }
+        let context = Box::new(ViewOperationContext {
+            wake_proxy,
+            operation: ViewOperation::Add,
+        });
+        let callbacks = FlutterRustViewOperationCallbacks {
+            user_data: Box::into_raw(context).cast(),
+            complete: Some(complete_view_operation),
+        };
+        let metrics = FlutterRustViewMetrics::from(metrics);
+        // SAFETY: all tables are ABI-compatible; C++ retains the boxed
+        // completion context until it invokes the callback exactly once.
+        unsafe {
+            FlutterRustShellAddView(shell, view_id, metrics, presentation_callbacks, callbacks)
+        }
+    }
+
+    #[cfg(not(test))]
+    fn remove_cpp_shell_view(
+        shell: *mut c_void,
+        view_id: FlutterRustViewId,
+        wake_proxy: EventLoopProxy<HostEvent>,
+    ) {
+        unsafe extern "C" {
+            fn FlutterRustShellRemoveView(
+                shell: *mut c_void,
+                view_id: FlutterRustViewId,
+                callbacks: FlutterRustViewOperationCallbacks,
+            );
+        }
+        let context = Box::new(ViewOperationContext {
+            wake_proxy,
+            operation: ViewOperation::Remove,
+        });
+        let callbacks = FlutterRustViewOperationCallbacks {
+            user_data: Box::into_raw(context).cast(),
+            complete: Some(complete_view_operation),
+        };
+        // SAFETY: see add_cpp_shell_view.
+        unsafe { FlutterRustShellRemoveView(shell, view_id, callbacks) }
     }
 
     #[cfg(not(test))]
@@ -193,6 +701,31 @@ mod linux {
         // SAFETY: `shell` was returned by create_cpp_shell and the state is a
         // value from the private ABI enum.
         unsafe { FlutterRustShellSendLifecycleEvent(shell, state as u32) }
+    }
+
+    #[cfg(not(test))]
+    fn send_cpp_view_focus_event(
+        shell: *mut c_void,
+        view_id: FlutterRustViewId,
+        state: FlutterRustViewFocusState,
+    ) {
+        unsafe extern "C" {
+            fn FlutterRustShellSendViewFocusEvent(
+                shell: *mut c_void,
+                view_id: FlutterRustViewId,
+                state: u32,
+                direction: u32,
+            );
+        }
+        // SAFETY: the shell is live and all values belong to the private ABI.
+        unsafe {
+            FlutterRustShellSendViewFocusEvent(
+                shell,
+                view_id,
+                state as u32,
+                FlutterRustViewFocusDirection::Undefined as u32,
+            )
+        }
     }
 
     #[cfg(not(test))]
@@ -311,7 +844,6 @@ mod linux {
     const MOUSE_FORWARD_BUTTON: i64 = 1 << 4;
     const SCROLL_LINE_PIXELS: f64 = 53.0;
 
-    #[cfg(not(test))]
     #[derive(Debug, Clone, Copy, PartialEq)]
     struct WindowMetrics {
         width: u32,
@@ -322,7 +854,6 @@ mod linux {
         display_refresh_rate: f64,
     }
 
-    #[cfg(not(test))]
     impl WindowMetrics {
         fn from_window(window: &Window, pixel_ratio: f64) -> Self {
             let size = window.inner_size();
@@ -343,6 +874,20 @@ mod linux {
                 display_width,
                 display_height,
                 display_refresh_rate,
+            }
+        }
+    }
+
+    #[cfg(not(test))]
+    impl From<WindowMetrics> for FlutterRustViewMetrics {
+        fn from(metrics: WindowMetrics) -> Self {
+            Self {
+                width: metrics.width as f64,
+                height: metrics.height as f64,
+                pixel_ratio: metrics.pixel_ratio,
+                display_width: metrics.display_width as f64,
+                display_height: metrics.display_height as f64,
+                display_refresh_rate: metrics.display_refresh_rate,
             }
         }
     }
@@ -432,6 +977,8 @@ mod linux {
     }
 
     const TEXT_INPUT_CHANNEL: &[u8] = b"flutter/textinput";
+    #[cfg(not(test))]
+    const PLATFORM_CHANNEL: &[u8] = b"flutter/platform";
     const KEY_EVENT_CHANNEL: &[u8] = b"flutter/keyevent";
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -623,6 +1170,29 @@ mod linux {
         Noop,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ApplicationExitRequest {
+        Required,
+        Cancelable,
+    }
+
+    impl ApplicationExitRequest {
+        fn decode(message: &[u8]) -> Option<Self> {
+            let envelope: Value = serde_json::from_slice(message).ok()?;
+            match envelope.get("method")?.as_str()? {
+                "SystemNavigator.pop" => Some(Self::Required),
+                "System.exitApplication" => {
+                    match envelope.get("args")?.as_object()?.get("type")?.as_str()? {
+                        "required" => Some(Self::Required),
+                        "cancelable" => Some(Self::Cancelable),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+    }
+
     impl TextInputCommand {
         fn decode(message: &[u8]) -> Option<Self> {
             let call: RawMethodCall = serde_json::from_slice(message).ok()?;
@@ -715,15 +1285,29 @@ mod linux {
         // duration of the callback. A zero-length message does not dereference
         // its possibly-null pointer.
         let channel = unsafe { std::slice::from_raw_parts(channel, channel_size) };
-        if channel != TEXT_INPUT_CHANNEL {
-            return 0;
-        }
         let message = if message_size == 0 {
             &[]
         } else {
             // SAFETY: checked non-null above; C++ owns this range for the call.
             unsafe { std::slice::from_raw_parts(message, message_size) }
         };
+        if channel == PLATFORM_CHANNEL {
+            let Some(request) = ApplicationExitRequest::decode(message) else {
+                return 0;
+            };
+            // Cancelable application exits require a System.requestAppExit
+            // round trip. Until that response path exists, handling the call
+            // without exiting produces the framework's documented cancel
+            // result from the null success envelope.
+            if request == ApplicationExitRequest::Required {
+                let inbox = unsafe { &*user_data.cast::<TextInputInbox>() };
+                let _ = inbox.wake_proxy.send_event(HostEvent::ExitRequested);
+            }
+            return 1;
+        }
+        if channel != TEXT_INPUT_CHANNEL {
+            return 0;
+        }
         let Some(command) = TextInputCommand::decode(message) else {
             return 0;
         };
@@ -826,6 +1410,7 @@ mod linux {
     }
 
     struct PointerState {
+        view_id: FlutterRustViewId,
         started_at: Instant,
         physical_x: f64,
         physical_y: f64,
@@ -836,7 +1421,12 @@ mod linux {
 
     impl PointerState {
         fn new() -> Self {
+            Self::for_view(FlutterRustViewId::IMPLICIT)
+        }
+
+        fn for_view(view_id: FlutterRustViewId) -> Self {
             Self {
+                view_id,
                 started_at: Instant::now(),
                 physical_x: 0.0,
                 physical_y: 0.0,
@@ -854,6 +1444,7 @@ mod linux {
             scroll_delta_y: f64,
         ) -> FlutterRustPointerEvent {
             FlutterRustPointerEvent {
+                view_id: self.view_id,
                 timestamp_micros: self.started_at.elapsed().as_micros().min(u64::MAX as u128)
                     as u64,
                 phase: phase as u32,
@@ -997,6 +1588,7 @@ mod linux {
                 TouchPhase::Cancelled => (FlutterRustPointerPhase::Cancel, 0),
             };
             FlutterRustPointerEvent {
+                view_id: self.view_id,
                 timestamp_micros: self.started_at.elapsed().as_micros().min(u64::MAX as u128)
                     as u64,
                 phase: phase as u32,
@@ -1668,96 +2260,142 @@ mod linux {
     pub fn run(config: ShellConfig) -> Result<(), winit::error::EventLoopError> {
         init_logging();
         let event_loop = EventLoop::<HostEvent>::with_user_event().build()?;
-        let task_runner_host = Box::new(TaskRunnerHost::with_wake_proxy(Some(
-            event_loop.create_proxy(),
-        )));
+        let event_proxy = event_loop.create_proxy();
+        let task_runner_host = Box::new(TaskRunnerHost::with_wake_proxy(Some(event_proxy.clone())));
         task_runner_host.install_cpp_task_runner();
-        let vsync_host = Box::new(VsyncHost::new(event_loop.create_proxy()));
-        let text_input_inbox = Box::new(TextInputInbox::new(event_loop.create_proxy()));
+        let vsync_host = Box::new(VsyncHost::new(event_proxy.clone()));
+        let text_input_inbox = Box::new(TextInputInbox::new(event_proxy.clone()));
+        let windows = Rc::new(RefCell::new(WindowRegistry {
+            views: HashMap::new(),
+            view_windows: HashMap::new(),
+            removing_views: HashSet::new(),
+            focused_window: None,
+            next_view_id: 1,
+            event_proxy,
+            #[cfg(not(test))]
+            shell: None,
+            #[cfg(not(test))]
+            window_event_callback: None,
+        }));
         let mut application = ShellApplication {
             config,
-            window: None,
-            gpu_broker: None,
+            windows,
             task_runner_host,
             vsync_host,
             vsync_armed: false,
-            pointer_state: PointerState::new(),
-            keyboard_state: KeyboardState::new(),
             text_input_inbox,
             text_input_session: TextInputSession::default(),
             lifecycle_state: LifecycleState::new(),
-            #[cfg(not(test))]
-            shell: None,
         };
         event_loop.run_app(&mut application)
     }
 
+    #[cfg_attr(test, allow(dead_code))]
     struct ShellApplication {
         config: ShellConfig,
-        window: Option<Arc<Window>>,
-        gpu_broker: Option<GpuBroker>,
+        windows: Rc<RefCell<WindowRegistry>>,
         task_runner_host: Box<TaskRunnerHost>,
         vsync_host: Box<VsyncHost>,
         vsync_armed: bool,
-        pointer_state: PointerState,
-        keyboard_state: KeyboardState,
         text_input_inbox: Box<TextInputInbox>,
         text_input_session: TextInputSession,
         lifecycle_state: LifecycleState,
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
+    struct WindowRegistry {
+        views: HashMap<WindowId, ViewWindow>,
+        view_windows: HashMap<FlutterRustViewId, WindowId>,
+        removing_views: HashSet<FlutterRustViewId>,
+        focused_window: Option<WindowId>,
+        next_view_id: i64,
+        event_proxy: EventLoopProxy<HostEvent>,
         #[cfg(not(test))]
         shell: Option<*mut c_void>,
+        #[cfg(not(test))]
+        window_event_callback: Option<FlutterRustWindowEventCallback>,
+    }
+
+    struct ViewWindow {
+        view_id: FlutterRustViewId,
+        #[cfg_attr(test, allow(dead_code))]
+        parent_view_id: Option<FlutterRustViewId>,
+        // The broker must be destroyed before its native window. Keeping it
+        // first makes that ordering automatic when a view leaves the map.
+        gpu_broker: Box<GpuBroker>,
+        window: Arc<Window>,
+        // A transient child's native parent must outlive its relationship.
+        _parent_window: Option<Arc<Window>>,
+        pointer_state: PointerState,
+        keyboard_state: KeyboardState,
+        visible: bool,
+        focused: bool,
+    }
+
+    struct RemovedViewState {
+        _view: ViewWindow,
+        callback: Option<FlutterRustWindowEventCallback>,
+    }
+
+    #[cfg(not(test))]
+    struct CreatedRegularView {
+        shell: *mut c_void,
+        view_id: FlutterRustViewId,
+        metrics: WindowMetrics,
+        presentation_callbacks: FlutterRustVulkanPresentationCallbacks,
+        event_proxy: EventLoopProxy<HostEvent>,
+    }
+
+    #[cfg(not(test))]
+    #[derive(Clone, Copy)]
+    enum NativeWindowKind {
+        Regular,
+        Dialog,
     }
 
     impl Drop for ShellApplication {
         fn drop(&mut self) {
+            let mut windows = self.windows.borrow_mut();
             #[cfg(not(test))]
-            if let Some(shell) = self.shell.take() {
+            if let Some(shell) = windows.shell.take() {
                 destroy_cpp_shell(shell);
             }
 
-            // Wgpu's Vulkan surface owns a Wayland swapchain. It must be
-            // dropped while winit still owns the native Window: dropping the
-            // `window` field first lets the compositor tear down its Wayland
-            // proxy, after which Vulkan's vkDestroySwapchainKHR can crash in
-            // the driver. Taking these options makes this order explicit
-            // instead of relying on ShellApplication's field declaration
-            // order (which is window before gpu_broker for startup clarity).
-            self.gpu_broker.take();
-            self.window.take();
+            // Each ViewWindow declares its broker before its Arc<Window>, so
+            // clearing the map tears down every swapchain before its native
+            // Wayland surface.
+            windows.views.clear();
+            windows.view_windows.clear();
         }
     }
 
     impl ApplicationHandler<HostEvent> for ShellApplication {
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-            if self.window.is_none() {
+            if !self
+                .windows
+                .borrow()
+                .view_windows
+                .contains_key(&FlutterRustViewId::IMPLICIT)
+            {
                 let attributes = Window::default_attributes().with_title(&self.config.title);
                 let window = Arc::new(
                     event_loop
                         .create_window(attributes)
                         .expect("winit failed to create the Flutter Rust Shell window"),
                 );
-                let gpu_broker = GpuBroker::new(
-                    Arc::clone(&window),
-                    self.config.presentation_stats_path.clone(),
-                )
-                .expect("winit Vulkan surface creation failed");
+                let gpu_broker = Box::new(
+                    GpuBroker::new(
+                        Arc::clone(&window),
+                        self.config.presentation_stats_path.clone(),
+                    )
+                    .expect("winit Vulkan surface creation failed"),
+                );
                 let size = window.inner_size();
                 gpu_broker
                     .configure(size.width, size.height)
                     .expect("winit Vulkan surface configuration failed");
-                // Move the broker into its final, stable location before
-                // taking its address for the C++ presentation callback table:
-                // that table's user_data pointer is held by C++ for the
-                // shell's entire lifetime, so it must not point at this local
-                // stack variable, which is about to go out of scope.
-                self.gpu_broker = Some(gpu_broker);
-
                 #[cfg(not(test))]
                 {
-                    let gpu_broker = self
-                        .gpu_broker
-                        .as_ref()
-                        .expect("gpu broker was just stored");
                     let assets_path = CString::new(self.config.assets_path.as_str())
                         .expect("assets path contains a NUL byte");
                     let icu_data_path = CString::new(self.config.icu_data_path.as_str())
@@ -1814,6 +2452,7 @@ mod linux {
                                 presentation_callbacks,
                                 platform_message_callbacks,
                                 vsync_callbacks,
+                                windowing_callbacks(),
                                 settings,
                             )
                         })
@@ -1830,21 +2469,40 @@ mod linux {
                     // until it knows the implicit view's size.
                     set_cpp_shell_viewport_metrics(
                         shell,
+                        FlutterRustViewId::IMPLICIT,
                         WindowMetrics::from_window(&window, window.scale_factor()),
                     );
-                    self.shell = Some(shell);
+                    self.windows.borrow_mut().shell = Some(shell);
                 }
 
-                self.window = Some(window);
+                let window_id = window.id();
+                let visible = size.width > 0 && size.height > 0;
+                let focused = window.has_focus();
+                let mut windows = self.windows.borrow_mut();
+                windows.views.insert(
+                    window_id,
+                    ViewWindow {
+                        view_id: FlutterRustViewId::IMPLICIT,
+                        parent_view_id: None,
+                        gpu_broker,
+                        window,
+                        _parent_window: None,
+                        pointer_state: PointerState::new(),
+                        keyboard_state: KeyboardState::new(),
+                        visible,
+                        focused,
+                    },
+                );
+                windows
+                    .view_windows
+                    .insert(FlutterRustViewId::IMPLICIT, window_id);
+                if focused {
+                    windows.focused_window = Some(window_id);
+                }
             }
-            if let Some(window) = &self.window {
-                let visible = {
-                    let size = window.inner_size();
-                    size.width > 0 && size.height > 0
-                };
-                let state = self.lifecycle_state.resumed(visible, window.has_focus());
-                self.send_lifecycle_event(state);
-            }
+            let (visible, focused) = self.windows.borrow().aggregate_window_state();
+            let state = self.lifecycle_state.resumed(visible, focused);
+            self.send_lifecycle_event(state);
         }
 
         fn suspended(&mut self, _: &ActiveEventLoop) {
@@ -1858,68 +2516,134 @@ mod linux {
             window_id: WindowId,
             event: WindowEvent,
         ) {
-            if !self
-                .window
-                .as_ref()
-                .is_some_and(|window| window.id() == window_id)
-            {
+            let Some(view_id) = self
+                .windows
+                .borrow()
+                .views
+                .get(&window_id)
+                .map(|view| view.view_id)
+            else {
                 return;
-            }
+            };
             match event {
                 WindowEvent::Resized(size) => {
-                    if let Some(gpu_broker) = &self.gpu_broker {
-                        gpu_broker
+                    let (metrics, visible) = {
+                        let mut windows = self.windows.borrow_mut();
+                        let view = windows
+                            .views
+                            .get_mut(&window_id)
+                            .expect("known window disappeared");
+                        view.gpu_broker
                             .configure(size.width, size.height)
                             .expect("winit Vulkan surface reconfiguration failed");
+                        view.visible = size.width > 0 && size.height > 0;
+                        let metrics =
+                            WindowMetrics::from_window(&view.window, view.window.scale_factor());
+                        (metrics, windows.aggregate_window_state().0)
+                    };
+                    #[cfg(test)]
+                    let _ = metrics;
+                    #[cfg(not(test))]
+                    if let Some(shell) = { self.windows.borrow().shell } {
+                        set_cpp_shell_viewport_metrics(shell, view_id, metrics);
                     }
                     #[cfg(not(test))]
-                    if let Some(shell) = self.shell {
-                        let window = self.window.as_ref().expect("window event without a window");
-                        set_cpp_shell_viewport_metrics(
-                            shell,
-                            WindowMetrics::from_window(window, window.scale_factor()),
-                        );
+                    {
+                        let callback = { self.windows.borrow().window_event_callback };
+                        if let Some(callback) = callback {
+                            callback(view_id, FlutterRustWindowEvent::StateChanged);
+                        }
                     }
-                    let state = self
-                        .lifecycle_state
-                        .visibility_changed(size.width > 0 && size.height > 0);
+                    let state = self.lifecycle_state.visibility_changed(visible);
                     self.send_lifecycle_event(state);
                 }
                 WindowEvent::ScaleFactorChanged {
                     scale_factor: _scale_factor,
                     ..
                 } => {
-                    if let Some(window) = &self.window {
-                        let size = window.inner_size();
-                        if let Some(gpu_broker) = &self.gpu_broker {
-                            gpu_broker
-                                .configure(size.width, size.height)
-                                .expect("winit Vulkan surface reconfiguration failed");
-                        }
-                        #[cfg(not(test))]
-                        if let Some(shell) = self.shell {
-                            set_cpp_shell_viewport_metrics(
-                                shell,
-                                WindowMetrics::from_window(window, _scale_factor),
-                            );
+                    let metrics = {
+                        let mut windows = self.windows.borrow_mut();
+                        let view = windows
+                            .views
+                            .get_mut(&window_id)
+                            .expect("known window disappeared");
+                        let size = view.window.inner_size();
+                        view.gpu_broker
+                            .configure(size.width, size.height)
+                            .expect("winit Vulkan surface reconfiguration failed");
+                        WindowMetrics::from_window(&view.window, _scale_factor)
+                    };
+                    #[cfg(test)]
+                    let _ = metrics;
+                    #[cfg(not(test))]
+                    if let Some(shell) = { self.windows.borrow().shell } {
+                        set_cpp_shell_viewport_metrics(shell, view_id, metrics);
+                    }
+                    #[cfg(not(test))]
+                    {
+                        let callback = { self.windows.borrow().window_event_callback };
+                        if let Some(callback) = callback {
+                            callback(view_id, FlutterRustWindowEvent::StateChanged);
                         }
                     }
                 }
                 WindowEvent::Focused(focused) => {
-                    let state = self.lifecycle_state.focus_changed(focused);
+                    let any_focused = {
+                        let mut windows = self.windows.borrow_mut();
+                        windows
+                            .views
+                            .get_mut(&window_id)
+                            .expect("known window disappeared")
+                            .focused = focused;
+                        if focused {
+                            windows.focused_window = Some(window_id);
+                        } else if windows.focused_window == Some(window_id) {
+                            windows.focused_window = None;
+                        }
+                        windows.aggregate_window_state().1
+                    };
+                    let state = self.lifecycle_state.focus_changed(any_focused);
                     self.send_lifecycle_event(state);
+                    #[cfg(not(test))]
+                    if let Some(shell) = { self.windows.borrow().shell } {
+                        send_cpp_view_focus_event(
+                            shell,
+                            view_id,
+                            if focused {
+                                FlutterRustViewFocusState::Focused
+                            } else {
+                                FlutterRustViewFocusState::Unfocused
+                            },
+                        );
+                    }
+                    #[cfg(not(test))]
+                    {
+                        let callback = { self.windows.borrow().window_event_callback };
+                        if let Some(callback) = callback {
+                            callback(view_id, FlutterRustWindowEvent::StateChanged);
+                        }
+                    }
                 }
                 WindowEvent::KeyboardInput {
                     event,
                     is_synthetic,
                     ..
                 } => {
-                    let committed_text = self
-                        .keyboard_state
-                        .committed_text(&event)
-                        .map(str::to_owned);
-                    if let Some(event) = self.keyboard_state.event(&event, is_synthetic) {
-                        let raw_message = self.keyboard_state.raw_event_message(&event);
+                    let (committed_text, key_event) = {
+                        let mut windows = self.windows.borrow_mut();
+                        let keyboard = &mut windows
+                            .views
+                            .get_mut(&window_id)
+                            .expect("known window disappeared")
+                            .keyboard_state;
+                        let committed_text = keyboard.committed_text(&event).map(str::to_owned);
+                        let key_event = keyboard.event(&event, is_synthetic).map(|event| {
+                            let raw_message = keyboard.raw_event_message(&event);
+                            (event, raw_message)
+                        });
+                        (committed_text, key_event)
+                    };
+                    if let Some((event, raw_message)) = key_event {
                         self.send_key_event(event);
                         self.send_raw_key_event(&raw_message);
                     }
@@ -1931,7 +2655,13 @@ mod linux {
                     }
                 }
                 WindowEvent::ModifiersChanged(modifiers) => {
-                    self.keyboard_state.modifiers_changed(modifiers.state());
+                    self.windows
+                        .borrow_mut()
+                        .views
+                        .get_mut(&window_id)
+                        .expect("known window disappeared")
+                        .keyboard_state
+                        .modifiers_changed(modifiers.state());
                 }
                 WindowEvent::Ime(event) => {
                     if let Some(message) = self.text_input_session.ime(event) {
@@ -1939,66 +2669,188 @@ mod linux {
                     }
                 }
                 WindowEvent::CursorEntered { .. } => {
-                    if let Some(event) = self.pointer_state.entered() {
+                    let event = {
+                        let mut windows = self.windows.borrow_mut();
+                        windows
+                            .views
+                            .get_mut(&window_id)
+                            .expect("known window disappeared")
+                            .pointer_state
+                            .entered()
+                    };
+                    if let Some(event) = event {
                         self.send_pointer_events([event]);
                     }
                 }
                 WindowEvent::CursorLeft { .. } => {
-                    if let Some(event) = self.pointer_state.left() {
+                    let event = {
+                        let mut windows = self.windows.borrow_mut();
+                        windows
+                            .views
+                            .get_mut(&window_id)
+                            .expect("known window disappeared")
+                            .pointer_state
+                            .left()
+                    };
+                    if let Some(event) = event {
                         self.send_pointer_events([event]);
                     }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
-                    let events = self.pointer_state.moved(position.x, position.y);
+                    let events = self
+                        .windows
+                        .borrow_mut()
+                        .views
+                        .get_mut(&window_id)
+                        .expect("known window disappeared")
+                        .pointer_state
+                        .moved(position.x, position.y);
                     self.send_pointer_events(events);
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
-                    let events = self.pointer_state.button(button, state);
+                    let events = self
+                        .windows
+                        .borrow_mut()
+                        .views
+                        .get_mut(&window_id)
+                        .expect("known window disappeared")
+                        .pointer_state
+                        .button(button, state);
                     self.send_pointer_events(events);
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
-                    let events = self.pointer_state.scroll(delta);
+                    let events = self
+                        .windows
+                        .borrow_mut()
+                        .views
+                        .get_mut(&window_id)
+                        .expect("known window disappeared")
+                        .pointer_state
+                        .scroll(delta);
                     self.send_pointer_events(events);
                 }
                 WindowEvent::Touch(touch) => {
-                    let event = self.pointer_state.touch(touch);
+                    let event = self
+                        .windows
+                        .borrow()
+                        .views
+                        .get(&window_id)
+                        .expect("known window disappeared")
+                        .pointer_state
+                        .touch(touch);
                     self.send_pointer_events([event]);
                 }
                 WindowEvent::RedrawRequested => {
                     if self.vsync_armed {
                         self.vsync_armed = false;
                         #[cfg(not(test))]
-                        if let Some(shell) = self.shell {
-                            let window =
-                                self.window.as_ref().expect("window event without a window");
-                            send_cpp_vsync(shell, window_frame_interval_nanos(window));
+                        if let Some(shell) = { self.windows.borrow().shell } {
+                            let interval = {
+                                let windows = self.windows.borrow();
+                                let view = windows
+                                    .views
+                                    .get(&window_id)
+                                    .expect("known window disappeared");
+                                window_frame_interval_nanos(&view.window)
+                            };
+                            send_cpp_vsync(shell, interval);
                         }
                     }
                 }
-                WindowEvent::CloseRequested | WindowEvent::Destroyed => {
-                    let state = self.lifecycle_state.detached();
-                    self.send_lifecycle_event(state);
-                    event_loop.exit();
+                WindowEvent::CloseRequested => {
+                    if view_id == FlutterRustViewId::IMPLICIT {
+                        let state = self.lifecycle_state.detached();
+                        self.send_lifecycle_event(state);
+                        event_loop.exit();
+                    } else {
+                        #[cfg(not(test))]
+                        {
+                            let callback = { self.windows.borrow().window_event_callback };
+                            if let Some(callback) = callback {
+                                callback(view_id, FlutterRustWindowEvent::CloseRequested);
+                            }
+                        }
+                    }
+                }
+                WindowEvent::Destroyed => {
+                    if view_id == FlutterRustViewId::IMPLICIT {
+                        let state = self.lifecycle_state.detached();
+                        self.send_lifecycle_event(state);
+                        event_loop.exit();
+                    } else {
+                        #[cfg(not(test))]
+                        {
+                            let removals =
+                                { self.windows.borrow_mut().begin_remove_views(view_id) };
+                            for (view_id, shell, event_proxy) in removals {
+                                remove_cpp_shell_view(shell, view_id, event_proxy);
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
         }
 
-        fn user_event(&mut self, _: &ActiveEventLoop, event: HostEvent) {
+        fn user_event(&mut self, event_loop: &ActiveEventLoop, event: HostEvent) {
             match event {
                 HostEvent::TaskScheduled => {}
                 HostEvent::VsyncRequested => {
-                    if self.vsync_host.take_request()
-                        && let Some(window) = &self.window
-                    {
+                    if self.vsync_host.take_request() && !self.windows.borrow().views.is_empty() {
                         self.vsync_armed = true;
-                        window.request_redraw();
+                        for view in self.windows.borrow().views.values() {
+                            view.window.request_redraw();
+                        }
                     }
+                }
+                HostEvent::ViewOperationCompleted {
+                    view_id,
+                    operation,
+                    succeeded,
+                } => match (operation, succeeded) {
+                    (ViewOperation::Add, true) => {
+                        log::debug!("Flutter view {} was added", view_id.0);
+                        let windows = self.windows.borrow();
+                        if let Some(window_id) = windows.view_windows.get(&view_id)
+                            && let Some(view) = windows.views.get(window_id)
+                        {
+                            view.window.request_redraw();
+                        }
+                    }
+                    (ViewOperation::Add, false) | (ViewOperation::Remove, true) => {
+                        if operation == ViewOperation::Add {
+                            log::error!("Flutter rejected view {}", view_id.0);
+                        }
+                        let removed = self.windows.borrow_mut().take_view_state(view_id);
+                        let _callback = removed.as_ref().and_then(|removed| removed.callback);
+                        // Native window destruction can synchronously produce
+                        // more winit events. Drop it only after releasing the
+                        // registry's RefCell borrow.
+                        drop(removed);
+                        #[cfg(not(test))]
+                        if let Some(callback) = _callback {
+                            callback(view_id, FlutterRustWindowEvent::Destroyed);
+                        }
+                    }
+                    (ViewOperation::Remove, false) => {
+                        log::error!("Flutter failed to remove view {}", view_id.0);
+                        self.windows.borrow_mut().removing_views.remove(&view_id);
+                    }
+                },
+                HostEvent::ExitRequested => {
+                    let state = self.lifecycle_state.detached();
+                    self.send_lifecycle_event(state);
+                    event_loop.exit();
                 }
             }
         }
 
         fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+            #[cfg(not(test))]
+            with_active_windowing_context(event_loop, &self.windows, || {
+                self.task_runner_host.dispatch_due_tasks();
+            });
+            #[cfg(test)]
             self.task_runner_host.dispatch_due_tasks();
             self.apply_text_input_commands();
             match self.task_runner_host.next_deadline() {
@@ -2008,10 +2860,259 @@ mod linux {
         }
     }
 
+    impl WindowRegistry {
+        #[cfg(not(test))]
+        fn view(&self, view_id: FlutterRustViewId) -> Option<&ViewWindow> {
+            self.view_windows
+                .get(&view_id)
+                .and_then(|window_id| self.views.get(window_id))
+        }
+
+        #[cfg(not(test))]
+        fn create_regular_view(
+            &mut self,
+            event_loop: &ActiveEventLoop,
+            request: NativeWindowRequest,
+            kind: NativeWindowKind,
+            parent_view_id: Option<FlutterRustViewId>,
+        ) -> Result<CreatedRegularView, String> {
+            let shell = self
+                .shell
+                .ok_or_else(|| "Flutter shell is not running".to_owned())?;
+            let implicit_window_id = self
+                .view_windows
+                .get(&FlutterRustViewId::IMPLICIT)
+                .copied()
+                .ok_or_else(|| "implicit Flutter view is missing".to_owned())?;
+            let context = self
+                .views
+                .get(&implicit_window_id)
+                .ok_or_else(|| "implicit native window is missing".to_owned())?
+                .gpu_broker
+                .shared_context();
+            let parent_window = match parent_view_id {
+                Some(parent_view_id) => {
+                    if self.removing_views.contains(&parent_view_id) {
+                        return Err("dialog parent is being destroyed".to_owned());
+                    }
+                    Some(Arc::clone(
+                        &self
+                            .view(parent_view_id)
+                            .ok_or_else(|| {
+                                "dialog parent does not belong to this engine".to_owned()
+                            })?
+                            .window,
+                    ))
+                }
+                None => None,
+            };
+            let mut attributes = Window::default_attributes()
+                .with_title(request.title)
+                .with_inner_size(LogicalSize::new(request.width, request.height))
+                .with_resizable(request.resizable);
+            if matches!(kind, NativeWindowKind::Dialog) {
+                attributes = attributes.with_x11_window_type(vec![WindowType::Dialog]);
+            }
+            if let Some((min_width, min_height, max_width, max_height)) = request.constraints {
+                attributes = attributes
+                    .with_min_inner_size(LogicalSize::new(min_width, min_height))
+                    .with_max_inner_size(LogicalSize::new(
+                        finite_maximum(max_width),
+                        finite_maximum(max_height),
+                    ));
+            }
+            let window = Arc::new(
+                event_loop
+                    .create_window(attributes)
+                    .map_err(|error| error.to_string())?,
+            );
+            if let Some(parent_window) = parent_window.as_ref() {
+                set_native_dialog_parent(&window, parent_window)?;
+            }
+            let gpu_broker = Box::new(GpuBroker::from_context(context, Arc::clone(&window), None)?);
+            let size = window.inner_size();
+            gpu_broker.configure(size.width, size.height)?;
+            let view_id = FlutterRustViewId(self.next_view_id);
+            self.next_view_id = self
+                .next_view_id
+                .checked_add(1)
+                .ok_or_else(|| "Flutter view ID space exhausted".to_owned())?;
+            let window_id = window.id();
+            let metrics = WindowMetrics::from_window(&window, window.scale_factor());
+            let callbacks = gpu_broker.presentation_callbacks();
+            self.views.insert(
+                window_id,
+                ViewWindow {
+                    view_id,
+                    parent_view_id,
+                    gpu_broker,
+                    window,
+                    _parent_window: parent_window,
+                    pointer_state: PointerState::for_view(view_id),
+                    keyboard_state: KeyboardState::new(),
+                    visible: size.width > 0 && size.height > 0,
+                    focused: false,
+                },
+            );
+            self.view_windows.insert(view_id, window_id);
+            Ok(CreatedRegularView {
+                shell,
+                view_id,
+                metrics,
+                presentation_callbacks: callbacks,
+                event_proxy: self.event_proxy.clone(),
+            })
+        }
+
+        fn take_view_state(&mut self, view_id: FlutterRustViewId) -> Option<RemovedViewState> {
+            let Some(window_id) = self.view_windows.remove(&view_id) else {
+                return None;
+            };
+            if self.focused_window == Some(window_id) {
+                self.focused_window = None;
+            }
+            let view = self
+                .views
+                .remove(&window_id)
+                .expect("view/window index became inconsistent");
+            self.removing_views.remove(&view_id);
+            #[cfg(not(test))]
+            return Some(RemovedViewState {
+                _view: view,
+                callback: self.window_event_callback,
+            });
+            #[cfg(test)]
+            Some(RemovedViewState {
+                _view: view,
+                callback: None,
+            })
+        }
+
+        #[cfg(not(test))]
+        fn begin_remove_views(
+            &mut self,
+            view_id: FlutterRustViewId,
+        ) -> Vec<(FlutterRustViewId, *mut c_void, EventLoopProxy<HostEvent>)> {
+            if view_id <= FlutterRustViewId::IMPLICIT || !self.view_windows.contains_key(&view_id) {
+                return Vec::new();
+            }
+            let Some(shell) = self.shell else {
+                return Vec::new();
+            };
+            let mut pending = vec![view_id];
+            let mut ordered = Vec::new();
+            while let Some(parent) = pending.pop() {
+                for child in self
+                    .views
+                    .values()
+                    .filter(|view| view.parent_view_id == Some(parent))
+                    .map(|view| view.view_id)
+                    .collect::<Vec<_>>()
+                {
+                    pending.push(child);
+                }
+                ordered.push(parent);
+            }
+            ordered
+                .into_iter()
+                .rev()
+                .filter(|view_id| self.removing_views.insert(*view_id))
+                .map(|view_id| (view_id, shell, self.event_proxy.clone()))
+                .collect()
+        }
+
+        fn aggregate_window_state(&self) -> (bool, bool) {
+            (
+                self.views.values().any(|view| view.visible),
+                self.views.values().any(|view| view.focused),
+            )
+        }
+    }
+
+    #[cfg(not(test))]
+    fn valid_window_size(width: f64, height: f64) -> bool {
+        width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0
+    }
+
+    #[cfg(not(test))]
+    fn valid_constraints(min_width: f64, min_height: f64, max_width: f64, max_height: f64) -> bool {
+        min_width.is_finite()
+            && min_height.is_finite()
+            && min_width >= 0.0
+            && min_height >= 0.0
+            && !max_width.is_nan()
+            && !max_height.is_nan()
+            && min_width <= max_width
+            && min_height <= max_height
+    }
+
+    #[cfg(not(test))]
+    fn finite_maximum(value: f64) -> f64 {
+        if value.is_infinite() {
+            f64::from(i32::MAX)
+        } else {
+            value
+        }
+    }
+
+    #[cfg(not(test))]
+    fn set_native_dialog_parent(child: &Window, parent: &Window) -> Result<(), String> {
+        if let (Some(child_toplevel), Some(parent_toplevel)) =
+            (child.xdg_toplevel(), parent.xdg_toplevel())
+        {
+            // xdg_toplevel.set_parent is request opcode 1. Winit exposes the
+            // protocol objects but intentionally has no transient-parent API.
+            // Both objects belong to this event-loop connection and remain
+            // alive through ViewWindow::_parent_window.
+            unsafe {
+                ffi_dispatch!(
+                    wayland_client_handle(),
+                    wl_proxy_marshal,
+                    child_toplevel.as_ptr().cast::<wl_proxy>(),
+                    1_u32,
+                    parent_toplevel.as_ptr().cast::<wl_proxy>()
+                );
+            }
+            return Ok(());
+        }
+
+        let display = child.display_handle().map_err(|error| error.to_string())?;
+        let child_handle = child.window_handle().map_err(|error| error.to_string())?;
+        let parent_handle = parent.window_handle().map_err(|error| error.to_string())?;
+        match (
+            display.as_raw(),
+            child_handle.as_raw(),
+            parent_handle.as_raw(),
+        ) {
+            (
+                RawDisplayHandle::Xlib(display),
+                RawWindowHandle::Xlib(child),
+                RawWindowHandle::Xlib(parent),
+            ) => {
+                let display = display
+                    .display
+                    .ok_or_else(|| "X11 display handle is null".to_owned())?;
+                let xlib = x11_dl::xlib::Xlib::open().map_err(|error| error.to_string())?;
+                // SAFETY: all three handles originate from live winit windows
+                // on this Xlib display and Xlib copies the relationship.
+                unsafe {
+                    (xlib.XSetTransientForHint)(
+                        display.as_ptr().cast(),
+                        child.window,
+                        parent.window,
+                    );
+                    (xlib.XFlush)(display.as_ptr().cast());
+                }
+                Ok(())
+            }
+            _ => Err("native dialog parenting is unsupported by this display backend".to_owned()),
+        }
+    }
+
     impl ShellApplication {
         fn send_pointer_events(&self, events: impl IntoIterator<Item = FlutterRustPointerEvent>) {
             #[cfg(not(test))]
-            if let Some(shell) = self.shell {
+            if let Some(shell) = { self.windows.borrow().shell } {
                 for event in events {
                     send_cpp_pointer_event(shell, event);
                 }
@@ -2022,7 +3123,7 @@ mod linux {
 
         fn send_lifecycle_event(&self, state: Option<FlutterRustLifecycleState>) {
             #[cfg(not(test))]
-            if let (Some(shell), Some(state)) = (self.shell, state) {
+            if let (Some(shell), Some(state)) = ({ self.windows.borrow().shell }, state) {
                 send_cpp_lifecycle_event(shell, state);
             }
             #[cfg(test)]
@@ -2031,7 +3132,7 @@ mod linux {
 
         fn send_key_event(&self, event: FlutterRustKeyEvent) {
             #[cfg(not(test))]
-            if let Some(shell) = self.shell {
+            if let Some(shell) = { self.windows.borrow().shell } {
                 send_cpp_key_event(shell, event);
             }
             #[cfg(test)]
@@ -2040,7 +3141,7 @@ mod linux {
 
         fn send_raw_key_event(&self, message: &[u8]) {
             #[cfg(not(test))]
-            if let Some(shell) = self.shell {
+            if let Some(shell) = { self.windows.borrow().shell } {
                 send_cpp_platform_message(shell, KEY_EVENT_CHANNEL, message);
             }
             #[cfg(test)]
@@ -2050,7 +3151,19 @@ mod linux {
         fn apply_text_input_commands(&mut self) {
             for command in self.text_input_inbox.drain() {
                 let effect = self.text_input_session.apply(command);
-                let Some(window) = &self.window else {
+                let window = {
+                    let windows = self.windows.borrow();
+                    let window_id = windows.focused_window.or_else(|| {
+                        windows
+                            .view_windows
+                            .get(&FlutterRustViewId::IMPLICIT)
+                            .copied()
+                    });
+                    window_id
+                        .and_then(|window_id| windows.views.get(&window_id))
+                        .map(|view| Arc::clone(&view.window))
+                };
+                let Some(window) = window else {
                     continue;
                 };
                 match effect {
@@ -2070,7 +3183,7 @@ mod linux {
 
         fn send_text_input_update(&self, message: &[u8]) {
             #[cfg(not(test))]
-            if let Some(shell) = self.shell {
+            if let Some(shell) = { self.windows.borrow().shell } {
                 send_cpp_platform_message(shell, TEXT_INPUT_CHANNEL, message);
             }
             #[cfg(test)]
@@ -2178,6 +3291,32 @@ mod linux {
                     width: 1.0,
                     height: 18.0,
                 }))
+            );
+        }
+
+        #[test]
+        fn decodes_required_and_cancelable_application_exit_requests() {
+            assert_eq!(
+                ApplicationExitRequest::decode(
+                    br#"{"method":"System.exitApplication","args":{"type":"required","exitCode":7}}"#,
+                ),
+                Some(ApplicationExitRequest::Required)
+            );
+            assert_eq!(
+                ApplicationExitRequest::decode(
+                    br#"{"method":"System.exitApplication","args":{"type":"cancelable","exitCode":0}}"#,
+                ),
+                Some(ApplicationExitRequest::Cancelable)
+            );
+            assert_eq!(
+                ApplicationExitRequest::decode(br#"{"method":"SystemNavigator.pop","args":null}"#,),
+                Some(ApplicationExitRequest::Required)
+            );
+            assert!(
+                ApplicationExitRequest::decode(
+                    br#"{"method":"System.exitApplication","args":{"type":"unknown"}}"#,
+                )
+                .is_none()
             );
         }
 
@@ -2352,6 +3491,20 @@ mod linux {
             let up = pointer.button(MouseButton::Left, ElementState::Released);
             assert_eq!(up[0].phase, FlutterRustPointerPhase::Up as u32);
             assert_eq!(up[0].buttons, 0);
+        }
+
+        #[test]
+        fn pointer_events_preserve_their_target_view() {
+            let mut pointer = PointerState::for_view(FlutterRustViewId(17));
+
+            let events = pointer.moved(10.0, 20.0);
+
+            assert!(!events.is_empty());
+            assert!(
+                events
+                    .iter()
+                    .all(|event| event.view_id == FlutterRustViewId(17))
+            );
         }
 
         #[test]

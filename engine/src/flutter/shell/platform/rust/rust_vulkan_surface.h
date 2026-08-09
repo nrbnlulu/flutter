@@ -6,6 +6,8 @@
 #define FLUTTER_SHELL_PLATFORM_RUST_RUST_VULKAN_SURFACE_H_
 
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 
 #include "flutter/flow/surface.h"
 #include "flutter/shell/gpu/gpu_surface_vulkan_delegate.h"
@@ -28,18 +30,30 @@ class RustVulkanPresentation final : public GPUSurfaceVulkanDelegate {
 
   bool IsValid() const;
   std::unique_ptr<Surface> CreateSurface();
+  bool RegisterView(FlutterRustViewId view_id,
+                    FlutterRustVulkanPresentationCallbacks callbacks);
+  bool UnregisterView(FlutterRustViewId view_id);
 
  private:
   // |GPUSurfaceVulkanDelegate|
   const vulkan::VulkanProcTable& vk() override;
+  void SetActiveViewId(int64_t view_id) override;
   FlutterVulkanImage AcquireImage(const DlISize& size) override;
   bool PresentImage(VkImage image, VkFormat format) override;
 
+  struct ViewPresentation {
+    FlutterRustVulkanPresentationCallbacks callbacks;
+    VkSemaphore acquire_semaphore = VK_NULL_HANDLE;
+    VkSemaphore render_semaphore = VK_NULL_HANDLE;
+  };
+
   fml::RefPtr<vulkan::VulkanProcTable> vk_;
   std::shared_ptr<impeller::Context> context_;
-  FlutterRustVulkanPresentationCallbacks callbacks_;
-  VkSemaphore acquire_semaphore_ = VK_NULL_HANDLE;
-  VkSemaphore render_semaphore_ = VK_NULL_HANDLE;
+  mutable std::mutex views_mutex_;
+  std::unordered_map<FlutterRustViewId, std::shared_ptr<ViewPresentation>>
+      views_;
+  FlutterRustViewId active_view_id_ = FLUTTER_RUST_IMPLICIT_VIEW_ID;
+  std::shared_ptr<ViewPresentation> active_frame_;
 };
 
 }  // namespace flutter

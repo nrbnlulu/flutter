@@ -12,7 +12,119 @@ use flutter_plugin_sdk::PLUGIN_SDK_API_VERSION;
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 4;
+pub const SHELL_ABI_VERSION: u32 = 5;
+
+/// Engine-scoped identity of one Flutter view/native window pair.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FlutterRustViewId(pub i64);
+
+impl FlutterRustViewId {
+    pub const IMPLICIT: Self = Self(0);
+}
+
+/// Physical viewport and display metrics for one Flutter view.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FlutterRustViewMetrics {
+    pub width: f64,
+    pub height: f64,
+    pub pixel_ratio: f64,
+    pub display_width: f64,
+    pub display_height: f64,
+    pub display_refresh_rate: f64,
+}
+
+/// Completion callback for asynchronous add/remove-view operations.
+#[repr(C)]
+pub struct FlutterRustViewOperationCallbacks {
+    pub user_data: *mut c_void,
+    pub complete: Option<extern "C" fn(*mut c_void, FlutterRustViewId, i32)>,
+}
+
+/// Synchronous regular-window request issued by Flutter's WindowController.
+#[repr(C)]
+pub struct FlutterRustRegularWindowRequest {
+    pub has_size: i32,
+    pub width: f64,
+    pub height: f64,
+    pub title: *const u8,
+    pub title_length: u64,
+    pub resizable: i32,
+    pub has_constraints: i32,
+    pub min_width: f64,
+    pub min_height: f64,
+    pub max_width: f64,
+    pub max_height: f64,
+}
+
+/// Synchronous dialog-window request issued by Flutter's WindowController.
+#[repr(C)]
+pub struct FlutterRustDialogWindowRequest {
+    pub window: FlutterRustRegularWindowRequest,
+    pub has_parent: i32,
+    pub parent_view_id: FlutterRustViewId,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FlutterRustWindowState {
+    pub width: f64,
+    pub height: f64,
+    pub focused: i32,
+    pub maximized: i32,
+    pub minimized: i32,
+    pub fullscreen: i32,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlutterRustWindowEvent {
+    StateChanged = 0,
+    CloseRequested = 1,
+    Destroyed = 2,
+}
+
+pub type FlutterRustWindowEventCallback = extern "C" fn(FlutterRustViewId, FlutterRustWindowEvent);
+
+#[repr(C)]
+pub struct FlutterRustWindowingCallbacks {
+    pub user_data: *mut c_void,
+    pub create_regular_window: Option<
+        extern "C" fn(*mut c_void, *const FlutterRustRegularWindowRequest) -> FlutterRustViewId,
+    >,
+    pub create_dialog_window: Option<
+        extern "C" fn(*mut c_void, *const FlutterRustDialogWindowRequest) -> FlutterRustViewId,
+    >,
+    pub destroy_window: Option<extern "C" fn(*mut c_void, FlutterRustViewId)>,
+    pub get_window_state:
+        Option<extern "C" fn(*mut c_void, FlutterRustViewId, *mut FlutterRustWindowState) -> i32>,
+    pub set_window_size: Option<extern "C" fn(*mut c_void, FlutterRustViewId, f64, f64)>,
+    pub set_window_constraints:
+        Option<extern "C" fn(*mut c_void, FlutterRustViewId, i32, f64, f64, f64, f64)>,
+    pub set_window_title: Option<extern "C" fn(*mut c_void, FlutterRustViewId, *const u8, u64)>,
+    pub activate_window: Option<extern "C" fn(*mut c_void, FlutterRustViewId)>,
+    pub set_window_maximized: Option<extern "C" fn(*mut c_void, FlutterRustViewId, i32)>,
+    pub set_window_minimized: Option<extern "C" fn(*mut c_void, FlutterRustViewId, i32)>,
+    pub set_window_fullscreen: Option<extern "C" fn(*mut c_void, FlutterRustViewId, i32)>,
+    pub set_window_event_callback:
+        Option<extern "C" fn(*mut c_void, Option<FlutterRustWindowEventCallback>)>,
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlutterRustViewFocusState {
+    Unfocused = 0,
+    Focused = 1,
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlutterRustViewFocusDirection {
+    Undefined = 0,
+    Forward = 1,
+    Backward = 2,
+}
 
 /// ABI information returned to C++ before it installs Rust callbacks.
 #[repr(C)]
@@ -130,6 +242,7 @@ pub enum FlutterRustPointerSignalKind {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FlutterRustPointerEvent {
+    pub view_id: FlutterRustViewId,
     pub timestamp_micros: u64,
     pub phase: u32,
     pub device_kind: u32,

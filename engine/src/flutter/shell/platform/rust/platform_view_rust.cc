@@ -140,7 +140,7 @@ std::unique_ptr<PointerDataPacket> CreateRustPointerDataPacket(
   data.scroll_delta_x = event.scroll_delta_x;
   data.scroll_delta_y = event.scroll_delta_y;
   data.buttons = event.buttons;
-  data.view_id = kFlutterImplicitViewId;
+  data.view_id = event.view_id;
 
   auto packet = std::make_unique<PointerDataPacket>(1);
   packet->SetPointerData(0, data);

@@ -29,6 +29,7 @@ class RustShell final {
       FlutterRustVulkanPresentationCallbacks presentation_callbacks,
       FlutterRustPlatformMessageCallbacks platform_message_callbacks,
       FlutterRustVsyncCallbacks vsync_callbacks,
+      FlutterRustWindowingCallbacks windowing_callbacks,
       Settings settings);
 
   ~RustShell();
@@ -39,18 +40,25 @@ class RustShell final {
   // Must run on the merged Rust UI/platform task runner.
   bool Run();
 
-  // Reports the implicit view's size to the running engine. Without this the
-  // root isolate's widget binding has no valid view to schedule frames for,
-  // so PlatformView::NotifyCreated alone is not enough to see any content.
+  // Reports one Flutter view's physical metrics.
   // Must run on the merged Rust UI/platform task runner.
-  void SetViewportMetrics(double width,
-                          double height,
-                          double pixel_ratio,
-                          double display_width,
-                          double display_height,
-                          double display_refresh_rate);
+  void SetViewportMetrics(FlutterRustViewId view_id,
+                          const FlutterRustViewMetrics& metrics);
 
-  // Dispatches one Rust-hosted pointer event to the implicit view.
+  // Adds/removes a non-implicit view in this engine. Completion is delivered
+  // asynchronously on the merged Rust UI/platform runner.
+  void AddView(FlutterRustViewId view_id,
+               const FlutterRustViewMetrics& metrics,
+               FlutterRustVulkanPresentationCallbacks presentation_callbacks,
+               FlutterRustViewOperationCallbacks callbacks);
+  void RemoveView(FlutterRustViewId view_id,
+                  FlutterRustViewOperationCallbacks callbacks);
+
+  void SendViewFocusEvent(FlutterRustViewId view_id,
+                          uint32_t state,
+                          uint32_t direction);
+
+  // Dispatches one Rust-hosted pointer event to its target view.
   void SendPointerEvent(const FlutterRustPointerEvent& event);
 
   // Dispatches a private-ABI lifecycle state on flutter/lifecycle.
@@ -68,15 +76,39 @@ class RustShell final {
   // Delivers one compositor-aligned pulse to the platform view's waiter.
   void OnVsync(uint64_t frame_interval_nanos);
 
+  FlutterRustViewId CreateRegularWindow(
+      const FlutterRustRegularWindowRequest* request);
+  FlutterRustViewId CreateDialogWindow(
+      const FlutterRustDialogWindowRequest* request);
+  void DestroyWindow(FlutterRustViewId view_id);
+  bool GetWindowState(FlutterRustViewId view_id, FlutterRustWindowState* state);
+  void SetWindowSize(FlutterRustViewId view_id, double width, double height);
+  void SetWindowConstraints(FlutterRustViewId view_id,
+                            int32_t has_constraints,
+                            double min_width,
+                            double min_height,
+                            double max_width,
+                            double max_height);
+  void SetWindowTitle(FlutterRustViewId view_id,
+                      const uint8_t* title,
+                      uint64_t title_length);
+  void ActivateWindow(FlutterRustViewId view_id);
+  void SetWindowMaximized(FlutterRustViewId view_id, bool maximized);
+  void SetWindowMinimized(FlutterRustViewId view_id, bool minimized);
+  void SetWindowFullscreen(FlutterRustViewId view_id, bool fullscreen);
+  void SetWindowEventCallback(FlutterRustWindowEventCallback callback);
+
  private:
   RustShell(std::unique_ptr<ThreadHost> thread_host,
             std::shared_ptr<RustVulkanPresentation> presentation,
             std::unique_ptr<Shell> shell,
+            FlutterRustWindowingCallbacks windowing_callbacks,
             Settings settings);
 
   std::unique_ptr<ThreadHost> thread_host_;
   std::shared_ptr<RustVulkanPresentation> presentation_;
   std::unique_ptr<Shell> shell_;
+  FlutterRustWindowingCallbacks windowing_callbacks_;
   Settings settings_;
   bool running_ = false;
 };

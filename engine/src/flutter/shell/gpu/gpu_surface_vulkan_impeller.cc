@@ -81,6 +81,13 @@ bool GPUSurfaceVulkanImpeller::IsValid() {
 }
 
 // |Surface|
+void GPUSurfaceVulkanImpeller::SetActiveViewId(int64_t view_id) {
+  if (delegate_) {
+    delegate_->SetActiveViewId(view_id);
+  }
+}
+
+// |Surface|
 std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
     const DlISize& size) {
   if (!IsValid()) {

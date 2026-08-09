@@ -10,6 +10,8 @@ Surface::Surface() = default;
 
 Surface::~Surface() = default;
 
+void Surface::SetActiveViewId(int64_t view_id) {}
+
 std::unique_ptr<GLContextResult> Surface::MakeRenderContextCurrent() {
   return std::make_unique<GLContextDefaultResult>(true);
 }

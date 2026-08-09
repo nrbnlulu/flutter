@@ -8,4 +8,6 @@ namespace flutter {
 
 GPUSurfaceVulkanDelegate::~GPUSurfaceVulkanDelegate() = default;
 
+void GPUSurfaceVulkanDelegate::SetActiveViewId(int64_t view_id) {}
+
 }  // namespace flutter

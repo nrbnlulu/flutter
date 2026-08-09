@@ -12,6 +12,7 @@
 #include "flutter/fml/mapping.h"
 #include "flutter/fml/memory/ref_ptr.h"
 #include "flutter/lib/ui/window/platform_message.h"
+#include "flutter/lib/ui/window/view_focus.h"
 #include "flutter/lib/ui/window/viewport_metrics.h"
 #include "flutter/runtime/dart_vm.h"
 #include "flutter/runtime/platform_data.h"
@@ -27,12 +28,31 @@
 
 namespace flutter {
 
+namespace {
+
+ViewportMetrics ToViewportMetrics(const FlutterRustViewMetrics& metrics) {
+  return ViewportMetrics(metrics.pixel_ratio, metrics.width, metrics.height,
+                         /*p_physical_touch_slop=*/-1.0,
+                         /*display_id=*/0);
+}
+
+void CompleteViewOperation(FlutterRustViewOperationCallbacks callbacks,
+                           FlutterRustViewId view_id,
+                           bool success) {
+  if (callbacks.complete) {
+    callbacks.complete(callbacks.user_data, view_id, success ? 1 : 0);
+  }
+}
+
+}  // namespace
+
 std::unique_ptr<RustShell> RustShell::Create(
     fml::RefPtr<fml::TaskRunner> main_task_runner,
     RustVulkanContextData context_data,
     FlutterRustVulkanPresentationCallbacks presentation_callbacks,
     FlutterRustPlatformMessageCallbacks platform_message_callbacks,
     FlutterRustVsyncCallbacks vsync_callbacks,
+    FlutterRustWindowingCallbacks windowing_callbacks,
     Settings settings) {
   if (!main_task_runner) {
     return nullptr;
@@ -106,18 +126,20 @@ std::unique_ptr<RustShell> RustShell::Create(
   if (!shell || !shell->IsSetup()) {
     return nullptr;
   }
-  return std::unique_ptr<RustShell>(
-      new RustShell(std::move(thread_host), std::move(presentation),
-                    std::move(shell), std::move(settings)));
+  return std::unique_ptr<RustShell>(new RustShell(
+      std::move(thread_host), std::move(presentation), std::move(shell),
+      windowing_callbacks, std::move(settings)));
 }
 
 RustShell::RustShell(std::unique_ptr<ThreadHost> thread_host,
                      std::shared_ptr<RustVulkanPresentation> presentation,
                      std::unique_ptr<Shell> shell,
+                     FlutterRustWindowingCallbacks windowing_callbacks,
                      Settings settings)
     : thread_host_(std::move(thread_host)),
       presentation_(std::move(presentation)),
       shell_(std::move(shell)),
+      windowing_callbacks_(windowing_callbacks),
       settings_(std::move(settings)) {}
 
 RustShell::~RustShell() = default;
@@ -149,28 +171,86 @@ bool RustShell::Run() {
   return true;
 }
 
-void RustShell::SetViewportMetrics(double width,
-                                   double height,
-                                   double pixel_ratio,
-                                   double display_width,
-                                   double display_height,
-                                   double display_refresh_rate) {
+void RustShell::SetViewportMetrics(FlutterRustViewId view_id,
+                                   const FlutterRustViewMetrics& metrics) {
   if (!shell_) {
     return;
   }
   std::vector<std::unique_ptr<Display>> displays;
   displays.push_back(std::make_unique<Display>(
-      /*display_id=*/0, display_refresh_rate, display_width, display_height,
-      pixel_ratio));
+      /*display_id=*/0, metrics.display_refresh_rate, metrics.display_width,
+      metrics.display_height, metrics.pixel_ratio));
   shell_->OnDisplayUpdates(std::move(displays));
   auto platform_view = shell_->GetPlatformView();
   if (!platform_view) {
     return;
   }
-  platform_view->SetViewportMetrics(
-      kFlutterImplicitViewId, ViewportMetrics(pixel_ratio, width, height,
-                                              /*p_physical_touch_slop=*/-1.0,
-                                              /*display_id=*/0));
+  platform_view->SetViewportMetrics(view_id, ToViewportMetrics(metrics));
+}
+
+void RustShell::AddView(
+    FlutterRustViewId view_id,
+    const FlutterRustViewMetrics& metrics,
+    FlutterRustVulkanPresentationCallbacks presentation_callbacks,
+    FlutterRustViewOperationCallbacks callbacks) {
+  if (!shell_ || view_id <= kFlutterImplicitViewId) {
+    CompleteViewOperation(callbacks, view_id, false);
+    return;
+  }
+  if (!presentation_->RegisterView(view_id, presentation_callbacks)) {
+    CompleteViewOperation(callbacks, view_id, false);
+    return;
+  }
+  auto platform_view = shell_->GetPlatformView();
+  if (!platform_view) {
+    presentation_->UnregisterView(view_id);
+    CompleteViewOperation(callbacks, view_id, false);
+    return;
+  }
+  platform_view->AddView(
+      view_id, ToViewportMetrics(metrics),
+      [presentation = presentation_, callbacks, view_id](bool added) {
+        if (!added) {
+          presentation->UnregisterView(view_id);
+        }
+        CompleteViewOperation(callbacks, view_id, added);
+      });
+}
+
+void RustShell::RemoveView(FlutterRustViewId view_id,
+                           FlutterRustViewOperationCallbacks callbacks) {
+  if (!shell_ || view_id <= kFlutterImplicitViewId) {
+    CompleteViewOperation(callbacks, view_id, false);
+    return;
+  }
+  auto platform_view = shell_->GetPlatformView();
+  if (!platform_view) {
+    CompleteViewOperation(callbacks, view_id, false);
+    return;
+  }
+  platform_view->RemoveView(view_id, [presentation = presentation_, callbacks,
+                                      view_id](bool removed) {
+    if (removed) {
+      presentation->UnregisterView(view_id);
+    }
+    CompleteViewOperation(callbacks, view_id, removed);
+  });
+}
+
+void RustShell::SendViewFocusEvent(FlutterRustViewId view_id,
+                                   uint32_t state,
+                                   uint32_t direction) {
+  if (!shell_ || state > static_cast<uint32_t>(ViewFocusState::kFocused) ||
+      direction > static_cast<uint32_t>(ViewFocusDirection::kBackward)) {
+    return;
+  }
+  auto platform_view = shell_->GetPlatformView();
+  if (!platform_view) {
+    return;
+  }
+  platform_view->SendViewFocusEvent(
+      ViewFocusEvent(view_id, static_cast<ViewFocusState>(state),
+                     static_cast<ViewFocusDirection>(direction)));
 }
 
 void RustShell::SendPointerEvent(const FlutterRustPointerEvent& event) {
@@ -248,6 +328,124 @@ void RustShell::OnVsync(uint64_t frame_interval_nanos) {
   }
 }
 
+FlutterRustViewId RustShell::CreateRegularWindow(
+    const FlutterRustRegularWindowRequest* request) {
+  if (!request || !windowing_callbacks_.create_regular_window) {
+    return -1;
+  }
+  return windowing_callbacks_.create_regular_window(
+      windowing_callbacks_.user_data, request);
+}
+
+FlutterRustViewId RustShell::CreateDialogWindow(
+    const FlutterRustDialogWindowRequest* request) {
+  if (!request || !windowing_callbacks_.create_dialog_window) {
+    return -1;
+  }
+  return windowing_callbacks_.create_dialog_window(
+      windowing_callbacks_.user_data, request);
+}
+
+void RustShell::DestroyWindow(FlutterRustViewId view_id) {
+  if (view_id <= kFlutterImplicitViewId ||
+      !windowing_callbacks_.destroy_window) {
+    return;
+  }
+  windowing_callbacks_.destroy_window(windowing_callbacks_.user_data, view_id);
+}
+
+bool RustShell::GetWindowState(FlutterRustViewId view_id,
+                               FlutterRustWindowState* state) {
+  if (view_id <= kFlutterImplicitViewId || !state ||
+      !windowing_callbacks_.get_window_state) {
+    return false;
+  }
+  return windowing_callbacks_.get_window_state(windowing_callbacks_.user_data,
+                                               view_id, state) != 0;
+}
+
+void RustShell::SetWindowSize(FlutterRustViewId view_id,
+                              double width,
+                              double height) {
+  if (view_id <= kFlutterImplicitViewId ||
+      !windowing_callbacks_.set_window_size) {
+    return;
+  }
+  windowing_callbacks_.set_window_size(windowing_callbacks_.user_data, view_id,
+                                       width, height);
+}
+
+void RustShell::SetWindowConstraints(FlutterRustViewId view_id,
+                                     int32_t has_constraints,
+                                     double min_width,
+                                     double min_height,
+                                     double max_width,
+                                     double max_height) {
+  if (view_id <= kFlutterImplicitViewId ||
+      !windowing_callbacks_.set_window_constraints) {
+    return;
+  }
+  windowing_callbacks_.set_window_constraints(
+      windowing_callbacks_.user_data, view_id, has_constraints, min_width,
+      min_height, max_width, max_height);
+}
+
+void RustShell::SetWindowTitle(FlutterRustViewId view_id,
+                               const uint8_t* title,
+                               uint64_t title_length) {
+  if (view_id <= kFlutterImplicitViewId || (!title && title_length != 0) ||
+      !windowing_callbacks_.set_window_title) {
+    return;
+  }
+  windowing_callbacks_.set_window_title(windowing_callbacks_.user_data, view_id,
+                                        title, title_length);
+}
+
+void RustShell::ActivateWindow(FlutterRustViewId view_id) {
+  if (view_id <= kFlutterImplicitViewId ||
+      !windowing_callbacks_.activate_window) {
+    return;
+  }
+  windowing_callbacks_.activate_window(windowing_callbacks_.user_data, view_id);
+}
+
+void RustShell::SetWindowMaximized(FlutterRustViewId view_id, bool maximized) {
+  if (view_id <= kFlutterImplicitViewId ||
+      !windowing_callbacks_.set_window_maximized) {
+    return;
+  }
+  windowing_callbacks_.set_window_maximized(windowing_callbacks_.user_data,
+                                            view_id, maximized ? 1 : 0);
+}
+
+void RustShell::SetWindowMinimized(FlutterRustViewId view_id, bool minimized) {
+  if (view_id <= kFlutterImplicitViewId ||
+      !windowing_callbacks_.set_window_minimized) {
+    return;
+  }
+  windowing_callbacks_.set_window_minimized(windowing_callbacks_.user_data,
+                                            view_id, minimized ? 1 : 0);
+}
+
+void RustShell::SetWindowFullscreen(FlutterRustViewId view_id,
+                                    bool fullscreen) {
+  if (view_id <= kFlutterImplicitViewId ||
+      !windowing_callbacks_.set_window_fullscreen) {
+    return;
+  }
+  windowing_callbacks_.set_window_fullscreen(windowing_callbacks_.user_data,
+                                             view_id, fullscreen ? 1 : 0);
+}
+
+void RustShell::SetWindowEventCallback(
+    FlutterRustWindowEventCallback callback) {
+  if (!windowing_callbacks_.set_window_event_callback) {
+    return;
+  }
+  windowing_callbacks_.set_window_event_callback(windowing_callbacks_.user_data,
+                                                 callback);
+}
+
 }  // namespace flutter
 
 namespace {
@@ -319,6 +517,7 @@ extern "C" void* FlutterRustShellCreateShell(
     FlutterRustVulkanPresentationCallbacks presentation_callbacks,
     FlutterRustPlatformMessageCallbacks platform_message_callbacks,
     FlutterRustVsyncCallbacks vsync_callbacks,
+    FlutterRustWindowingCallbacks windowing_callbacks,
     FlutterRustShellSettings settings) {
   auto main_task_runner = flutter::RustTaskRunner::FromHandle(task_runner);
   if (!main_task_runner) {
@@ -327,7 +526,7 @@ extern "C" void* FlutterRustShellCreateShell(
   auto shell = flutter::RustShell::Create(
       std::move(main_task_runner), ToContextData(context_data),
       presentation_callbacks, platform_message_callbacks, vsync_callbacks,
-      ToSettings(settings));
+      windowing_callbacks, ToSettings(settings));
   if (!shell || !shell->IsValid()) {
     return nullptr;
   }
@@ -343,18 +542,52 @@ extern "C" int FlutterRustShellRunShell(void* shell) {
 
 extern "C" void FlutterRustShellSetViewportMetrics(
     void* shell,
-    double width,
-    double height,
-    double pixel_ratio,
-    double display_width,
-    double display_height,
-    double display_refresh_rate) {
+    FlutterRustViewId view_id,
+    FlutterRustViewMetrics metrics) {
   if (!shell) {
     return;
   }
-  static_cast<flutter::RustShell*>(shell)->SetViewportMetrics(
-      width, height, pixel_ratio, display_width, display_height,
-      display_refresh_rate);
+  static_cast<flutter::RustShell*>(shell)->SetViewportMetrics(view_id, metrics);
+}
+
+extern "C" void FlutterRustShellAddView(
+    void* shell,
+    FlutterRustViewId view_id,
+    FlutterRustViewMetrics metrics,
+    FlutterRustVulkanPresentationCallbacks presentation_callbacks,
+    FlutterRustViewOperationCallbacks callbacks) {
+  if (!shell) {
+    if (callbacks.complete) {
+      callbacks.complete(callbacks.user_data, view_id, 0);
+    }
+    return;
+  }
+  static_cast<flutter::RustShell*>(shell)->AddView(
+      view_id, metrics, presentation_callbacks, callbacks);
+}
+
+extern "C" void FlutterRustShellRemoveView(
+    void* shell,
+    FlutterRustViewId view_id,
+    FlutterRustViewOperationCallbacks callbacks) {
+  if (!shell) {
+    if (callbacks.complete) {
+      callbacks.complete(callbacks.user_data, view_id, 0);
+    }
+    return;
+  }
+  static_cast<flutter::RustShell*>(shell)->RemoveView(view_id, callbacks);
+}
+
+extern "C" void FlutterRustShellSendViewFocusEvent(void* shell,
+                                                   FlutterRustViewId view_id,
+                                                   uint32_t state,
+                                                   uint32_t direction) {
+  if (!shell) {
+    return;
+  }
+  static_cast<flutter::RustShell*>(shell)->SendViewFocusEvent(view_id, state,
+                                                              direction);
 }
 
 extern "C" void FlutterRustShellSendPointerEvent(
@@ -400,6 +633,122 @@ extern "C" void FlutterRustShellOnVsync(void* shell,
     return;
   }
   static_cast<flutter::RustShell*>(shell)->OnVsync(frame_interval_nanos);
+}
+
+extern "C" FlutterRustViewId FlutterRustShellWindowCreateRegular(
+    int64_t engine_id,
+    const FlutterRustRegularWindowRequest* request) {
+  if (engine_id == 0) {
+    return -1;
+  }
+  return reinterpret_cast<flutter::RustShell*>(engine_id)->CreateRegularWindow(
+      request);
+}
+
+extern "C" FlutterRustViewId FlutterRustShellWindowCreateDialog(
+    int64_t engine_id,
+    const FlutterRustDialogWindowRequest* request) {
+  if (engine_id == 0) {
+    return -1;
+  }
+  return reinterpret_cast<flutter::RustShell*>(engine_id)->CreateDialogWindow(
+      request);
+}
+
+extern "C" void FlutterRustShellWindowDestroy(int64_t engine_id,
+                                              FlutterRustViewId view_id) {
+  if (engine_id == 0) {
+    return;
+  }
+  reinterpret_cast<flutter::RustShell*>(engine_id)->DestroyWindow(view_id);
+}
+
+extern "C" int FlutterRustShellWindowGetState(int64_t engine_id,
+                                              FlutterRustViewId view_id,
+                                              FlutterRustWindowState* state) {
+  if (engine_id == 0) {
+    return 0;
+  }
+  return reinterpret_cast<flutter::RustShell*>(engine_id)->GetWindowState(
+             view_id, state)
+             ? 1
+             : 0;
+}
+
+extern "C" void FlutterRustShellWindowSetSize(int64_t engine_id,
+                                              FlutterRustViewId view_id,
+                                              double width,
+                                              double height) {
+  if (engine_id != 0) {
+    reinterpret_cast<flutter::RustShell*>(engine_id)->SetWindowSize(
+        view_id, width, height);
+  }
+}
+
+extern "C" void FlutterRustShellWindowSetConstraints(int64_t engine_id,
+                                                     FlutterRustViewId view_id,
+                                                     int32_t has_constraints,
+                                                     double min_width,
+                                                     double min_height,
+                                                     double max_width,
+                                                     double max_height) {
+  if (engine_id != 0) {
+    reinterpret_cast<flutter::RustShell*>(engine_id)->SetWindowConstraints(
+        view_id, has_constraints, min_width, min_height, max_width, max_height);
+  }
+}
+
+extern "C" void FlutterRustShellWindowSetTitle(int64_t engine_id,
+                                               FlutterRustViewId view_id,
+                                               const uint8_t* title,
+                                               uint64_t title_length) {
+  if (engine_id != 0) {
+    reinterpret_cast<flutter::RustShell*>(engine_id)->SetWindowTitle(
+        view_id, title, title_length);
+  }
+}
+
+extern "C" void FlutterRustShellWindowActivate(int64_t engine_id,
+                                               FlutterRustViewId view_id) {
+  if (engine_id != 0) {
+    reinterpret_cast<flutter::RustShell*>(engine_id)->ActivateWindow(view_id);
+  }
+}
+
+extern "C" void FlutterRustShellWindowSetMaximized(int64_t engine_id,
+                                                   FlutterRustViewId view_id,
+                                                   int32_t maximized) {
+  if (engine_id != 0) {
+    reinterpret_cast<flutter::RustShell*>(engine_id)->SetWindowMaximized(
+        view_id, maximized != 0);
+  }
+}
+
+extern "C" void FlutterRustShellWindowSetMinimized(int64_t engine_id,
+                                                   FlutterRustViewId view_id,
+                                                   int32_t minimized) {
+  if (engine_id != 0) {
+    reinterpret_cast<flutter::RustShell*>(engine_id)->SetWindowMinimized(
+        view_id, minimized != 0);
+  }
+}
+
+extern "C" void FlutterRustShellWindowSetFullscreen(int64_t engine_id,
+                                                    FlutterRustViewId view_id,
+                                                    int32_t fullscreen) {
+  if (engine_id != 0) {
+    reinterpret_cast<flutter::RustShell*>(engine_id)->SetWindowFullscreen(
+        view_id, fullscreen != 0);
+  }
+}
+
+extern "C" void FlutterRustShellWindowSetEventCallback(
+    int64_t engine_id,
+    FlutterRustWindowEventCallback callback) {
+  if (engine_id != 0) {
+    reinterpret_cast<flutter::RustShell*>(engine_id)->SetWindowEventCallback(
+        callback);
+  }
 }
 
 extern "C" void FlutterRustShellDestroyShell(void* shell) {

@@ -37,6 +37,10 @@ class Surface {
 
   virtual bool IsValid() = 0;
 
+  // Selects the Flutter view targeted by the next AcquireFrame call. Most
+  // surfaces render a single implicit view and intentionally ignore this.
+  virtual void SetActiveViewId(int64_t view_id);
+
   virtual std::unique_ptr<SurfaceFrame> AcquireFrame(const DlISize& size) = 0;
 
   virtual DlMatrix GetRootTransformation() const = 0;

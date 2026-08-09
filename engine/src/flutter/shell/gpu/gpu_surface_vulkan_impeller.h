@@ -32,6 +32,9 @@ class GPUSurfaceVulkanImpeller final : public Surface {
   // |Surface|
   bool IsValid() override;
 
+  // |Surface|
+  void SetActiveViewId(int64_t view_id) override;
+
  private:
   FML_FRIEND_TEST(testing::GPUSurfaceVulkanImpeller,
                   RecreatesTransientsWhenFrameSizeChanges);

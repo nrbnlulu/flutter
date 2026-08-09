@@ -7,6 +7,7 @@ vars:
   LOCAL_ENGINE: host_debug
   BUNDLED_DEPOT_TOOLS: '{{.ENGINE_SRC}}/flutter/third_party/depot_tools'
   RUST_SHELL_SAMPLE: /run/media/dev/33da92da-1869-46ee-a0c1-fd5c4c9049e5/@home/dev/1tb_desktop/1tboss/bug
+  RUST_WINDOWING_EXAMPLE: '{{.TASKFILE_DIR}}/examples/multiple_windows'
   RESIZE_ITERATIONS: 500
 
 tasks:
@@ -29,6 +30,22 @@ tasks:
         VPYTHON_BYPASS="manually managed python not supported by chrome operations" \
           /usr/bin/ninja -C {{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}} \
             flutter_rust_shell_runner libflutter_rust_engine.so
+
+  run-rust-multiple-windows:
+    desc: Build and run Flutter's multiple_windows example on the Rust shell.
+    deps: [build-rust-shell]
+    cmds:
+      - '{{.TASKFILE_DIR}}/bin/flutter config --enable-windowing'
+      - |
+        cd {{.RUST_WINDOWING_EXAMPLE}}
+        {{.TASKFILE_DIR}}/bin/flutter build bundle --debug \
+          --local-engine={{.LOCAL_ENGINE}} \
+          --local-engine-host={{.LOCAL_ENGINE}} \
+          --local-engine-src-path={{.ENGINE_SRC}}
+      - |
+        {{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/flutter_rust_shell_runner \
+          {{.RUST_WINDOWING_EXAMPLE}}/build/flutter_assets \
+          {{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/icudtl.dat
 
   stress-rust-shell:
     desc: Stress Vulkan synchronization and verify input/resize frame liveness under compositor-driven timing.

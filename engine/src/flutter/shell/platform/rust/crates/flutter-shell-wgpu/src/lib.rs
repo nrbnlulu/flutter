@@ -14,6 +14,14 @@ mod linux {
     use std::path::PathBuf;
     use std::sync::Mutex;
 
+    /// Application-scoped wgpu/Vulkan ownership shared by every native view.
+    pub struct GpuContext {
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    }
+
     /// Borrowed Vulkan object values suitable only for an immediate C++ call.
     /// Their lifetime is tied to the [`GpuBroker`] that supplied them.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,14 +40,11 @@ mod linux {
     /// Vulkan values only through [`Self::with_vulkan_context`], preventing a
     /// Rust reference from escaping the handoff into C++.
     pub struct GpuBroker {
-        _instance: wgpu::Instance,
+        context: std::sync::Arc<GpuContext>,
         surface: wgpu::Surface<'static>,
         // Retained both for the unsafe surface lifetime and so presentation
         // can notify winit immediately before the Vulkan WSI commit.
         window: std::sync::Arc<winit::window::Window>,
-        _adapter: wgpu::Adapter,
-        device: wgpu::Device,
-        queue: wgpu::Queue,
         surface_state: Mutex<SurfaceState>,
         presentation_stats: Option<Mutex<PresentationStats>>,
     }
@@ -120,17 +125,16 @@ mod linux {
         })
     }
 
-    impl GpuBroker {
-        pub fn new(
-            window: std::sync::Arc<winit::window::Window>,
-            presentation_stats_path: Option<PathBuf>,
-        ) -> Result<Self, String> {
+    impl GpuContext {
+        fn new_for_window(
+            window: &std::sync::Arc<winit::window::Window>,
+        ) -> Result<std::sync::Arc<Self>, String> {
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::VULKAN,
                 ..wgpu::InstanceDescriptor::new_without_display_handle()
             });
-            // SAFETY: `window` is retained by the winit application until the
-            // broker and its surface have been dropped.
+            // This temporary surface selects a device that can present to the
+            // application's initial native window.
             let surface = unsafe {
                 instance.create_surface_unsafe(
                     wgpu::SurfaceTargetUnsafe::from_display_and_window(
@@ -157,17 +161,56 @@ mod linux {
                     ..Default::default()
                 }))
                 .map_err(|error| error.to_string())?;
+            Ok(std::sync::Arc::new(Self {
+                instance,
+                adapter,
+                device,
+                queue,
+            }))
+        }
+    }
+
+    impl GpuBroker {
+        pub fn new(
+            window: std::sync::Arc<winit::window::Window>,
+            presentation_stats_path: Option<PathBuf>,
+        ) -> Result<Self, String> {
+            let context = GpuContext::new_for_window(&window)?;
+            Self::from_context(context, window, presentation_stats_path)
+        }
+
+        pub fn from_context(
+            context: std::sync::Arc<GpuContext>,
+            window: std::sync::Arc<winit::window::Window>,
+            presentation_stats_path: Option<PathBuf>,
+        ) -> Result<Self, String> {
+            // SAFETY: the broker retains the window until after this surface
+            // has been destroyed.
+            let surface = unsafe {
+                context.instance.create_surface_unsafe(
+                    wgpu::SurfaceTargetUnsafe::from_display_and_window(
+                        window.as_ref(),
+                        window.as_ref(),
+                    )
+                    .map_err(|error| error.to_string())?,
+                )
+            }
+            .map_err(|error| error.to_string())?;
+            if surface
+                .get_capabilities(&context.adapter)
+                .formats
+                .is_empty()
+            {
+                return Err("shared Vulkan adapter cannot present to this window".to_owned());
+            }
             let presentation_stats = presentation_stats_path
                 .map(PresentationStats::create)
                 .transpose()?
                 .map(Mutex::new);
             Ok(Self {
-                _instance: instance,
+                context,
                 surface,
                 window,
-                _adapter: adapter,
-                device,
-                queue,
                 surface_state: Mutex::new(SurfaceState {
                     configuration: None,
                     pending_frame: None,
@@ -178,10 +221,14 @@ mod linux {
             })
         }
 
+        pub fn shared_context(&self) -> std::sync::Arc<GpuContext> {
+            std::sync::Arc::clone(&self.context)
+        }
+
         fn create_frame_sync(&self) -> Option<FrameSync> {
             // SAFETY: the HAL guard keeps wgpu's device alive while the raw
             // Vulkan calls create objects owned by this broker.
-            let device = unsafe { self.device.as_hal::<wgpu::hal::vulkan::Api>() }?;
+            let device = unsafe { self.context.device.as_hal::<wgpu::hal::vulkan::Api>() }?;
             let raw = device.raw_device();
             let acquire = unsafe {
                 raw.create_semaphore(&ash::vk::SemaphoreCreateInfo::default(), None)
@@ -202,7 +249,8 @@ mod linux {
         fn destroy_frame_sync(&self, sync: FrameSync) {
             // SAFETY: callers wait for the submission that consumed both
             // semaphores before destroying them.
-            let Some(device) = (unsafe { self.device.as_hal::<wgpu::hal::vulkan::Api>() }) else {
+            let Some(device) = (unsafe { self.context.device.as_hal::<wgpu::hal::vulkan::Api>() })
+            else {
                 return;
             };
             unsafe {
@@ -213,6 +261,7 @@ mod linux {
 
         fn wait_and_destroy(&self, retired: RetiredFrame) -> bool {
             if self
+                .context
                 .device
                 .poll(wgpu::PollType::Wait {
                     submission_index: Some(retired.submission),
@@ -235,7 +284,7 @@ mod linux {
         ) -> Option<T> {
             // SAFETY: the broker retains wgpu ownership, and no HAL resource
             // is destroyed or submitted through this borrowed handle.
-            let device = unsafe { self.device.as_hal::<wgpu::hal::vulkan::Api>() }?;
+            let device = unsafe { self.context.device.as_hal::<wgpu::hal::vulkan::Api>() }?;
             let instance = device.shared_instance();
             Some(callback(VulkanContextData {
                 get_instance_proc_addr: instance.entry().static_fn().get_instance_proc_addr
@@ -265,7 +314,7 @@ mod linux {
                 return Ok(());
             }
             let mut state = self.surface_state.lock().expect("surface lock poisoned");
-            let capabilities = self.surface.get_capabilities(&self._adapter);
+            let capabilities = self.surface.get_capabilities(&self.context.adapter);
             // Impeller's Vulkan backend only recognizes these two swapchain
             // formats (see VkFormatToImpellerFormat); sRGB and other variants
             // the surface may prefer are rejected at frame-acquire time.
@@ -295,7 +344,7 @@ mod linux {
                 state.deferred_configuration = Some(configuration);
                 return Ok(());
             }
-            self.surface.configure(&self.device, &configuration);
+            self.surface.configure(&self.context.device, &configuration);
             state.configuration = Some(configuration);
             state.deferred_configuration = None;
             Ok(())
@@ -345,7 +394,7 @@ mod linux {
                         return None;
                     }
                 }
-                self.surface.configure(&self.device, &configuration);
+                self.surface.configure(&self.context.device, &configuration);
                 state.configuration = Some(configuration);
             } else if deferred_matches_request {
                 // A matching deferred request has now reached its layer-tree
@@ -368,7 +417,7 @@ mod linux {
                 wgpu::CurrentSurfaceTexture::Success(texture) => (texture, false),
                 wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
                 wgpu::CurrentSurfaceTexture::Outdated => {
-                    self.surface.configure(&self.device, &configuration);
+                    self.surface.configure(&self.context.device, &configuration);
                     match self.surface.get_current_texture() {
                         wgpu::CurrentSurfaceTexture::Success(texture) => (texture, false),
                         wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
@@ -400,11 +449,12 @@ mod linux {
             let view = surface_texture
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Flutter Rust Shell acquire barrier"),
-                });
+            let mut encoder =
+                self.context
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Flutter Rust Shell acquire barrier"),
+                    });
             {
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Flutter Rust Shell acquire barrier"),
@@ -423,12 +473,13 @@ mod linux {
             // Make the acquire-complete semaphore part of the same wgpu
             // submission that consumes the swapchain's private acquire
             // semaphore. Impeller waits on this before its first image use.
-            let Some(queue) = (unsafe { self.queue.as_hal::<wgpu::hal::vulkan::Api>() }) else {
+            let Some(queue) = (unsafe { self.context.queue.as_hal::<wgpu::hal::vulkan::Api>() })
+            else {
                 self.destroy_frame_sync(sync);
                 return None;
             };
             queue.add_signal_semaphore(sync.acquire, None);
-            self.queue.submit([encoder.finish()]);
+            self.context.queue.submit([encoder.finish()]);
             state.pending_frame = Some(PendingFrame {
                 texture: surface_texture,
                 sync,
@@ -445,7 +496,8 @@ mod linux {
         ///
         pub fn present_image(&self) -> bool {
             let mut state = self.surface_state.lock().expect("surface lock poisoned");
-            let Some(queue) = (unsafe { self.queue.as_hal::<wgpu::hal::vulkan::Api>() }) else {
+            let Some(queue) = (unsafe { self.context.queue.as_hal::<wgpu::hal::vulkan::Api>() })
+            else {
                 return false;
             };
             let Some(pending) = state.pending_frame.take() else {
@@ -459,11 +511,12 @@ mod linux {
                 .texture
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Flutter Rust Shell present handoff"),
-                });
+            let mut encoder =
+                self.context
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Flutter Rust Shell present handoff"),
+                    });
             {
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Flutter Rust Shell present handoff"),
@@ -484,13 +537,13 @@ mod linux {
                 None,
                 ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             );
-            let submission = self.queue.submit([encoder.finish()]);
+            let submission = self.context.queue.submit([encoder.finish()]);
             // Wayland frame callbacks must only be armed when a surface commit
             // is guaranteed. Doing this at the earlier vsync pulse can freeze
             // redraw delivery when Flutter requested a secondary vsync that
             // intentionally produced no frame.
             self.window.pre_present_notify();
-            self.queue.present(pending.texture);
+            self.context.queue.present(pending.texture);
             if let (Some(stats), Some(configuration)) =
                 (&self.presentation_stats, &state.configuration)
             {
@@ -526,7 +579,8 @@ mod linux {
             // SAFETY: no callback can enter the broker during `drop`. Waiting
             // for the borrowed device to become idle makes every outstanding
             // broker semaphore safe to destroy.
-            if let Some(device) = unsafe { self.device.as_hal::<wgpu::hal::vulkan::Api>() } {
+            if let Some(device) = unsafe { self.context.device.as_hal::<wgpu::hal::vulkan::Api>() }
+            {
                 let _ = unsafe { device.raw_device().device_wait_idle() };
                 if let Some(pending) = state.pending_frame.take() {
                     unsafe {
@@ -611,4 +665,4 @@ mod linux {
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::{GpuBroker, VulkanContextData};
+pub use linux::{GpuBroker, GpuContext, VulkanContextData};
