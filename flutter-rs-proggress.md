@@ -9,8 +9,9 @@ for the architectural plan.
 Phase 0 is complete. Phase 1 — winit platform host — is in progress. Pointer,
 window metrics, display updates, lifecycle, raw keyboard events, and a rendered
 Impeller/wgpu frame are working. The explicit Vulkan semaphore broker is now
-implemented and passes rapid-resize and in-flight teardown stress. Text
-input/IME is now the next phase 1 implementation item; real vsync follows.
+implemented and passes rapid-resize and in-flight teardown stress. Typed text
+input/IME plumbing is implemented and awaiting a final interactive typing
+check; real vsync follows.
 
 ## Status
 
@@ -19,7 +20,7 @@ input/IME is now the next phase 1 implementation item; real vsync follows.
 | Existing shells remain available | Complete | The Rust target is opt-in and is not added to the existing platform-selection group. |
 | In-tree Rust platform target | Complete | `//flutter/shell/platform/rust:flutter_rust_shell` builds. |
 | Internal PlatformView adapter | Complete | `PlatformViewRust` builds and its focused tests pass. |
-| Rust/C++ ABI | Complete for phase 1 plumbing | ABI v2 covers task-runner callbacks, Vulkan context/presentation callbacks and per-frame semaphores, shell create/run/destroy, viewport/display metrics, lifecycle, pointer, and raw keyboard events. |
+| Rust/C++ ABI | Complete for phase 1 plumbing | ABI v3 covers task-runner callbacks, Vulkan context/presentation callbacks and per-frame semaphores, bidirectional platform messages, shell create/run/destroy, viewport/display metrics, lifecycle, pointer, and raw keyboard events. |
 | Rust workspace and `flutter-plugin-sdk` | Complete for foundation | Workspace uses Rust edition 2024, concrete toolchain 1.93.1, and passes its tests. |
 | Winit event loop | Complete for phase 0 | Linux host owns the window and event loop, dispatches Flutter task batons, and drives the Rust-owned Vulkan presentation loop end to end. |
 | Merged UI/platform task runner | Complete for phase 0 | `RustTaskRunner` queues batons for the Rust host, winit returns due batons through opaque C++ handles, and it now also drives Dart's per-task microtask flush (see below). |
@@ -28,7 +29,8 @@ input/IME is now the next phase 1 implementation item; real vsync follows.
 | Pointer input | Complete for phase 1 plumbing | Winit mouse, wheel, and touch events cross the private ABI and are converted into Flutter `PointerDataPacket`s; Rust translation and C++ conversion tests pass. |
 | Window and display metrics | Complete for phase 1 plumbing | Initial, resize, and scale-factor changes report physical viewport size, the real device-pixel ratio, and current-monitor size/refresh rate; zero-sized surfaces are not configured. |
 | Lifecycle | Complete for phase 1 plumbing | Focus, minimize/restore, winit suspend/resume, and shutdown are deduplicated in Rust and forwarded through `flutter/lifecycle`; Rust transition and C++ ABI conversion tests pass. |
-| Keyboard input | Complete for phase 1 raw events | Winit physical/logical keys, down/up/repeat, characters, modifier sides, and synthesized state cross the private ABI as Flutter `KeyData` packets; IME/text editing remains separate. |
+| Keyboard input | Complete for phase 1 raw events | Winit physical/logical keys, down/up/repeat, characters, modifier sides, and synthesized state cross the private ABI as Flutter `KeyData` packets. |
+| Text input and IME | Implemented; interactive validation pending | The Rust host handles the standard `flutter/textinput` protocol with typed commands and validated UTF-16 editing state, controls winit IME activation/cursor geometry, translates preedit/commit events, and sends `TextInputClient.updateEditingState` back to Flutter. |
 
 ## Implementation log
 
@@ -234,6 +236,29 @@ input/IME is now the next phase 1 implementation item; real vsync follows.
   retired pairs before deferred resize reconfiguration. Teardown waits for the
   borrowed Vulkan device to become idle before destroying any remaining pairs.
 
+### Phase 1 — text input and IME
+
+- Bumped the lockstep private shell ABI to v3 and added generic, borrowed-byte
+  platform-message callbacks in both directions. C++ owns Flutter's
+  `PlatformMessage` objects and response completion; Rust copies and decodes
+  messages before the callback returns.
+- Installed a queued `flutter/textinput` handler so framework calls cannot
+  re-enter mutable winit application state while the merged UI/platform runner
+  is executing a Flutter task.
+- Decoded the JSON method codec immediately into typed Rust commands, client
+  IDs, editing states, affinities, and cursor rectangles. Malformed commands,
+  non-finite rectangles, out-of-range offsets, and offsets that split UTF-16
+  surrogate pairs are rejected at the boundary.
+- Implemented `setClient`, `setEditingState`, `show`, `hide`, `clearClient`,
+  caret/marked-text rectangles, and safe no-op handling for current geometry,
+  style, selection-rectangle, configuration, and autofill calls.
+- Connected show/hide to `Window::set_ime_allowed`, geometry updates to
+  `Window::set_ime_cursor_area`, and winit preedit/commit events to a
+  UTF-16-aware editing model. Framework updates use the standard
+  `TextInputClient.updateEditingState` method call.
+- Kept raw key-data delivery separate from committed text, preventing the host
+  from inserting the same character through both keyboard and IME paths.
+
 ## Validation
 
 - `git diff --check` passes.
@@ -245,7 +270,9 @@ input/IME is now the next phase 1 implementation item; real vsync follows.
   host-debug GN configuration (`et build`-managed `out/host_debug`).
 - Ran `flutter_rust_shell_unittests`: 14 tests passed.
 - Ran `cargo +1.93.1 test --workspace --locked`: all crate and documentation
-  tests pass.
+  tests pass, including typed text-input decoding, invalid UTF-16 range
+  rejection, Unicode selection replacement, hidden-cursor composition, and
+  framework update serialization.
 - Compiled the changed Rust Vulkan presentation C++ translation unit and its
   ABI consumers with the host-debug compile commands, then completed a full
   `flutter_rust_shell_runner` host-debug build using the engine's bundled
@@ -259,6 +286,12 @@ input/IME is now the next phase 1 implementation item; real vsync follows.
   `vulkan-validation-layers` 1.4.350.1-1, the same 500-resize run passed with
   `VK_LAYER_KHRONOS_validation` explicitly enabled and an empty diagnostic
   log.
+- Rebuilt both the standalone runner and `libflutter_rust_engine.so`, then
+  rebuilt and launched the sample's `runner-rs` target against ABI v3. The
+  sample remains mapped and stable; a real typing/IME check is pending because
+  Hyprland's compositor-generated shortcuts did not reach the sample (they
+  also could not activate its button), so they were not treated as input
+  validation.
 - Ran `task run-flutter` through the app's `runner-rs` Cargo target against a
   real JIT kernel snapshot: the process stays alive, the Rust-shell window is
   mapped and visible, and a live capture shows rendered Flutter content. No
@@ -269,7 +302,8 @@ input/IME is now the next phase 1 implementation item; real vsync follows.
 
 ## Next implementation steps (phase 1)
 
-1. Add text input and IME integration on top of the raw keyboard event path.
+1. Complete the interactive typing, selection, Backspace, Unicode, and
+   composition check in the running sample.
 2. Replace the vsync fallback timer with a real winit/compositor-driven vsync
    source.
 3. Add main-thread dispatch for background isolate and Rust-worker callbacks,

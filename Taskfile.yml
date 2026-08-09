@@ -22,12 +22,13 @@ tasks:
       - PATH="{{.DEPOT_TOOLS}}:$PATH" git push
 
   build-rust-shell:
-    desc: Build the host-debug Flutter Rust shell runner.
+    desc: Build the host-debug Flutter Rust shell runner and shared engine.
     cmds:
       - |
         PATH="{{.BUNDLED_DEPOT_TOOLS}}:$PATH" \
         VPYTHON_BYPASS="manually managed python not supported by chrome operations" \
-          /usr/bin/ninja -C {{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}} flutter_rust_shell_runner
+          /usr/bin/ninja -C {{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}} \
+            flutter_rust_shell_runner libflutter_rust_engine.so
 
   stress-rust-shell:
     desc: Stress Vulkan handoff synchronization with compositor-driven resize, hide, restore, fullscreen, and close events.

@@ -12,7 +12,7 @@ use flutter_plugin_sdk::PLUGIN_SDK_API_VERSION;
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 2;
+pub const SHELL_ABI_VERSION: u32 = 3;
 
 /// ABI information returned to C++ before it installs Rust callbacks.
 #[repr(C)]
@@ -78,6 +78,15 @@ pub struct FlutterRustVulkanPresentationCallbacks {
 pub struct FlutterRustShellSettings {
     pub assets_path: *const std::ffi::c_char,
     pub icu_data_path: *const std::ffi::c_char,
+}
+
+/// Callback table for framework-to-host platform messages. Byte slices are
+/// borrowed only for the duration of the callback. A non-zero result means
+/// the message was handled and receives a JSON success envelope.
+#[repr(C)]
+pub struct FlutterRustPlatformMessageCallbacks {
+    pub user_data: *mut c_void,
+    pub handle_message: Option<extern "C" fn(*mut c_void, *const u8, u64, *const u8, u64) -> i32>,
 }
 
 /// Pointer phases accepted by the private engine bridge.

@@ -8,7 +8,7 @@
 #[cfg(target_os = "linux")]
 mod linux {
     use std::{
-        collections::BTreeMap,
+        collections::{BTreeMap, VecDeque},
         ffi::c_void,
         sync::Arc,
         sync::{
@@ -25,18 +25,23 @@ mod linux {
         FlutterRustPointerPhase, FlutterRustPointerSignalKind, FlutterRustTaskRunnerCallbacks,
     };
     #[cfg(not(test))]
-    use flutter_shell_core::{FlutterRustShellSettings, FlutterRustVulkanContextData};
+    use flutter_shell_core::{
+        FlutterRustPlatformMessageCallbacks, FlutterRustShellSettings, FlutterRustVulkanContextData,
+    };
     use flutter_shell_wgpu::GpuBroker;
+    use serde::{Deserialize, Serialize, de::IgnoredAny};
+    use serde_json::Value;
     #[cfg(not(test))]
     use std::ffi::CString;
     use winit::{
         application::ApplicationHandler,
+        dpi::{LogicalPosition, LogicalSize},
         event::{
-            ElementState, KeyEvent as WinitKeyEvent, MouseButton, MouseScrollDelta, Touch,
+            ElementState, Ime, KeyEvent as WinitKeyEvent, MouseButton, MouseScrollDelta, Touch,
             TouchPhase, WindowEvent,
         },
         event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
-        keyboard::{Key, KeyCode, NamedKey, NativeKey, NativeKeyCode, PhysicalKey},
+        keyboard::{Key, KeyCode, ModifiersState, NamedKey, NativeKey, NativeKeyCode, PhysicalKey},
         window::{Window, WindowId},
     };
 
@@ -92,6 +97,7 @@ mod linux {
         task_runner: *mut c_void,
         context_data: FlutterRustVulkanContextData,
         presentation_callbacks: flutter_shell_core::FlutterRustVulkanPresentationCallbacks,
+        platform_message_callbacks: FlutterRustPlatformMessageCallbacks,
         settings: FlutterRustShellSettings,
     ) -> *mut c_void {
         unsafe extern "C" {
@@ -99,12 +105,19 @@ mod linux {
                 task_runner: *mut c_void,
                 context_data: FlutterRustVulkanContextData,
                 presentation_callbacks: flutter_shell_core::FlutterRustVulkanPresentationCallbacks,
+                platform_message_callbacks: FlutterRustPlatformMessageCallbacks,
                 settings: FlutterRustShellSettings,
             ) -> *mut c_void;
         }
         // SAFETY: the struct layouts are ABI-compatible with rust_bridge.h.
         unsafe {
-            FlutterRustShellCreateShell(task_runner, context_data, presentation_callbacks, settings)
+            FlutterRustShellCreateShell(
+                task_runner,
+                context_data,
+                presentation_callbacks,
+                platform_message_callbacks,
+                settings,
+            )
         }
     }
 
@@ -181,6 +194,30 @@ mod linux {
         // SAFETY: `shell` was returned by create_cpp_shell and the event is an
         // ABI-compatible value containing no borrowed fields.
         unsafe { FlutterRustShellSendKeyEvent(shell, event) }
+    }
+
+    #[cfg(not(test))]
+    fn send_cpp_platform_message(shell: *mut c_void, channel: &[u8], message: &[u8]) {
+        unsafe extern "C" {
+            fn FlutterRustShellSendPlatformMessage(
+                shell: *mut c_void,
+                channel: *const u8,
+                channel_size: u64,
+                message: *const u8,
+                message_size: u64,
+            );
+        }
+        // SAFETY: C++ copies both slices before returning and `shell` remains
+        // owned by this application.
+        unsafe {
+            FlutterRustShellSendPlatformMessage(
+                shell,
+                channel.as_ptr(),
+                channel.len() as u64,
+                message.as_ptr(),
+                message.len() as u64,
+            )
+        }
     }
 
     /// Winit host configuration, shared across the platforms this crate will
@@ -350,6 +387,407 @@ mod linux {
             }
             self.last_sent = Some(state);
             Some(state)
+        }
+    }
+
+    const TEXT_INPUT_CHANNEL: &[u8] = b"flutter/textinput";
+
+    fn trace_text_input(arguments: std::fmt::Arguments<'_>) {
+        if std::env::var_os("FLUTTER_RUST_TRACE_TEXT_INPUT").is_some() {
+            eprintln!("[flutter-rust text-input] {arguments}");
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(transparent)]
+    struct TextInputClientId(i64);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+    enum TextAffinity {
+        #[serde(rename = "TextAffinity.upstream")]
+        Upstream,
+        #[default]
+        #[serde(rename = "TextAffinity.downstream")]
+        Downstream,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct TextEditingState {
+        text: String,
+        selection_base: i64,
+        selection_extent: i64,
+        #[serde(default)]
+        selection_affinity: TextAffinity,
+        #[serde(default)]
+        selection_is_directional: bool,
+        composing_base: i64,
+        composing_extent: i64,
+    }
+
+    impl Default for TextEditingState {
+        fn default() -> Self {
+            Self {
+                text: String::new(),
+                selection_base: -1,
+                selection_extent: -1,
+                selection_affinity: TextAffinity::Downstream,
+                selection_is_directional: false,
+                composing_base: -1,
+                composing_extent: -1,
+            }
+        }
+    }
+
+    impl TextEditingState {
+        fn validate(&self) -> bool {
+            valid_range_for_text(&self.text, self.selection_base, self.selection_extent, true)
+                && valid_range_for_text(
+                    &self.text,
+                    self.composing_base,
+                    self.composing_extent,
+                    true,
+                )
+        }
+
+        fn replace_for_ime(
+            &mut self,
+            replacement: &str,
+            composing: bool,
+            composing_cursor: Option<usize>,
+        ) -> bool {
+            let replacement_length = replacement.encode_utf16().count() as i64;
+            let Some(cursor) = composing_cursor
+                .map(|byte_index| {
+                    replacement
+                        .get(..byte_index)
+                        .map(|prefix| prefix.encode_utf16().count() as i64)
+                })
+                .unwrap_or(Some(replacement_length))
+            else {
+                return false;
+            };
+            let text_length = self.text.encode_utf16().count() as i64;
+            let (start, end) = if valid_text_range(
+                self.composing_base,
+                self.composing_extent,
+                text_length,
+                false,
+            ) {
+                ordered_range(self.composing_base, self.composing_extent)
+            } else if valid_text_range(
+                self.selection_base,
+                self.selection_extent,
+                text_length,
+                false,
+            ) {
+                ordered_range(self.selection_base, self.selection_extent)
+            } else {
+                (text_length, text_length)
+            };
+            let (Some(byte_start), Some(byte_end)) = (
+                utf16_index_to_byte(&self.text, start as usize),
+                utf16_index_to_byte(&self.text, end as usize),
+            ) else {
+                return false;
+            };
+            self.text.replace_range(byte_start..byte_end, replacement);
+            self.selection_base = start + cursor;
+            self.selection_extent = start + cursor;
+            self.selection_affinity = TextAffinity::Downstream;
+            self.selection_is_directional = false;
+            if composing && !replacement.is_empty() {
+                self.composing_base = start;
+                self.composing_extent = start + replacement_length;
+            } else {
+                self.composing_base = -1;
+                self.composing_extent = -1;
+            }
+            true
+        }
+    }
+
+    fn valid_text_range(base: i64, extent: i64, length: i64, allow_absent: bool) -> bool {
+        (allow_absent && base == -1 && extent == -1)
+            || (base >= 0 && extent >= 0 && base <= length && extent <= length)
+    }
+
+    fn valid_range_for_text(text: &str, base: i64, extent: i64, allow_absent: bool) -> bool {
+        if allow_absent && base == -1 && extent == -1 {
+            return true;
+        }
+        let length = text.encode_utf16().count() as i64;
+        valid_text_range(base, extent, length, false)
+            && utf16_index_to_byte(text, base as usize).is_some()
+            && utf16_index_to_byte(text, extent as usize).is_some()
+    }
+
+    fn ordered_range(base: i64, extent: i64) -> (i64, i64) {
+        (base.min(extent), base.max(extent))
+    }
+
+    fn utf16_index_to_byte(text: &str, target: usize) -> Option<usize> {
+        let mut utf16_index = 0;
+        for (byte_index, character) in text.char_indices() {
+            if utf16_index == target {
+                return Some(byte_index);
+            }
+            utf16_index += character.len_utf16();
+            if utf16_index > target {
+                return None;
+            }
+        }
+        (utf16_index == target).then_some(text.len())
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct TextInputRect {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    }
+
+    impl TextInputRect {
+        fn validate(self) -> bool {
+            self.x.is_finite()
+                && self.y.is_finite()
+                && self.width.is_finite()
+                && self.height.is_finite()
+                && self.width >= 0.0
+                && self.height >= 0.0
+        }
+    }
+
+    #[derive(Deserialize)]
+    struct RawMethodCall {
+        method: String,
+        args: Value,
+    }
+
+    #[derive(Deserialize)]
+    struct SetClientArguments(TextInputClientId, IgnoredAny);
+
+    #[derive(Deserialize)]
+    struct RectArguments {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum TextInputCommand {
+        SetClient(TextInputClientId),
+        SetEditingState(TextEditingState),
+        Show,
+        Hide,
+        ClearClient,
+        SetCursorRect(TextInputRect),
+        Noop,
+    }
+
+    impl TextInputCommand {
+        fn decode(message: &[u8]) -> Option<Self> {
+            let call: RawMethodCall = serde_json::from_slice(message).ok()?;
+            match call.method.as_str() {
+                "TextInput.setClient" => {
+                    let SetClientArguments(client_id, _) =
+                        serde_json::from_value(call.args).ok()?;
+                    Some(Self::SetClient(client_id))
+                }
+                "TextInput.setEditingState" => {
+                    let state: TextEditingState = serde_json::from_value(call.args).ok()?;
+                    state.validate().then_some(Self::SetEditingState(state))
+                }
+                "TextInput.show" => Some(Self::Show),
+                "TextInput.hide" => Some(Self::Hide),
+                "TextInput.clearClient" => Some(Self::ClearClient),
+                "TextInput.setMarkedTextRect" | "TextInput.setCaretRect" => {
+                    let rect: RectArguments = serde_json::from_value(call.args).ok()?;
+                    let rect = TextInputRect {
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                    };
+                    rect.validate().then_some(Self::SetCursorRect(rect))
+                }
+                "TextInput.updateConfig"
+                | "TextInput.setEditableSizeAndTransform"
+                | "TextInput.setSelectionRects"
+                | "TextInput.setStyle"
+                | "TextInput.requestAutofill"
+                | "TextInput.finishAutofillContext" => Some(Self::Noop),
+                _ => None,
+            }
+        }
+    }
+
+    struct TextInputInbox {
+        commands: Mutex<VecDeque<TextInputCommand>>,
+        #[cfg(not(test))]
+        wake_proxy: EventLoopProxy<HostEvent>,
+    }
+
+    impl TextInputInbox {
+        fn new(wake_proxy: EventLoopProxy<HostEvent>) -> Self {
+            #[cfg(test)]
+            let _ = wake_proxy;
+            Self {
+                commands: Mutex::new(VecDeque::new()),
+                #[cfg(not(test))]
+                wake_proxy,
+            }
+        }
+
+        #[cfg(not(test))]
+        fn callbacks(&self) -> FlutterRustPlatformMessageCallbacks {
+            FlutterRustPlatformMessageCallbacks {
+                user_data: std::ptr::from_ref(self).cast_mut().cast(),
+                handle_message: Some(handle_platform_message),
+            }
+        }
+
+        fn drain(&self) -> VecDeque<TextInputCommand> {
+            std::mem::take(
+                &mut *self
+                    .commands
+                    .lock()
+                    .expect("Flutter text input command queue poisoned"),
+            )
+        }
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn handle_platform_message(
+        user_data: *mut c_void,
+        channel: *const u8,
+        channel_size: u64,
+        message: *const u8,
+        message_size: u64,
+    ) -> i32 {
+        if user_data.is_null() || channel.is_null() || (message.is_null() && message_size != 0) {
+            return 0;
+        }
+        let (Ok(channel_size), Ok(message_size)) =
+            (usize::try_from(channel_size), usize::try_from(message_size))
+        else {
+            return 0;
+        };
+        // SAFETY: C++ guarantees these byte slices remain valid for the
+        // duration of the callback. A zero-length message does not dereference
+        // its possibly-null pointer.
+        let channel = unsafe { std::slice::from_raw_parts(channel, channel_size) };
+        if channel != TEXT_INPUT_CHANNEL {
+            return 0;
+        }
+        let message = if message_size == 0 {
+            &[]
+        } else {
+            // SAFETY: checked non-null above; C++ owns this range for the call.
+            unsafe { std::slice::from_raw_parts(message, message_size) }
+        };
+        let Some(command) = TextInputCommand::decode(message) else {
+            trace_text_input(format_args!("rejected framework message"));
+            return 0;
+        };
+        trace_text_input(format_args!("framework -> host: {command:?}"));
+        // SAFETY: callbacks() uses the stable address of the boxed inbox, and
+        // ShellApplication destroys the C++ shell before dropping that inbox.
+        let inbox = unsafe { &*user_data.cast::<TextInputInbox>() };
+        inbox
+            .commands
+            .lock()
+            .expect("Flutter text input command queue poisoned")
+            .push_back(command);
+        let _ = inbox.wake_proxy.send_event(HostEvent::TaskScheduled);
+        1
+    }
+
+    #[derive(Default)]
+    struct TextInputSession {
+        active_client: Option<TextInputClientId>,
+        editing_state: TextEditingState,
+        ime_allowed: bool,
+        cursor_rect: Option<TextInputRect>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum TextInputEffect {
+        SetImeAllowed(bool),
+        SetCursorRect(TextInputRect),
+    }
+
+    impl TextInputSession {
+        fn apply(&mut self, command: TextInputCommand) -> Option<TextInputEffect> {
+            match command {
+                TextInputCommand::SetClient(client) => {
+                    self.active_client = Some(client);
+                    None
+                }
+                TextInputCommand::SetEditingState(state) => {
+                    if self.active_client.is_some() {
+                        self.editing_state = state;
+                    }
+                    None
+                }
+                TextInputCommand::Show => {
+                    self.ime_allowed = self.active_client.is_some();
+                    Some(TextInputEffect::SetImeAllowed(self.ime_allowed))
+                }
+                TextInputCommand::Hide => {
+                    self.ime_allowed = false;
+                    Some(TextInputEffect::SetImeAllowed(false))
+                }
+                TextInputCommand::ClearClient => {
+                    self.active_client = None;
+                    self.editing_state = TextEditingState::default();
+                    self.ime_allowed = false;
+                    Some(TextInputEffect::SetImeAllowed(false))
+                }
+                TextInputCommand::SetCursorRect(rect) => {
+                    self.cursor_rect = Some(rect);
+                    Some(TextInputEffect::SetCursorRect(rect))
+                }
+                TextInputCommand::Noop => None,
+            }
+        }
+
+        fn ime(&mut self, event: Ime) -> Option<Vec<u8>> {
+            let client = self.active_client?;
+            let changed = match event {
+                Ime::Preedit(text, cursor) => {
+                    self.editing_state
+                        .replace_for_ime(&text, true, cursor.map(|(_, end)| end))
+                }
+                Ime::Commit(text) => self.editing_state.replace_for_ime(&text, false, None),
+                Ime::Enabled | Ime::Disabled => false,
+            };
+            changed.then(|| self.encode_update(client))
+        }
+
+        fn keyboard_text(&mut self, text: &str) -> Option<Vec<u8>> {
+            let client = self.active_client?;
+            if self.editing_state.composing_base >= 0 || self.editing_state.composing_extent >= 0 {
+                return None;
+            }
+            self.editing_state
+                .replace_for_ime(text, false, None)
+                .then(|| self.encode_update(client))
+        }
+
+        fn encode_update(&self, client: TextInputClientId) -> Vec<u8> {
+            #[derive(Serialize)]
+            struct UpdateEditingState<'a> {
+                method: &'static str,
+                args: (TextInputClientId, &'a TextEditingState),
+            }
+            serde_json::to_vec(&UpdateEditingState {
+                method: "TextInputClient.updateEditingState",
+                args: (client, &self.editing_state),
+            })
+            .expect("typed text editing state must serialize")
         }
     }
 
@@ -547,13 +985,23 @@ mod linux {
 
     struct KeyboardState {
         started_at: Instant,
+        modifiers: ModifiersState,
     }
 
     impl KeyboardState {
         fn new() -> Self {
             Self {
                 started_at: Instant::now(),
+                modifiers: ModifiersState::empty(),
             }
+        }
+
+        fn modifiers_changed(&mut self, modifiers: ModifiersState) {
+            self.modifiers = modifiers;
+        }
+
+        fn committed_text<'a>(&self, event: &'a WinitKeyEvent) -> Option<&'a str> {
+            committed_key_text(self.modifiers, event.state, event.text.as_deref())
         }
 
         fn event(&self, event: &WinitKeyEvent, synthesized: bool) -> Option<FlutterRustKeyEvent> {
@@ -567,6 +1015,23 @@ mod linux {
                 synthesized,
             )
         }
+    }
+
+    fn committed_key_text(
+        modifiers: ModifiersState,
+        state: ElementState,
+        text: Option<&str>,
+    ) -> Option<&str> {
+        if state != ElementState::Pressed
+            || modifiers.control_key()
+            || modifiers.super_key()
+            || modifiers.alt_key()
+        {
+            return None;
+        }
+        text.filter(|text| {
+            !text.is_empty() && text.chars().all(|character| !character.is_control())
+        })
     }
 
     fn make_key_event(
@@ -1028,6 +1493,7 @@ mod linux {
             event_loop.create_proxy(),
         )));
         task_runner_host.install_cpp_task_runner();
+        let text_input_inbox = Box::new(TextInputInbox::new(event_loop.create_proxy()));
         let mut application = ShellApplication {
             config,
             window: None,
@@ -1035,6 +1501,8 @@ mod linux {
             task_runner_host,
             pointer_state: PointerState::new(),
             keyboard_state: KeyboardState::new(),
+            text_input_inbox,
+            text_input_session: TextInputSession::default(),
             lifecycle_state: LifecycleState::new(),
             #[cfg(not(test))]
             shell: None,
@@ -1049,6 +1517,8 @@ mod linux {
         task_runner_host: Box<TaskRunnerHost>,
         pointer_state: PointerState,
         keyboard_state: KeyboardState,
+        text_input_inbox: Box<TextInputInbox>,
+        text_input_session: TextInputSession,
         lifecycle_state: LifecycleState,
         #[cfg(not(test))]
         shell: Option<*mut c_void>,
@@ -1110,6 +1580,7 @@ mod linux {
                         icu_data_path: icu_data_path.as_ptr(),
                     };
                     let presentation_callbacks = gpu_broker.presentation_callbacks();
+                    let platform_message_callbacks = self.text_input_inbox.callbacks();
                     let task_runner_handle = self.task_runner_host.task_runner_handle();
                     let shell = gpu_broker
                         .with_vulkan_context(|context_data| {
@@ -1153,6 +1624,7 @@ mod linux {
                                 task_runner_handle,
                                 ffi_context_data,
                                 presentation_callbacks,
+                                platform_message_callbacks,
                                 settings,
                             )
                         })
@@ -1253,8 +1725,28 @@ mod linux {
                     is_synthetic,
                     ..
                 } => {
+                    trace_text_input(format_args!("keyboard: {event:?}"));
+                    let committed_text = self
+                        .keyboard_state
+                        .committed_text(&event)
+                        .map(str::to_owned);
                     if let Some(event) = self.keyboard_state.event(&event, is_synthetic) {
                         self.send_key_event(event);
+                    }
+                    if let Some(message) = committed_text
+                        .as_deref()
+                        .and_then(|text| self.text_input_session.keyboard_text(text))
+                    {
+                        self.send_text_input_update(&message);
+                    }
+                }
+                WindowEvent::ModifiersChanged(modifiers) => {
+                    self.keyboard_state.modifiers_changed(modifiers.state());
+                }
+                WindowEvent::Ime(event) => {
+                    trace_text_input(format_args!("IME: {event:?}"));
+                    if let Some(message) = self.text_input_session.ime(event) {
+                        self.send_text_input_update(&message);
                     }
                 }
                 WindowEvent::CursorEntered { .. } => {
@@ -1296,6 +1788,7 @@ mod linux {
 
         fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
             self.task_runner_host.dispatch_due_tasks();
+            self.apply_text_input_commands();
             match self.task_runner_host.next_deadline() {
                 Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
                 None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -1332,6 +1825,40 @@ mod linux {
             #[cfg(test)]
             let _ = event;
         }
+
+        fn apply_text_input_commands(&mut self) {
+            for command in self.text_input_inbox.drain() {
+                let effect = self.text_input_session.apply(command);
+                let Some(window) = &self.window else {
+                    continue;
+                };
+                match effect {
+                    Some(TextInputEffect::SetImeAllowed(allowed)) => {
+                        window.set_ime_allowed(allowed);
+                    }
+                    Some(TextInputEffect::SetCursorRect(rect)) => {
+                        window.set_ime_cursor_area(
+                            LogicalPosition::new(rect.x, rect.y),
+                            LogicalSize::new(rect.width, rect.height),
+                        );
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        fn send_text_input_update(&self, message: &[u8]) {
+            trace_text_input(format_args!(
+                "host -> framework: {}",
+                String::from_utf8_lossy(message)
+            ));
+            #[cfg(not(test))]
+            if let Some(shell) = self.shell {
+                send_cpp_platform_message(shell, TEXT_INPUT_CHANNEL, message);
+            }
+            #[cfg(test)]
+            let _ = message;
+        }
     }
 
     #[cfg(test)]
@@ -1340,6 +1867,7 @@ mod linux {
         #[test]
         fn has_a_stable_default_window_title() {
             assert_eq!(ShellConfig::default().title, "Flutter Rust Shell");
+            assert_eq!(TEXT_INPUT_CHANNEL, b"flutter/textinput");
         }
 
         #[test]
@@ -1384,6 +1912,154 @@ mod linux {
             );
             destroyed(callbacks.user_data);
             assert!(host.is_destroyed());
+        }
+
+        #[test]
+        fn decodes_typed_text_input_commands() {
+            assert_eq!(
+                TextInputCommand::decode(
+                    br#"{"method":"TextInput.setClient","args":[42,{"inputAction":"TextInputAction.done"}]}"#,
+                ),
+                Some(TextInputCommand::SetClient(TextInputClientId(42)))
+            );
+            assert_eq!(
+                TextInputCommand::decode(
+                    r#"{"method":"TextInput.setEditingState","args":{"text":"A🙂B","selectionBase":3,"selectionExtent":3,"selectionAffinity":"TextAffinity.downstream","selectionIsDirectional":false,"composingBase":-1,"composingExtent":-1}}"#.as_bytes(),
+                ),
+                Some(TextInputCommand::SetEditingState(TextEditingState {
+                    text: "A🙂B".to_owned(),
+                    selection_base: 3,
+                    selection_extent: 3,
+                    selection_affinity: TextAffinity::Downstream,
+                    selection_is_directional: false,
+                    composing_base: -1,
+                    composing_extent: -1,
+                }))
+            );
+            assert_eq!(
+                TextInputCommand::decode(
+                    br#"{"method":"TextInput.setCaretRect","args":{"x":10.0,"y":20.0,"width":1.0,"height":18.0}}"#,
+                ),
+                Some(TextInputCommand::SetCursorRect(TextInputRect {
+                    x: 10.0,
+                    y: 20.0,
+                    width: 1.0,
+                    height: 18.0,
+                }))
+            );
+        }
+
+        #[test]
+        fn rejects_malformed_text_input_commands_and_utf16_ranges() {
+            assert!(TextInputCommand::decode(b"not json").is_none());
+            assert!(
+                TextInputCommand::decode(br#"{"method":"TextInput.unknown","args":null}"#,)
+                    .is_none()
+            );
+            // UTF-16 offset 1 splits the emoji's surrogate pair.
+            assert!(
+                TextInputCommand::decode(
+                    r#"{"method":"TextInput.setEditingState","args":{"text":"🙂","selectionBase":1,"selectionExtent":1,"composingBase":-1,"composingExtent":-1}}"#.as_bytes(),
+                )
+                .is_none()
+            );
+        }
+
+        #[test]
+        fn ime_replaces_utf16_selection_and_serializes_framework_update() {
+            let mut session = TextInputSession::default();
+            session.apply(TextInputCommand::SetClient(TextInputClientId(7)));
+            session.apply(TextInputCommand::SetEditingState(TextEditingState {
+                text: "A🙂B".to_owned(),
+                selection_base: 1,
+                selection_extent: 3,
+                selection_affinity: TextAffinity::Downstream,
+                selection_is_directional: false,
+                composing_base: -1,
+                composing_extent: -1,
+            }));
+
+            let preedit = session
+                .ime(Ime::Preedit("é".to_owned(), Some((2, 2))))
+                .expect("active client should receive preedit");
+            assert_eq!(session.editing_state.text, "AéB");
+            assert_eq!(session.editing_state.selection_base, 2);
+            assert_eq!(session.editing_state.composing_base, 1);
+            assert_eq!(session.editing_state.composing_extent, 2);
+            let update: Value = serde_json::from_slice(&preedit).expect("valid update JSON");
+            assert_eq!(update["method"], "TextInputClient.updateEditingState");
+            assert_eq!(update["args"][0], 7);
+            assert_eq!(update["args"][1]["text"], "AéB");
+
+            session
+                .ime(Ime::Commit("中".to_owned()))
+                .expect("commit should update the framework");
+            assert_eq!(session.editing_state.text, "A中B");
+            assert_eq!(session.editing_state.selection_base, 2);
+            assert_eq!(session.editing_state.composing_base, -1);
+        }
+
+        #[test]
+        fn preedit_with_hidden_cursor_remains_composing() {
+            let mut session = TextInputSession::default();
+            session.apply(TextInputCommand::SetClient(TextInputClientId(9)));
+            session.apply(TextInputCommand::SetEditingState(
+                TextEditingState::default(),
+            ));
+
+            assert!(session.ime(Ime::Preedit("候補".to_owned(), None)).is_some());
+            assert_eq!(session.editing_state.text, "候補");
+            assert_eq!(session.editing_state.composing_base, 0);
+            assert_eq!(session.editing_state.composing_extent, 2);
+            assert_eq!(session.editing_state.selection_base, 2);
+
+            // A cursor byte offset must land on a UTF-8 character boundary.
+            assert!(
+                session
+                    .ime(Ime::Preedit("🙂".to_owned(), Some((1, 1))))
+                    .is_none()
+            );
+            assert_eq!(session.editing_state.text, "候補");
+        }
+
+        #[test]
+        fn keyboard_text_commits_without_turning_shortcuts_into_text() {
+            assert_eq!(
+                committed_key_text(ModifiersState::empty(), ElementState::Pressed, Some("é")),
+                Some("é")
+            );
+            assert_eq!(
+                committed_key_text(ModifiersState::CONTROL, ElementState::Pressed, Some("a")),
+                None
+            );
+            assert_eq!(
+                committed_key_text(ModifiersState::empty(), ElementState::Pressed, Some("\r")),
+                None
+            );
+
+            let mut session = TextInputSession::default();
+            session.apply(TextInputCommand::SetClient(TextInputClientId(10)));
+            session.apply(TextInputCommand::SetEditingState(TextEditingState {
+                text: "A🙂B".to_owned(),
+                selection_base: 1,
+                selection_extent: 3,
+                selection_affinity: TextAffinity::Downstream,
+                selection_is_directional: false,
+                composing_base: -1,
+                composing_extent: -1,
+            }));
+
+            let update = session
+                .keyboard_text("é")
+                .expect("ordinary keyboard text should update the client");
+            assert_eq!(session.editing_state.text, "AéB");
+            assert_eq!(session.editing_state.selection_base, 2);
+            let update: Value = serde_json::from_slice(&update).expect("valid update JSON");
+            assert_eq!(update["args"][1]["text"], "AéB");
+
+            session.editing_state.composing_base = 1;
+            session.editing_state.composing_extent = 2;
+            assert!(session.keyboard_text("x").is_none());
         }
 
         #[test]

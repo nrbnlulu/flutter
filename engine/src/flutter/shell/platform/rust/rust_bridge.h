@@ -19,7 +19,7 @@ extern "C" {
 
 // This private ABI is lockstep-versioned with the Flutter fork. It is not the
 // Flutter Embedder API and is never exposed to application plugins.
-#define FLUTTER_RUST_SHELL_ABI_VERSION 2u
+#define FLUTTER_RUST_SHELL_ABI_VERSION 3u
 #define FLUTTER_RUST_PLUGIN_SDK_API_VERSION 1u
 
 typedef struct FlutterRustShellAbi {
@@ -108,6 +108,20 @@ typedef struct FlutterRustShellSettings {
   const char* icu_data_path;
 } FlutterRustShellSettings;
 
+// Framework-to-host platform messages. All byte pointers are borrowed only
+// for the duration of the callback. Returning non-zero marks the method as
+// handled and completes its response with a JSON success envelope.
+typedef int (*FlutterRustHandlePlatformMessageCallback)(void* user_data,
+                                                        const uint8_t* channel,
+                                                        uint64_t channel_size,
+                                                        const uint8_t* message,
+                                                        uint64_t message_size);
+
+typedef struct FlutterRustPlatformMessageCallbacks {
+  void* user_data;
+  FlutterRustHandlePlatformMessageCallback handle_message;
+} FlutterRustPlatformMessageCallbacks;
+
 // One pointer event produced by the Rust window host. Numeric enum values are
 // translated explicitly on the C++ side rather than relying on Flutter's
 // internal enum layout across the C ABI.
@@ -182,6 +196,7 @@ FLUTTER_RUST_SHELL_EXPORT void* FlutterRustShellCreateShell(
     void* task_runner,
     FlutterRustVulkanContextData context_data,
     FlutterRustVulkanPresentationCallbacks presentation_callbacks,
+    FlutterRustPlatformMessageCallbacks platform_message_callbacks,
     FlutterRustShellSettings settings);
 
 // Starts the root isolate and attaches the Vulkan presentation surface. Must
@@ -219,6 +234,15 @@ FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSendLifecycleEvent(
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSendKeyEvent(
     void* shell,
     FlutterRustKeyEvent event);
+
+// Dispatches an encoded platform message to the Flutter framework. The byte
+// slices are copied before this function returns.
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSendPlatformMessage(
+    void* shell,
+    const uint8_t* channel,
+    uint64_t channel_size,
+    const uint8_t* message,
+    uint64_t message_size);
 
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellDestroyShell(void* shell);
 

@@ -31,6 +31,7 @@ std::unique_ptr<RustShell> RustShell::Create(
     fml::RefPtr<fml::TaskRunner> main_task_runner,
     RustVulkanContextData context_data,
     FlutterRustVulkanPresentationCallbacks presentation_callbacks,
+    FlutterRustPlatformMessageCallbacks platform_message_callbacks,
     Settings settings) {
   if (!main_task_runner) {
     return nullptr;
@@ -69,6 +70,28 @@ std::unique_ptr<RustShell> RustShell::Create(
   platform_view_configuration.create_rendering_surface = [presentation] {
     return presentation->CreateSurface();
   };
+  platform_view_configuration.handle_platform_message =
+      [platform_message_callbacks](std::unique_ptr<PlatformMessage> message) {
+        bool handled = false;
+        if (platform_message_callbacks.handle_message) {
+          const auto& channel = message->channel();
+          const auto& data = message->data();
+          handled = platform_message_callbacks.handle_message(
+                        platform_message_callbacks.user_data,
+                        reinterpret_cast<const uint8_t*>(channel.data()),
+                        channel.size(), data.GetMapping(), data.GetSize()) != 0;
+        }
+        if (auto response = message->response()) {
+          if (handled) {
+            constexpr char kSuccessEnvelope[] = "[null]";
+            response->Complete(
+                std::make_unique<fml::MallocMapping>(fml::MallocMapping::Copy(
+                    kSuccessEnvelope, sizeof(kSuccessEnvelope) - 1)));
+          } else {
+            response->CompleteEmpty();
+          }
+        }
+      };
   auto shell = Shell::Create(
       PlatformData{}, task_runners, settings,
       [platform_view_configuration =
@@ -194,6 +217,24 @@ void RustShell::SendKeyEvent(const FlutterRustKeyEvent& event) {
       fml::RefPtr<PlatformMessageResponse>()));
 }
 
+void RustShell::SendPlatformMessage(const uint8_t* channel,
+                                    uint64_t channel_size,
+                                    const uint8_t* message,
+                                    uint64_t message_size) {
+  if (!shell_ || !channel || (!message && message_size != 0)) {
+    return;
+  }
+  auto platform_view = shell_->GetPlatformView();
+  if (!platform_view) {
+    return;
+  }
+  const std::string channel_string(reinterpret_cast<const char*>(channel),
+                                   channel_size);
+  platform_view->DispatchPlatformMessage(std::make_unique<PlatformMessage>(
+      channel_string, fml::MallocMapping::Copy(message, message_size),
+      fml::RefPtr<PlatformMessageResponse>()));
+}
+
 }  // namespace flutter
 
 namespace {
@@ -263,6 +304,7 @@ extern "C" void* FlutterRustShellCreateShell(
     void* task_runner,
     FlutterRustVulkanContextData context_data,
     FlutterRustVulkanPresentationCallbacks presentation_callbacks,
+    FlutterRustPlatformMessageCallbacks platform_message_callbacks,
     FlutterRustShellSettings settings) {
   auto main_task_runner = flutter::RustTaskRunner::FromHandle(task_runner);
   if (!main_task_runner) {
@@ -270,7 +312,7 @@ extern "C" void* FlutterRustShellCreateShell(
   }
   auto shell = flutter::RustShell::Create(
       std::move(main_task_runner), ToContextData(context_data),
-      presentation_callbacks, ToSettings(settings));
+      presentation_callbacks, platform_message_callbacks, ToSettings(settings));
   if (!shell || !shell->IsValid()) {
     return nullptr;
   }
@@ -323,6 +365,18 @@ extern "C" void FlutterRustShellSendKeyEvent(void* shell,
     return;
   }
   static_cast<flutter::RustShell*>(shell)->SendKeyEvent(event);
+}
+
+extern "C" void FlutterRustShellSendPlatformMessage(void* shell,
+                                                    const uint8_t* channel,
+                                                    uint64_t channel_size,
+                                                    const uint8_t* message,
+                                                    uint64_t message_size) {
+  if (!shell) {
+    return;
+  }
+  static_cast<flutter::RustShell*>(shell)->SendPlatformMessage(
+      channel, channel_size, message, message_size);
 }
 
 extern "C" void FlutterRustShellDestroyShell(void* shell) {

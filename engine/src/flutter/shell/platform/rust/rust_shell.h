@@ -27,6 +27,7 @@ class RustShell final {
       fml::RefPtr<fml::TaskRunner> main_task_runner,
       RustVulkanContextData context_data,
       FlutterRustVulkanPresentationCallbacks presentation_callbacks,
+      FlutterRustPlatformMessageCallbacks platform_message_callbacks,
       Settings settings);
 
   ~RustShell();
@@ -56,6 +57,12 @@ class RustShell final {
 
   // Dispatches a private-ABI physical keyboard event.
   void SendKeyEvent(const FlutterRustKeyEvent& event);
+
+  // Dispatches one encoded platform message to the Flutter framework.
+  void SendPlatformMessage(const uint8_t* channel,
+                           uint64_t channel_size,
+                           const uint8_t* message,
+                           uint64_t message_size);
 
  private:
   RustShell(std::unique_ptr<ThreadHost> thread_host,
