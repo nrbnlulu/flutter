@@ -10,8 +10,9 @@ Phase 0 is complete. Phase 1 — winit platform host — is in progress. Pointer
 window metrics, display updates, lifecycle, raw keyboard events, and a rendered
 Impeller/wgpu frame are working. The explicit Vulkan semaphore broker is now
 implemented and passes rapid-resize and in-flight teardown stress. Typed text
-input/IME plumbing is implemented and awaiting a final interactive typing
-check; real vsync follows.
+input/IME plumbing and compositor-driven Wayland vsync are implemented and
+validated. Remaining phase-1 work is main-thread dispatch and deterministic
+startup/shutdown coverage.
 
 ## Status
 
@@ -20,7 +21,7 @@ check; real vsync follows.
 | Existing shells remain available | Complete | The Rust target is opt-in and is not added to the existing platform-selection group. |
 | In-tree Rust platform target | Complete | `//flutter/shell/platform/rust:flutter_rust_shell` builds. |
 | Internal PlatformView adapter | Complete | `PlatformViewRust` builds and its focused tests pass. |
-| Rust/C++ ABI | Complete for phase 1 plumbing | ABI v3 covers task-runner callbacks, Vulkan context/presentation callbacks and per-frame semaphores, bidirectional platform messages, shell create/run/destroy, viewport/display metrics, lifecycle, pointer, and raw keyboard events. |
+| Rust/C++ ABI | Complete for phase 1 plumbing | ABI v4 covers task-runner callbacks, Vulkan context/presentation callbacks and per-frame semaphores, bidirectional platform messages, compositor-vsync requests, shell create/run/destroy, viewport/display metrics, lifecycle, pointer, and raw keyboard events. |
 | Rust workspace and `flutter-plugin-sdk` | Complete for foundation | Workspace uses Rust edition 2024, concrete toolchain 1.93.1, and passes its tests. |
 | Winit event loop | Complete for phase 0 | Linux host owns the window and event loop, dispatches Flutter task batons, and drives the Rust-owned Vulkan presentation loop end to end. |
 | Merged UI/platform task runner | Complete for phase 0 | `RustTaskRunner` queues batons for the Rust host, winit returns due batons through opaque C++ handles, and it now also drives Dart's per-task microtask flush (see below). |
@@ -30,7 +31,8 @@ check; real vsync follows.
 | Window and display metrics | Complete for phase 1 plumbing | Initial, resize, and scale-factor changes report physical viewport size, the real device-pixel ratio, and current-monitor size/refresh rate; zero-sized surfaces are not configured. |
 | Lifecycle | Complete for phase 1 plumbing | Focus, minimize/restore, winit suspend/resume, and shutdown are deduplicated in Rust and forwarded through `flutter/lifecycle`; Rust transition and C++ ABI conversion tests pass. |
 | Keyboard input | Complete for phase 1 raw events | Winit physical/logical keys, down/up/repeat, characters, modifier sides, and synthesized state cross the private ABI as Flutter `KeyData` packets. |
-| Text input and IME | Implemented; interactive validation pending | The Rust host handles the standard `flutter/textinput` protocol with typed commands and validated UTF-16 editing state, controls winit IME activation/cursor geometry, translates preedit/commit events, and sends `TextInputClient.updateEditingState` back to Flutter. |
+| Text input and IME | Complete for phase 1 plumbing | The Rust host handles the standard `flutter/textinput` protocol with typed commands and validated UTF-16 editing state, controls winit IME activation/cursor geometry, translates preedit/commit events, and sends `TextInputClient.updateEditingState` back to Flutter. Ordinary typing, Backspace, and Ctrl+A were verified interactively; a legacy `flutter/keyevent` terminator keeps Flutter's modern key-data queue moving. |
+| Vsync | Complete for the Linux Wayland host | Flutter's waiter requests a winit redraw through ABI v4. Wayland `RedrawRequested` pulses are throttled by compositor frame callbacks registered immediately before actual wgpu presentation; C++ timestamps each pulse in the FML clock domain and uses the active monitor's nominal interval as its target. Non-Wayland backends retain `VsyncWaiterFallback`. |
 
 ## Implementation log
 
@@ -258,6 +260,36 @@ check; real vsync follows.
   `TextInputClient.updateEditingState` method call.
 - Kept raw key-data delivery separate from committed text, preventing the host
   from inserting the same character through both keyboard and IME paths.
+- Added the legacy Linux `flutter/keyevent` compatibility message after every
+  modern key-data packet so Flutter dispatches queued `HardwareKeyboard`
+  events. Interactive checks confirmed ordinary editing, Backspace, and
+  Ctrl+A selection.
+
+### Phase 1 — compositor-driven vsync
+
+- Bumped the lockstep private shell ABI to v4 and added a typed vsync request
+  callback. Rust returns only the frame interval; C++ records frame start in
+  the FML monotonic clock domain, so unrelated clock epochs never cross FFI.
+- Routed Wayland requests through `Window::request_redraw`. Requests are
+  coalesced until winit observes them, while `Window::pre_present_notify` is
+  issued at the broker's actual presentation boundary immediately before
+  `SurfaceTexture` presentation.
+- Fixed a frame-liveness bug in the first implementation: registering the
+  Wayland frame callback at every vsync pulse could arm one for Flutter's
+  secondary, non-rendering vsync requests. With no following surface commit,
+  winit correctly throttled every later redraw, making resize and input appear
+  frozen even though their events reached the engine.
+- Kept Flutter's timer waiter when the active winit backend is not Wayland or
+  cannot provide compositor-aligned redraws.
+- Active Vulkan validation exposed two previously hidden hazards. Borrowed
+  swapchain images now return to wgpu in `PRESENT_SRC_KHR`, Impeller's incoming
+  render-pass dependency includes early depth/stencil writes, and resize
+  configurations are coalesced and applied only at a safe acquire boundary.
+- Pinned the complete wgpu workspace to upstream revision
+  `014d9e84813a2946febfa4888694c0b70565b2f5` until the fix after 30.0.0 is
+  released. That revision stops Linux from passing wgpu's Windows-only reusable
+  fence to `vkAcquireNextImageKHR`; pinning the whole workspace keeps its
+  internal Rust types coherent.
 
 ## Validation
 
@@ -272,7 +304,8 @@ check; real vsync follows.
 - Ran `cargo +1.93.1 test --workspace --locked`: all crate and documentation
   tests pass, including typed text-input decoding, invalid UTF-16 range
   rejection, Unicode selection replacement, hidden-cursor composition, and
-  framework update serialization.
+  framework update serialization. The winit crate now has 18 passing tests,
+  including monitor-refresh-to-frame-interval conversion.
 - Compiled the changed Rust Vulkan presentation C++ translation unit and its
   ABI consumers with the host-debug compile commands, then completed a full
   `flutter_rust_shell_runner` host-debug build using the engine's bundled
@@ -283,15 +316,18 @@ check; real vsync follows.
   the burst to overlap teardown with queued work, and rejects known Vulkan,
   wgpu, and Impeller synchronization diagnostics. The default run passed and
   the runner exited cleanly. After installing
-  `vulkan-validation-layers` 1.4.350.1-1, the same 500-resize run passed with
-  `VK_LAYER_KHRONOS_validation` explicitly enabled and an empty diagnostic
-  log.
+  `vulkan-validation-layers` 1.4.350.1-1, the current 500-resize run passed
+  with `VK_LAYER_KHRONOS_validation` explicitly enabled and no Vulkan, wgpu,
+  or Impeller synchronization diagnostics, including no acquire-fence reuse
+  VUIDs.
 - Rebuilt both the standalone runner and `libflutter_rust_engine.so`, then
-  rebuilt and launched the sample's `runner-rs` target against ABI v3. The
-  sample remains mapped and stable; a real typing/IME check is pending because
-  Hyprland's compositor-generated shortcuts did not reach the sample (they
-  also could not activate its button), so they were not treated as input
-  validation.
+  rebuilt and launched the sample's `runner-rs` target against ABI v4.
+  Ordinary typing, Backspace, and Ctrl+A selection work in the visible text
+  field.
+- Repeated the interactive check with compositor vsync enabled after moving
+  `pre_present_notify` to the actual wgpu presentation boundary. Input-driven
+  frames and window-size changes remain live; temporarily selecting
+  `VsyncWaiterFallback` was used only to isolate the original freeze.
 - Ran `task run-flutter` through the app's `runner-rs` Cargo target against a
   real JIT kernel snapshot: the process stays alive, the Rust-shell window is
   mapped and visible, and a live capture shows rendered Flutter content. No
@@ -302,13 +338,11 @@ check; real vsync follows.
 
 ## Next implementation steps (phase 1)
 
-1. Complete the interactive typing, selection, Backspace, Unicode, and
-   composition check in the running sample.
-2. Replace the vsync fallback timer with a real winit/compositor-driven vsync
-   source.
-3. Add main-thread dispatch for background isolate and Rust-worker callbacks,
+1. Complete interactive non-Latin composition checks with a configured system
+   IME.
+2. Add main-thread dispatch for background isolate and Rust-worker callbacks,
    and test synchronous FFI reentrancy and main-thread starvation behavior.
-4. Add deterministic startup and shutdown ownership tests for the merged
+3. Add deterministic startup and shutdown ownership tests for the merged
    runner.
 
 ## Constraints carried into implementation

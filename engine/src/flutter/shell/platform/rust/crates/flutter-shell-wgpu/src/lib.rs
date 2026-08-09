@@ -31,6 +31,9 @@ mod linux {
     pub struct GpuBroker {
         _instance: wgpu::Instance,
         surface: wgpu::Surface<'static>,
+        // Retained both for the unsafe surface lifetime and so presentation
+        // can notify winit immediately before the Vulkan WSI commit.
+        window: std::sync::Arc<winit::window::Window>,
         _adapter: wgpu::Adapter,
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -45,7 +48,7 @@ mod linux {
         pending_frame: Option<PendingFrame>,
         // Wgpu forbids reconfiguration while a SurfaceTexture is outstanding.
         // Resize events therefore replace this with the latest requested
-        // configuration, which is applied immediately after presentation.
+        // configuration, which is applied at the next safe acquire boundary.
         deferred_configuration: Option<wgpu::SurfaceConfiguration>,
         // Synchronization objects are kept alive until the final wgpu
         // submission that consumed them has completed. A small bounded queue
@@ -127,6 +130,7 @@ mod linux {
             Ok(Self {
                 _instance: instance,
                 surface,
+                window,
                 _adapter: adapter,
                 device,
                 queue,
@@ -248,7 +252,11 @@ mod linux {
                 view_formats: vec![],
                 desired_maximum_frame_latency: 2,
             };
-            if state.pending_frame.is_some() {
+            // Once the surface is initialized, resize is applied at the next
+            // acquire boundary. This coalesces compositor resize bursts and
+            // prevents repeated configure calls between presentation and
+            // wgpu's retirement of its internal WSI acquire fence.
+            if state.configuration.is_some() {
                 state.deferred_configuration = Some(configuration);
                 return Ok(());
             }
@@ -267,6 +275,15 @@ mod linux {
             let mut state = self.surface_state.lock().expect("surface lock poisoned");
             if state.pending_frame.is_some() {
                 return None;
+            }
+            if let Some(configuration) = state.deferred_configuration.take() {
+                while let Some(retired) = state.retired_frames.pop_front() {
+                    if !self.wait_and_destroy(retired) {
+                        return None;
+                    }
+                }
+                self.surface.configure(&self.device, &configuration);
+                state.configuration = Some(configuration);
             }
             // Three pairs cover the configured two-frame surface latency plus
             // the frame being acquired. Recycle the oldest pair only after its
@@ -396,23 +413,16 @@ mod linux {
                 ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             );
             let submission = self.queue.submit([encoder.finish()]);
+            // Wayland frame callbacks must only be armed when a surface commit
+            // is guaranteed. Doing this at the earlier vsync pulse can freeze
+            // redraw delivery when Flutter requested a secondary vsync that
+            // intentionally produced no frame.
+            self.window.pre_present_notify();
             self.queue.present(pending.texture);
             state.retired_frames.push_back(RetiredFrame {
                 submission,
                 sync: pending.sync,
             });
-            if let Some(configuration) = state.deferred_configuration.take() {
-                // Reconfiguration may retire the old swapchain. Wait through
-                // the final wgpu submission (which itself waited for Impeller)
-                // before allowing wgpu to replace any of its images or fences.
-                while let Some(retired) = state.retired_frames.pop_front() {
-                    if !self.wait_and_destroy(retired) {
-                        return false;
-                    }
-                }
-                self.surface.configure(&self.device, &configuration);
-                state.configuration = Some(configuration);
-            }
             true
         }
 

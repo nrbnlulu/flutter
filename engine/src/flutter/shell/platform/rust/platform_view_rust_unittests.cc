@@ -60,6 +60,10 @@ class NoopDelegate final : public PlatformView::Delegate {
   const Settings& OnPlatformViewGetSettings() const override {
     return settings_;
   }
+  std::shared_ptr<fml::BasicTaskRunner>
+  OnPlatformViewGetShutdownSafeIOTaskRunner() const override {
+    return nullptr;
+  }
 
  private:
   Settings settings_;

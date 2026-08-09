@@ -12,7 +12,7 @@ use flutter_plugin_sdk::PLUGIN_SDK_API_VERSION;
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 3;
+pub const SHELL_ABI_VERSION: u32 = 4;
 
 /// ABI information returned to C++ before it installs Rust callbacks.
 #[repr(C)]
@@ -87,6 +87,14 @@ pub struct FlutterRustShellSettings {
 pub struct FlutterRustPlatformMessageCallbacks {
     pub user_data: *mut c_void,
     pub handle_message: Option<extern "C" fn(*mut c_void, *const u8, u64, *const u8, u64) -> i32>,
+}
+
+/// Callback table used by Flutter to request a compositor-aligned frame from
+/// the Rust window host. A missing callback selects the C++ timer fallback.
+#[repr(C)]
+pub struct FlutterRustVsyncCallbacks {
+    pub user_data: *mut c_void,
+    pub request_vsync: Option<extern "C" fn(*mut c_void)>,
 }
 
 /// Pointer phases accepted by the private engine bridge.

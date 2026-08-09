@@ -19,7 +19,7 @@ extern "C" {
 
 // This private ABI is lockstep-versioned with the Flutter fork. It is not the
 // Flutter Embedder API and is never exposed to application plugins.
-#define FLUTTER_RUST_SHELL_ABI_VERSION 3u
+#define FLUTTER_RUST_SHELL_ABI_VERSION 4u
 #define FLUTTER_RUST_PLUGIN_SDK_API_VERSION 1u
 
 typedef struct FlutterRustShellAbi {
@@ -122,6 +122,15 @@ typedef struct FlutterRustPlatformMessageCallbacks {
   FlutterRustHandlePlatformMessageCallback handle_message;
 } FlutterRustPlatformMessageCallbacks;
 
+// Requests that the Rust window host wake Flutter on the next compositor
+// frame. A null callback selects Flutter's timer-based fallback waiter.
+typedef void (*FlutterRustRequestVsyncCallback)(void* user_data);
+
+typedef struct FlutterRustVsyncCallbacks {
+  void* user_data;
+  FlutterRustRequestVsyncCallback request_vsync;
+} FlutterRustVsyncCallbacks;
+
 // One pointer event produced by the Rust window host. Numeric enum values are
 // translated explicitly on the C++ side rather than relying on Flutter's
 // internal enum layout across the C ABI.
@@ -197,6 +206,7 @@ FLUTTER_RUST_SHELL_EXPORT void* FlutterRustShellCreateShell(
     FlutterRustVulkanContextData context_data,
     FlutterRustVulkanPresentationCallbacks presentation_callbacks,
     FlutterRustPlatformMessageCallbacks platform_message_callbacks,
+    FlutterRustVsyncCallbacks vsync_callbacks,
     FlutterRustShellSettings settings);
 
 // Starts the root isolate and attaches the Vulkan presentation surface. Must
@@ -243,6 +253,13 @@ FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSendPlatformMessage(
     uint64_t channel_size,
     const uint8_t* message,
     uint64_t message_size);
+
+// Delivers one compositor-aligned pulse. The interval is the active monitor's
+// nominal refresh period; C++ supplies its own monotonic timestamp so clock
+// epochs never cross the private ABI.
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellOnVsync(
+    void* shell,
+    uint64_t frame_interval_nanos);
 
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellDestroyShell(void* shell);
 

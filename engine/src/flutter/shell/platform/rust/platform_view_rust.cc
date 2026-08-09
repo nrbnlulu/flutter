@@ -5,15 +5,83 @@
 #include "flutter/shell/platform/rust/platform_view_rust.h"
 
 #include <algorithm>
+#include <mutex>
 #include <string>
 #include <utility>
 
 #include "flutter/common/constants.h"
 #include "flutter/fml/logging.h"
+#include "flutter/fml/time/time_delta.h"
+#include "flutter/fml/time/time_point.h"
 #include "flutter/lib/ui/window/pointer_data.h"
 #include "flutter/lib/ui/window/pointer_data_packet.h"
 
 namespace flutter {
+
+class RustVsyncWaiter;
+
+class RustVsyncState final {
+ public:
+  explicit RustVsyncState(FlutterRustVsyncCallbacks callbacks)
+      : callbacks_(callbacks) {}
+
+  void Arm(std::shared_ptr<RustVsyncWaiter> waiter);
+  void Fire(uint64_t frame_interval_nanos);
+
+  void Request() const { callbacks_.request_vsync(callbacks_.user_data); }
+
+ private:
+  const FlutterRustVsyncCallbacks callbacks_;
+  std::mutex mutex_;
+  std::weak_ptr<RustVsyncWaiter> waiter_;
+};
+
+class RustVsyncWaiter final : public VsyncWaiter {
+ public:
+  RustVsyncWaiter(const TaskRunners& task_runners,
+                  std::shared_ptr<RustVsyncState> state)
+      : VsyncWaiter(task_runners), state_(std::move(state)) {}
+
+  void OnVsync(uint64_t frame_interval_nanos) {
+    constexpr uint64_t kDefaultFrameIntervalNanos = 16'666'667;
+    constexpr uint64_t kMinimumFrameIntervalNanos = 1'000'000;
+    constexpr uint64_t kMaximumFrameIntervalNanos = 1'000'000'000;
+    const uint64_t interval_nanos =
+        frame_interval_nanos >= kMinimumFrameIntervalNanos &&
+                frame_interval_nanos <= kMaximumFrameIntervalNanos
+            ? frame_interval_nanos
+            : kDefaultFrameIntervalNanos;
+    const auto frame_start_time = fml::TimePoint::Now();
+    FireCallback(
+        frame_start_time,
+        frame_start_time + fml::TimeDelta::FromNanoseconds(interval_nanos));
+  }
+
+ private:
+  // |VsyncWaiter|
+  void AwaitVSync() override {
+    state_->Arm(std::static_pointer_cast<RustVsyncWaiter>(shared_from_this()));
+    state_->Request();
+  }
+
+  const std::shared_ptr<RustVsyncState> state_;
+};
+
+void RustVsyncState::Arm(std::shared_ptr<RustVsyncWaiter> waiter) {
+  std::scoped_lock lock(mutex_);
+  waiter_ = std::move(waiter);
+}
+
+void RustVsyncState::Fire(uint64_t frame_interval_nanos) {
+  std::shared_ptr<RustVsyncWaiter> waiter;
+  {
+    std::scoped_lock lock(mutex_);
+    waiter = waiter_.lock();
+  }
+  if (waiter) {
+    waiter->OnVsync(frame_interval_nanos);
+  }
+}
 
 std::unique_ptr<PointerDataPacket> CreateRustPointerDataPacket(
     const FlutterRustPointerEvent& event) {
@@ -138,7 +206,12 @@ PlatformViewRust::PlatformViewRust(Delegate& delegate,
                                    const TaskRunners& task_runners,
                                    Configuration configuration)
     : PlatformView(delegate, task_runners),
-      configuration_(std::move(configuration)) {}
+      configuration_(std::move(configuration)) {
+  if (configuration_.vsync_callbacks.request_vsync) {
+    vsync_state_ =
+        std::make_shared<RustVsyncState>(configuration_.vsync_callbacks);
+  }
+}
 
 PlatformViewRust::~PlatformViewRust() = default;
 
@@ -168,12 +241,25 @@ void PlatformViewRust::UpdateSemantics(
   }
 }
 
+void PlatformViewRust::OnVsync(uint64_t frame_interval_nanos) {
+  if (vsync_state_) {
+    vsync_state_->Fire(frame_interval_nanos);
+  }
+}
+
 std::unique_ptr<Surface> PlatformViewRust::CreateRenderingSurface() {
   if (!configuration_.create_rendering_surface) {
     FML_LOG(ERROR) << "Rust platform view has no rendering surface callback.";
     return nullptr;
   }
   return configuration_.create_rendering_surface();
+}
+
+std::unique_ptr<VsyncWaiter> PlatformViewRust::CreateVSyncWaiter() {
+  if (!vsync_state_) {
+    return PlatformView::CreateVSyncWaiter();
+  }
+  return std::make_unique<RustVsyncWaiter>(task_runners_, vsync_state_);
 }
 
 }  // namespace flutter

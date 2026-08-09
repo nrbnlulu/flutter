@@ -28,6 +28,7 @@ class RustShell final {
       RustVulkanContextData context_data,
       FlutterRustVulkanPresentationCallbacks presentation_callbacks,
       FlutterRustPlatformMessageCallbacks platform_message_callbacks,
+      FlutterRustVsyncCallbacks vsync_callbacks,
       Settings settings);
 
   ~RustShell();
@@ -63,6 +64,9 @@ class RustShell final {
                            uint64_t channel_size,
                            const uint8_t* message,
                            uint64_t message_size);
+
+  // Delivers one compositor-aligned pulse to the platform view's waiter.
+  void OnVsync(uint64_t frame_interval_nanos);
 
  private:
   RustShell(std::unique_ptr<ThreadHost> thread_host,

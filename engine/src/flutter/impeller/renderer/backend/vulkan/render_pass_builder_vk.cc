@@ -200,8 +200,10 @@ vk::UniqueRenderPass RenderPassBuilderVK::Build(
                          vk::PipelineStageFlagBits::eFragmentShader;
   deps[0].srcAccessMask = vk::AccessFlagBits::eShaderRead |
                           vk::AccessFlagBits::eColorAttachmentWrite;
-  deps[0].dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-  deps[0].dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+  deps[0].dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput |
+                         vk::PipelineStageFlagBits::eEarlyFragmentTests;
+  deps[0].dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite |
+                          vk::AccessFlagBits::eDepthStencilAttachmentWrite;
   deps[0].dependencyFlags = kSelfDependencyFlags;
 
   // Self dependency for reading back the framebuffer, necessary for

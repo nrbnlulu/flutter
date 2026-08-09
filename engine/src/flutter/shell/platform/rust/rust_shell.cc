@@ -32,6 +32,7 @@ std::unique_ptr<RustShell> RustShell::Create(
     RustVulkanContextData context_data,
     FlutterRustVulkanPresentationCallbacks presentation_callbacks,
     FlutterRustPlatformMessageCallbacks platform_message_callbacks,
+    FlutterRustVsyncCallbacks vsync_callbacks,
     Settings settings) {
   if (!main_task_runner) {
     return nullptr;
@@ -92,6 +93,7 @@ std::unique_ptr<RustShell> RustShell::Create(
           }
         }
       };
+  platform_view_configuration.vsync_callbacks = vsync_callbacks;
   auto shell = Shell::Create(
       PlatformData{}, task_runners, settings,
       [platform_view_configuration =
@@ -235,6 +237,17 @@ void RustShell::SendPlatformMessage(const uint8_t* channel,
       fml::RefPtr<PlatformMessageResponse>()));
 }
 
+void RustShell::OnVsync(uint64_t frame_interval_nanos) {
+  if (!shell_) {
+    return;
+  }
+  auto platform_view = shell_->GetPlatformView();
+  if (platform_view) {
+    static_cast<PlatformViewRust*>(platform_view.get())
+        ->OnVsync(frame_interval_nanos);
+  }
+}
+
 }  // namespace flutter
 
 namespace {
@@ -305,6 +318,7 @@ extern "C" void* FlutterRustShellCreateShell(
     FlutterRustVulkanContextData context_data,
     FlutterRustVulkanPresentationCallbacks presentation_callbacks,
     FlutterRustPlatformMessageCallbacks platform_message_callbacks,
+    FlutterRustVsyncCallbacks vsync_callbacks,
     FlutterRustShellSettings settings) {
   auto main_task_runner = flutter::RustTaskRunner::FromHandle(task_runner);
   if (!main_task_runner) {
@@ -312,7 +326,8 @@ extern "C" void* FlutterRustShellCreateShell(
   }
   auto shell = flutter::RustShell::Create(
       std::move(main_task_runner), ToContextData(context_data),
-      presentation_callbacks, platform_message_callbacks, ToSettings(settings));
+      presentation_callbacks, platform_message_callbacks, vsync_callbacks,
+      ToSettings(settings));
   if (!shell || !shell->IsValid()) {
     return nullptr;
   }
@@ -377,6 +392,14 @@ extern "C" void FlutterRustShellSendPlatformMessage(void* shell,
   }
   static_cast<flutter::RustShell*>(shell)->SendPlatformMessage(
       channel, channel_size, message, message_size);
+}
+
+extern "C" void FlutterRustShellOnVsync(void* shell,
+                                        uint64_t frame_interval_nanos) {
+  if (!shell) {
+    return;
+  }
+  static_cast<flutter::RustShell*>(shell)->OnVsync(frame_interval_nanos);
 }
 
 extern "C" void FlutterRustShellDestroyShell(void* shell) {

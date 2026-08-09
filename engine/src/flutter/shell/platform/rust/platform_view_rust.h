@@ -13,6 +13,8 @@
 
 namespace flutter {
 
+class RustVsyncState;
+
 // Converts one validated private-ABI event into an engine packet. Returns null
 // for enum values that this engine revision does not understand.
 std::unique_ptr<PointerDataPacket> CreateRustPointerDataPacket(
@@ -51,6 +53,10 @@ class PlatformViewRust final : public PlatformView {
 
     // Invoked when Flutter publishes a semantics update.
     UpdateSemanticsCallback update_semantics;
+
+    // Requests a compositor-aligned pulse from the Rust window host. When it
+    // is absent CreateVSyncWaiter retains Flutter's timer fallback.
+    FlutterRustVsyncCallbacks vsync_callbacks = {};
   };
 
   PlatformViewRust(Delegate& delegate,
@@ -67,11 +73,18 @@ class PlatformViewRust final : public PlatformView {
                        SemanticsNodeUpdates update,
                        CustomAccessibilityActionUpdates actions) override;
 
+  // Delivers a compositor pulse requested by this platform view.
+  void OnVsync(uint64_t frame_interval_nanos);
+
  private:
   // |PlatformView|
   std::unique_ptr<Surface> CreateRenderingSurface() override;
 
+  // |PlatformView|
+  std::unique_ptr<VsyncWaiter> CreateVSyncWaiter() override;
+
   Configuration configuration_;
+  std::shared_ptr<RustVsyncState> vsync_state_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(PlatformViewRust);
 };

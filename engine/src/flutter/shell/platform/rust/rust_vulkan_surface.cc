@@ -5,6 +5,7 @@
 #include "flutter/shell/platform/rust/rust_vulkan_surface.h"
 
 #include "flutter/shell/gpu/gpu_surface_vulkan_impeller.h"
+#include "impeller/renderer/backend/vulkan/command_buffer_vk.h"
 #include "impeller/renderer/backend/vulkan/context_vk.h"
 #include "impeller/renderer/backend/vulkan/queue_vk.h"
 
@@ -82,12 +83,43 @@ bool RustVulkanPresentation::PresentImage(VkImage image, VkFormat format) {
     return false;
   }
 
-  // This empty submission is ordered after Impeller's final image-layout
-  // transition and makes that completion visible to the wgpu broker.
+  // GPUSurfaceVulkanImpeller returns external images in
+  // COLOR_ATTACHMENT_OPTIMAL. Wgpu's surface tracker expects its borrowed
+  // swapchain image back in PRESENT_SRC_KHR before its final handoff pass.
+  const auto& context = impeller::ContextVK::Cast(*context_);
+  auto command_buffer = context.CreateCommandBuffer();
+  if (!command_buffer) {
+    return false;
+  }
+  auto vk_command_buffer =
+      impeller::CommandBufferVK::Cast(*command_buffer).GetCommandBuffer();
+  impeller::vk::ImageMemoryBarrier barrier;
+  barrier.srcAccessMask = impeller::vk::AccessFlagBits::eColorAttachmentWrite;
+  barrier.dstAccessMask = {};
+  barrier.oldLayout = impeller::vk::ImageLayout::eColorAttachmentOptimal;
+  barrier.newLayout = impeller::vk::ImageLayout::ePresentSrcKHR;
+  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.image = image;
+  barrier.subresourceRange.aspectMask =
+      impeller::vk::ImageAspectFlagBits::eColor;
+  barrier.subresourceRange.baseMipLevel = 0u;
+  barrier.subresourceRange.levelCount = 1u;
+  barrier.subresourceRange.baseArrayLayer = 0u;
+  barrier.subresourceRange.layerCount = 1u;
+  vk_command_buffer.pipelineBarrier(
+      impeller::vk::PipelineStageFlagBits::eColorAttachmentOutput,
+      impeller::vk::PipelineStageFlagBits::eBottomOfPipe, {}, nullptr, nullptr,
+      barrier);
+  if (!context.GetCommandQueue()->Submit({command_buffer}).ok()) {
+    return false;
+  }
+
+  // This submission is ordered after the Rust-specific layout transition and
+  // makes that completion visible to the wgpu broker.
   impeller::vk::Semaphore render_semaphore(render_semaphore_);
   impeller::vk::SubmitInfo submit_info;
   submit_info.setSignalSemaphores(render_semaphore);
-  const auto& context = impeller::ContextVK::Cast(*context_);
   if (context.GetGraphicsQueue()->Submit(submit_info, {}) !=
       impeller::vk::Result::eSuccess) {
     return false;

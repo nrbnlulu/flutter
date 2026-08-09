@@ -23,6 +23,7 @@ mod linux {
         FLUTTER_RUST_KEY_CHARACTER_CAPACITY, FlutterRustKeyEvent, FlutterRustKeyEventType,
         FlutterRustLifecycleState, FlutterRustPointerDeviceKind, FlutterRustPointerEvent,
         FlutterRustPointerPhase, FlutterRustPointerSignalKind, FlutterRustTaskRunnerCallbacks,
+        FlutterRustVsyncCallbacks,
     };
     #[cfg(not(test))]
     use flutter_shell_core::{
@@ -33,6 +34,8 @@ mod linux {
     use serde_json::Value;
     #[cfg(not(test))]
     use std::ffi::CString;
+    #[cfg(not(test))]
+    use winit::platform::wayland::ActiveEventLoopExtWayland;
     use winit::{
         application::ApplicationHandler,
         dpi::{LogicalPosition, LogicalSize},
@@ -45,9 +48,11 @@ mod linux {
         window::{Window, WindowId},
     };
 
+    #[cfg_attr(test, allow(dead_code))]
     #[derive(Debug, Clone, Copy)]
     enum HostEvent {
         TaskScheduled,
+        VsyncRequested,
     }
 
     #[cfg(not(test))]
@@ -98,6 +103,7 @@ mod linux {
         context_data: FlutterRustVulkanContextData,
         presentation_callbacks: flutter_shell_core::FlutterRustVulkanPresentationCallbacks,
         platform_message_callbacks: FlutterRustPlatformMessageCallbacks,
+        vsync_callbacks: FlutterRustVsyncCallbacks,
         settings: FlutterRustShellSettings,
     ) -> *mut c_void {
         unsafe extern "C" {
@@ -106,6 +112,7 @@ mod linux {
                 context_data: FlutterRustVulkanContextData,
                 presentation_callbacks: flutter_shell_core::FlutterRustVulkanPresentationCallbacks,
                 platform_message_callbacks: FlutterRustPlatformMessageCallbacks,
+                vsync_callbacks: FlutterRustVsyncCallbacks,
                 settings: FlutterRustShellSettings,
             ) -> *mut c_void;
         }
@@ -116,6 +123,7 @@ mod linux {
                 context_data,
                 presentation_callbacks,
                 platform_message_callbacks,
+                vsync_callbacks,
                 settings,
             )
         }
@@ -220,6 +228,16 @@ mod linux {
         }
     }
 
+    #[cfg(not(test))]
+    fn send_cpp_vsync(shell: *mut c_void, frame_interval_nanos: u64) {
+        unsafe extern "C" {
+            fn FlutterRustShellOnVsync(shell: *mut c_void, frame_interval_nanos: u64);
+        }
+        // SAFETY: `shell` remains owned by this application and the interval
+        // is a plain value in the private ABI.
+        unsafe { FlutterRustShellOnVsync(shell, frame_interval_nanos) }
+    }
+
     /// Winit host configuration, shared across the platforms this crate will
     /// eventually support.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -322,6 +340,24 @@ mod linux {
                 display_refresh_rate,
             }
         }
+    }
+
+    const DEFAULT_FRAME_INTERVAL_NANOS: u64 = 16_666_667;
+
+    fn frame_interval_from_millihertz(refresh_rate: Option<u32>) -> u64 {
+        refresh_rate
+            .filter(|rate| *rate > 0)
+            .map(|rate| 1_000_000_000_000_u64 / u64::from(rate))
+            .unwrap_or(DEFAULT_FRAME_INTERVAL_NANOS)
+    }
+
+    #[cfg(not(test))]
+    fn window_frame_interval_nanos(window: &Window) -> u64 {
+        frame_interval_from_millihertz(
+            window
+                .current_monitor()
+                .and_then(|monitor| monitor.refresh_rate_millihertz()),
+        )
     }
 
     #[derive(Debug)]
@@ -1509,6 +1545,54 @@ mod linux {
         host.destroyed.store(true, Ordering::Release);
     }
 
+    /// Stable Rust-owned endpoint used by C++ to wake the winit loop for the
+    /// next compositor frame. The atomic coalesces redundant wakeups before
+    /// winit has observed the first request.
+    #[cfg_attr(test, allow(dead_code))]
+    struct VsyncHost {
+        wake_proxy: EventLoopProxy<HostEvent>,
+        request_pending: AtomicBool,
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
+    impl VsyncHost {
+        fn new(wake_proxy: EventLoopProxy<HostEvent>) -> Self {
+            Self {
+                wake_proxy,
+                request_pending: AtomicBool::new(false),
+            }
+        }
+
+        fn callbacks(&self, compositor_timing_available: bool) -> FlutterRustVsyncCallbacks {
+            FlutterRustVsyncCallbacks {
+                user_data: (self as *const Self).cast_mut().cast::<c_void>(),
+                request_vsync: compositor_timing_available.then_some(request_vsync),
+            }
+        }
+
+        fn take_request(&self) -> bool {
+            self.request_pending.swap(false, Ordering::AcqRel)
+        }
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
+    extern "C" fn request_vsync(user_data: *mut c_void) {
+        // SAFETY: callbacks() points at a boxed VsyncHost which outlives the
+        // C++ shell and therefore every request through this callback table.
+        let host = unsafe { &*user_data.cast::<VsyncHost>() };
+        if host
+            .request_pending
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            && host
+                .wake_proxy
+                .send_event(HostEvent::VsyncRequested)
+                .is_err()
+        {
+            host.request_pending.store(false, Ordering::Release);
+        }
+    }
+
     /// C entry point for the private C++ runner executable. `assets_path` and
     /// `icu_data_path` are borrowed only for the duration of this call.
     /// Returns non-zero once the winit event loop exits normally.
@@ -1538,19 +1622,58 @@ mod linux {
         i32::from(run(config).is_ok())
     }
 
+    /// Backs the `log` crate with a plain stderr sink so first-party code and
+    /// dependencies (winit, wgpu) route diagnostics through `log::*!` instead
+    /// of raw prints. The level defaults to `Info` and can be overridden with
+    /// `FLUTTER_RUST_SHELL_LOG` (e.g. `debug`, `warn`).
+    struct StderrLogger;
+
+    impl log::Log for StderrLogger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= log::max_level()
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata()) {
+                eprintln!(
+                    "[{}] {}: {}",
+                    record.level(),
+                    record.target(),
+                    record.args()
+                );
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    fn init_logging() {
+        static LOGGER: StderrLogger = StderrLogger;
+        let level = std::env::var("FLUTTER_RUST_SHELL_LOG")
+            .ok()
+            .and_then(|value| value.parse::<log::LevelFilter>().ok())
+            .unwrap_or(log::LevelFilter::Info);
+        log::set_max_level(level);
+        let _ = log::set_logger(&LOGGER);
+    }
+
     /// Runs the winit main loop for the Rust shell.
     pub fn run(config: ShellConfig) -> Result<(), winit::error::EventLoopError> {
+        init_logging();
         let event_loop = EventLoop::<HostEvent>::with_user_event().build()?;
         let task_runner_host = Box::new(TaskRunnerHost::with_wake_proxy(Some(
             event_loop.create_proxy(),
         )));
         task_runner_host.install_cpp_task_runner();
+        let vsync_host = Box::new(VsyncHost::new(event_loop.create_proxy()));
         let text_input_inbox = Box::new(TextInputInbox::new(event_loop.create_proxy()));
         let mut application = ShellApplication {
             config,
             window: None,
             gpu_broker: None,
             task_runner_host,
+            vsync_host,
+            vsync_armed: false,
             pointer_state: PointerState::new(),
             keyboard_state: KeyboardState::new(),
             text_input_inbox,
@@ -1567,6 +1690,8 @@ mod linux {
         window: Option<Arc<Window>>,
         gpu_broker: Option<GpuBroker>,
         task_runner_host: Box<TaskRunnerHost>,
+        vsync_host: Box<VsyncHost>,
+        vsync_armed: bool,
         pointer_state: PointerState,
         keyboard_state: KeyboardState,
         text_input_inbox: Box<TextInputInbox>,
@@ -1633,6 +1758,7 @@ mod linux {
                     };
                     let presentation_callbacks = gpu_broker.presentation_callbacks();
                     let platform_message_callbacks = self.text_input_inbox.callbacks();
+                    let vsync_callbacks = self.vsync_host.callbacks(event_loop.is_wayland());
                     let task_runner_handle = self.task_runner_host.task_runner_handle();
                     let shell = gpu_broker
                         .with_vulkan_context(|context_data| {
@@ -1677,6 +1803,7 @@ mod linux {
                                 ffi_context_data,
                                 presentation_callbacks,
                                 platform_message_callbacks,
+                                vsync_callbacks,
                                 settings,
                             )
                         })
@@ -1827,6 +1954,17 @@ mod linux {
                     let event = self.pointer_state.touch(touch);
                     self.send_pointer_events([event]);
                 }
+                WindowEvent::RedrawRequested => {
+                    if self.vsync_armed {
+                        self.vsync_armed = false;
+                        #[cfg(not(test))]
+                        if let Some(shell) = self.shell {
+                            let window =
+                                self.window.as_ref().expect("window event without a window");
+                            send_cpp_vsync(shell, window_frame_interval_nanos(window));
+                        }
+                    }
+                }
                 WindowEvent::CloseRequested | WindowEvent::Destroyed => {
                     let state = self.lifecycle_state.detached();
                     self.send_lifecycle_event(state);
@@ -1836,7 +1974,19 @@ mod linux {
             }
         }
 
-        fn user_event(&mut self, _: &ActiveEventLoop, _: HostEvent) {}
+        fn user_event(&mut self, _: &ActiveEventLoop, event: HostEvent) {
+            match event {
+                HostEvent::TaskScheduled => {}
+                HostEvent::VsyncRequested => {
+                    if self.vsync_host.take_request()
+                        && let Some(window) = &self.window
+                    {
+                        self.vsync_armed = true;
+                        window.request_redraw();
+                    }
+                }
+            }
+        }
 
         fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
             self.task_runner_host.dispatch_due_tasks();
@@ -1926,6 +2076,20 @@ mod linux {
             assert_eq!(ShellConfig::default().title, "Flutter Rust Shell");
             assert_eq!(TEXT_INPUT_CHANNEL, b"flutter/textinput");
             assert_eq!(KEY_EVENT_CHANNEL, b"flutter/keyevent");
+        }
+
+        #[test]
+        fn derives_frame_intervals_from_monitor_refresh_rates() {
+            assert_eq!(frame_interval_from_millihertz(Some(60_000)), 16_666_666);
+            assert_eq!(frame_interval_from_millihertz(Some(120_000)), 8_333_333);
+            assert_eq!(
+                frame_interval_from_millihertz(None),
+                DEFAULT_FRAME_INTERVAL_NANOS
+            );
+            assert_eq!(
+                frame_interval_from_millihertz(Some(0)),
+                DEFAULT_FRAME_INTERVAL_NANOS
+            );
         }
 
         #[test]
