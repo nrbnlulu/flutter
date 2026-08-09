@@ -3,6 +3,11 @@ version: "3"
 vars:
   PY312_BIN: /home/dev/.local/share/uv/python/cpython-3.12.12-linux-x86_64-gnu/bin
   DEPOT_TOOLS: /home/dev/depot_tools
+  ENGINE_SRC: '{{.TASKFILE_DIR}}/engine/src'
+  LOCAL_ENGINE: host_debug
+  BUNDLED_DEPOT_TOOLS: '{{.ENGINE_SRC}}/flutter/third_party/depot_tools'
+  RUST_SHELL_SAMPLE: /run/media/dev/33da92da-1869-46ee-a0c1-fd5c4c9049e5/@home/dev/1tb_desktop/1tboss/bug
+  RESIZE_ITERATIONS: 500
 
 tasks:
   fmt:
@@ -15,3 +20,105 @@ tasks:
     desc: Push changes (requires depot_tools in PATH)
     cmds:
       - PATH="{{.DEPOT_TOOLS}}:$PATH" git push
+
+  build-rust-shell:
+    desc: Build the host-debug Flutter Rust shell runner.
+    cmds:
+      - |
+        PATH="{{.BUNDLED_DEPOT_TOOLS}}:$PATH" \
+        VPYTHON_BYPASS="manually managed python not supported by chrome operations" \
+          /usr/bin/ninja -C {{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}} flutter_rust_shell_runner
+
+  stress-rust-shell:
+    desc: Stress Vulkan handoff synchronization with compositor-driven resize, hide, restore, fullscreen, and close events.
+    deps: [build-rust-shell]
+    preconditions:
+      - sh: command -v hyprctl >/dev/null
+        msg: Hyprland's hyprctl is required for the compositor stress test.
+      - sh: command -v jq >/dev/null
+        msg: jq is required to locate the runner window.
+      - sh: test -f {{.RUST_SHELL_SAMPLE}}/build/flutter_assets/kernel_blob.bin
+        msg: Build the sample Flutter bundle first or override RUST_SHELL_SAMPLE.
+    cmds:
+      - |
+        runner={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/flutter_rust_shell_runner
+        assets={{.RUST_SHELL_SAMPLE}}/build/flutter_assets
+        icu={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/icudtl.dat
+        stress_log=$(mktemp /tmp/flutter-rust-vulkan-stress.XXXXXX.log)
+        validation_layer=""
+        if vulkaninfo 2>/dev/null | grep -q VK_LAYER_KHRONOS_validation; then
+          validation_layer=VK_LAYER_KHRONOS_validation
+        else
+          echo "VK_LAYER_KHRONOS_validation is unavailable; using wgpu and Impeller debug validation."
+        fi
+
+        VK_INSTANCE_LAYERS="$validation_layer" \
+        RUST_LOG=wgpu_core=warn,wgpu_hal=warn \
+          "$runner" "$assets" "$icu" >"$stress_log" 2>&1 &
+        runner_pid=""
+        cleanup() {
+          if [ -n "$runner_pid" ] && kill -0 "$runner_pid" 2>/dev/null; then
+            kill "$runner_pid" 2>/dev/null || true
+          fi
+          [ -z "$runner_pid" ] || wait "$runner_pid" 2>/dev/null || true
+        }
+        trap cleanup EXIT
+
+        address=""
+        for _ in $(seq 1 100); do
+          address=$(hyprctl clients -j | jq -r \
+            '.[] | select(.title == "Flutter Rust Shell") | .address' | tail -n1)
+          if [ -n "$address" ]; then
+            runner_pid=$(hyprctl clients -j | jq -r --arg address "$address" \
+              '.[] | select(.address == $address) | .pid')
+            break
+          fi
+          sleep 0.05
+        done
+        if [ -z "$address" ]; then
+          echo "Flutter Rust shell window did not appear; log: $stress_log" >&2
+          cat "$stress_log" >&2
+          exit 1
+        fi
+
+        workspace=$(hyprctl clients -j | jq -r --arg address "$address" \
+          '.[] | select(.address == $address) | .workspace.id')
+        hyprctl dispatch togglefloating "address:$address" >/dev/null
+        for i in $(seq 1 {{.RESIZE_ITERATIONS}}); do
+          width=$((320 + (i * 73) % 1250))
+          height=$((240 + (i * 47) % 720))
+          hyprctl dispatch resizewindowpixel \
+            "exact $width $height,address:$address" >/dev/null
+          if [ $((i % 30)) -eq 0 ]; then
+            hyprctl dispatch movetoworkspacesilent \
+              "special:rust-shell-stress,address:$address" >/dev/null
+            hyprctl dispatch movetoworkspacesilent \
+              "$workspace,address:$address" >/dev/null
+          fi
+          if [ $((i % 50)) -eq 0 ]; then
+            hyprctl dispatch fullscreen "0,address:$address" >/dev/null
+            hyprctl dispatch fullscreen "0,address:$address" >/dev/null
+          fi
+        done
+
+        # Close immediately after the resize burst so teardown overlaps work
+        # already queued by the compositor and raster thread.
+        hyprctl dispatch closewindow "address:$address" >/dev/null
+        for _ in $(seq 1 100); do
+          kill -0 "$runner_pid" 2>/dev/null || break
+          sleep 0.05
+        done
+        if kill -0 "$runner_pid" 2>/dev/null; then
+          echo "Flutter Rust shell did not exit after its window closed; log: $stress_log" >&2
+          exit 1
+        fi
+        trap - EXIT
+
+        if grep -Eqi \
+          'VUID-|validation error|failed waiting on fences|semaphore.*error|invalid (Vk)?image|device lost' \
+          "$stress_log"; then
+          echo "Vulkan synchronization diagnostics found; log: $stress_log" >&2
+          cat "$stress_log" >&2
+          exit 1
+        fi
+        echo "Vulkan synchronization stress passed ({{.RESIZE_ITERATIONS}} resizes); log: $stress_log"

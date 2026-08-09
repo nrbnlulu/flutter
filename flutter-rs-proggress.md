@@ -8,8 +8,9 @@ for the architectural plan.
 
 Phase 0 is complete. Phase 1 — winit platform host — is in progress. Pointer,
 window metrics, display updates, lifecycle, raw keyboard events, and a rendered
-Impeller/wgpu frame are working. The next load-bearing item is completing GPU
-handoff synchronization; text input/IME and real vsync follow.
+Impeller/wgpu frame are working. The explicit Vulkan semaphore broker is now
+implemented and passes rapid-resize and in-flight teardown stress. Text
+input/IME is now the next phase 1 implementation item; real vsync follows.
 
 ## Status
 
@@ -18,11 +19,11 @@ handoff synchronization; text input/IME and real vsync follow.
 | Existing shells remain available | Complete | The Rust target is opt-in and is not added to the existing platform-selection group. |
 | In-tree Rust platform target | Complete | `//flutter/shell/platform/rust:flutter_rust_shell` builds. |
 | Internal PlatformView adapter | Complete | `PlatformViewRust` builds and its focused tests pass. |
-| Rust/C++ ABI | Complete for phase 1 plumbing | ABI v1 covers task-runner callbacks, Vulkan context/presentation callbacks, shell create/run/destroy, viewport/display metrics, lifecycle, pointer, and raw keyboard events. |
+| Rust/C++ ABI | Complete for phase 1 plumbing | ABI v2 covers task-runner callbacks, Vulkan context/presentation callbacks and per-frame semaphores, shell create/run/destroy, viewport/display metrics, lifecycle, pointer, and raw keyboard events. |
 | Rust workspace and `flutter-plugin-sdk` | Complete for foundation | Workspace uses Rust edition 2024, concrete toolchain 1.93.1, and passes its tests. |
 | Winit event loop | Complete for phase 0 | Linux host owns the window and event loop, dispatches Flutter task batons, and drives the Rust-owned Vulkan presentation loop end to end. |
 | Merged UI/platform task runner | Complete for phase 0 | `RustTaskRunner` queues batons for the Rust host, winit returns due batons through opaque C++ handles, and it now also drives Dart's per-task microtask flush (see below). |
-| Impeller/wgpu interop | Working, synchronization incomplete | wgpu owns the Vulkan device/surface; C++ creates `ContextVK` from borrowed handles plus the in-tree Impeller Vulkan shader bundle. An acquire barrier now prevents black frames, and resize reconfiguration is deferred until the outstanding frame is presented. Rapid resize stress still reports Impeller fence/invalid-image errors; explicit completion/semaphore ownership remains the next GPU milestone. |
+| Impeller/wgpu interop | Explicit synchronization implemented and stress-tested | wgpu owns the Vulkan device/surface; C++ creates `ContextVK` from borrowed handles plus the in-tree Impeller Vulkan shader bundle. Per-frame binary semaphores now order wgpu acquire → Impeller render → wgpu present, synchronization objects stay alive through the consuming submission, and resize waits for that submission before swapchain replacement. A repeatable 500-resize compositor stress run, including hide/restore, fullscreen, and immediate teardown, exits cleanly with no wgpu or Impeller synchronization diagnostics. |
 | Linux runnable shell | Complete for rendered-frame proof | `flutter_rust_shell_runner` boots a real kernel-snapshot Flutter app; a live Hyprland capture shows the Flutter title, text field, button, and debug banner rendered in the Rust shell. |
 | Pointer input | Complete for phase 1 plumbing | Winit mouse, wheel, and touch events cross the private ABI and are converted into Flutter `PointerDataPacket`s; Rust translation and C++ conversion tests pass. |
 | Window and display metrics | Complete for phase 1 plumbing | Initial, resize, and scale-factor changes report physical viewport size, the real device-pixel ratio, and current-monitor size/refresh rate; zero-sized surfaces are not configured. |
@@ -217,6 +218,22 @@ handoff synchronization; text input/IME and real vsync follow.
   remaining fence/invalid-image messages under aggressive resize are tracked as
   incomplete GPU interop synchronization rather than hidden as success.
 
+### Phase 1 — Vulkan synchronization broker
+
+- Bumped the lockstep private shell ABI to v2 and carried broker-owned acquire
+  and render-complete Vulkan semaphore handles alongside each borrowed image.
+- Made wgpu's acquire/initialization submission signal the acquire semaphore;
+  `RustVulkanPresentation` consumes that semaphore on Impeller's graphics queue
+  before returning the image to the rasterizer.
+- Made Impeller signal the render-complete semaphore after its final image
+  layout transition. The broker's final load/store submission waits on that
+  semaphore and touches the `SurfaceTexture`, ensuring wgpu's actual present
+  semaphore is not signalled before Impeller completes.
+- Retained semaphore pairs until the consuming wgpu submission completes,
+  bounded normal-operation retirement to three frames, and waited/drained all
+  retired pairs before deferred resize reconfiguration. Teardown waits for the
+  borrowed Vulkan device to become idle before destroying any remaining pairs.
+
 ## Validation
 
 - `git diff --check` passes.
@@ -229,22 +246,35 @@ handoff synchronization; text input/IME and real vsync follow.
 - Ran `flutter_rust_shell_unittests`: 14 tests passed.
 - Ran `cargo +1.93.1 test --workspace --locked`: all crate and documentation
   tests pass.
+- Compiled the changed Rust Vulkan presentation C++ translation unit and its
+  ABI consumers with the host-debug compile commands, then completed a full
+  `flutter_rust_shell_runner` host-debug build using the engine's bundled
+  depot_tools and the locally managed Python bypass.
+- Added `task build-rust-shell` and `task stress-rust-shell`. The stress task
+  launches the real sample, drives 500 Hyprland compositor resizes with
+  periodic hide/restore and fullscreen transitions, closes immediately after
+  the burst to overlap teardown with queued work, and rejects known Vulkan,
+  wgpu, and Impeller synchronization diagnostics. The default run passed and
+  the runner exited cleanly. After installing
+  `vulkan-validation-layers` 1.4.350.1-1, the same 500-resize run passed with
+  `VK_LAYER_KHRONOS_validation` explicitly enabled and an empty diagnostic
+  log.
 - Ran `task run-flutter` through the app's `runner-rs` Cargo target against a
   real JIT kernel snapshot: the process stays alive, the Rust-shell window is
   mapped and visible, and a live capture shows rendered Flutter content. No
   public Embedder API is involved; the existing GTK Linux shell target remains
-  untouched. Aggressive resize still produces the known GPU handoff errors.
+  untouched. The synchronization broker and validation-layer stress run above
+  supersede the GPU handoff errors observed before explicit semaphores were
+  added.
 
 ## Next implementation steps (phase 1)
 
-1. Complete Vulkan acquire/render/present synchronization between wgpu and
-   Impeller, including fence/semaphore ownership across resize and teardown.
-2. Add text input and IME integration on top of the raw keyboard event path.
-3. Replace the vsync fallback timer with a real winit/compositor-driven vsync
+1. Add text input and IME integration on top of the raw keyboard event path.
+2. Replace the vsync fallback timer with a real winit/compositor-driven vsync
    source.
-4. Add main-thread dispatch for background isolate and Rust-worker callbacks,
+3. Add main-thread dispatch for background isolate and Rust-worker callbacks,
    and test synchronous FFI reentrancy and main-thread starvation behavior.
-5. Add deterministic startup and shutdown ownership tests for the merged
+4. Add deterministic startup and shutdown ownership tests for the merged
    runner.
 
 ## Constraints carried into implementation

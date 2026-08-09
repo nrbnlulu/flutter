@@ -12,7 +12,7 @@ use flutter_plugin_sdk::PLUGIN_SDK_API_VERSION;
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 1;
+pub const SHELL_ABI_VERSION: u32 = 2;
 
 /// ABI information returned to C++ before it installs Rust callbacks.
 #[repr(C)]
@@ -57,6 +57,10 @@ pub struct FlutterRustVulkanContextData {
 pub struct FlutterRustVulkanImage {
     pub image: u64,
     pub format: u32,
+    /// Binary semaphore signalled by wgpu after swapchain acquisition.
+    pub acquire_semaphore: u64,
+    /// Binary semaphore signalled by Impeller after its final image use.
+    pub render_semaphore: u64,
 }
 
 /// ABI-compatible with `FlutterRustVulkanPresentationCallbacks`.

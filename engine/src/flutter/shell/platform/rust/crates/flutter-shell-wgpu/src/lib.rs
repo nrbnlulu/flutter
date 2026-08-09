@@ -7,6 +7,7 @@
 mod linux {
     use ash::vk::Handle as _;
     use flutter_shell_core::{FlutterRustVulkanImage, FlutterRustVulkanPresentationCallbacks};
+    use std::collections::VecDeque;
     use std::ffi::c_void;
     use std::sync::Mutex;
 
@@ -41,11 +42,31 @@ mod linux {
         // Holds the acquired frame between `acquire_image` and `present_image`.
         // wgpu must not destroy the swapchain image while Impeller is drawing
         // into it through the raw handle handed to C++.
-        pending_frame: Option<wgpu::SurfaceTexture>,
+        pending_frame: Option<PendingFrame>,
         // Wgpu forbids reconfiguration while a SurfaceTexture is outstanding.
         // Resize events therefore replace this with the latest requested
         // configuration, which is applied immediately after presentation.
         deferred_configuration: Option<wgpu::SurfaceConfiguration>,
+        // Synchronization objects are kept alive until the final wgpu
+        // submission that consumed them has completed. A small bounded queue
+        // preserves normal frame overlap without leaking one pair per frame.
+        retired_frames: VecDeque<RetiredFrame>,
+    }
+
+    struct PendingFrame {
+        texture: wgpu::SurfaceTexture,
+        sync: FrameSync,
+    }
+
+    struct RetiredFrame {
+        submission: wgpu::SubmissionIndex,
+        sync: FrameSync,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct FrameSync {
+        acquire: ash::vk::Semaphore,
+        render: ash::vk::Semaphore,
     }
 
     /// A Vulkan swapchain image borrowed from the broker's current frame.
@@ -53,6 +74,8 @@ mod linux {
     pub struct AcquiredImage {
         pub image: u64,
         pub format: u32,
+        pub acquire_semaphore: u64,
+        pub render_semaphore: u64,
     }
 
     fn vulkan_format(format: wgpu::TextureFormat) -> Option<ash::vk::Format> {
@@ -111,8 +134,57 @@ mod linux {
                     configuration: None,
                     pending_frame: None,
                     deferred_configuration: None,
+                    retired_frames: VecDeque::new(),
                 }),
             })
+        }
+
+        fn create_frame_sync(&self) -> Option<FrameSync> {
+            // SAFETY: the HAL guard keeps wgpu's device alive while the raw
+            // Vulkan calls create objects owned by this broker.
+            let device = unsafe { self.device.as_hal::<wgpu::hal::vulkan::Api>() }?;
+            let raw = device.raw_device();
+            let acquire = unsafe {
+                raw.create_semaphore(&ash::vk::SemaphoreCreateInfo::default(), None)
+                    .ok()?
+            };
+            let render = match unsafe {
+                raw.create_semaphore(&ash::vk::SemaphoreCreateInfo::default(), None)
+            } {
+                Ok(semaphore) => semaphore,
+                Err(_) => {
+                    unsafe { raw.destroy_semaphore(acquire, None) };
+                    return None;
+                }
+            };
+            Some(FrameSync { acquire, render })
+        }
+
+        fn destroy_frame_sync(&self, sync: FrameSync) {
+            // SAFETY: callers wait for the submission that consumed both
+            // semaphores before destroying them.
+            let Some(device) = (unsafe { self.device.as_hal::<wgpu::hal::vulkan::Api>() }) else {
+                return;
+            };
+            unsafe {
+                device.raw_device().destroy_semaphore(sync.acquire, None);
+                device.raw_device().destroy_semaphore(sync.render, None);
+            }
+        }
+
+        fn wait_and_destroy(&self, retired: RetiredFrame) -> bool {
+            if self
+                .device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: Some(retired.submission),
+                    timeout: None,
+                })
+                .is_err()
+            {
+                return false;
+            }
+            self.destroy_frame_sync(retired.sync);
+            true
         }
 
         /// Calls `callback` while wgpu-hal guards keep the borrowed Vulkan
@@ -196,6 +268,15 @@ mod linux {
             if state.pending_frame.is_some() {
                 return None;
             }
+            // Three pairs cover the configured two-frame surface latency plus
+            // the frame being acquired. Recycle the oldest pair only after its
+            // consuming submission has completed.
+            if state.retired_frames.len() >= 3 {
+                let retired = state.retired_frames.pop_front()?;
+                if !self.wait_and_destroy(retired) {
+                    return None;
+                }
+            }
             let configuration = state.configuration.clone()?;
             let format = configuration.format;
             let vk_format = vulkan_format(format)?;
@@ -215,6 +296,13 @@ mod linux {
             if suboptimal && state.deferred_configuration.is_none() {
                 state.deferred_configuration = Some(configuration);
             }
+            // SAFETY: the returned guard is dropped immediately after copying
+            // the raw handle; the image itself outlives it in `pending_frame`.
+            let image = unsafe {
+                let guard = surface_texture.texture.as_hal::<wgpu::hal::vulkan::Api>()?;
+                guard.raw_handle()
+            };
+            let sync = self.create_frame_sync()?;
             // Register a real wgpu write to the acquired image before handing
             // its raw handle to Impeller. This makes wgpu's submission wait on
             // the swapchain acquire semaphore and marks the texture initialized;
@@ -243,33 +331,85 @@ mod linux {
                     ..Default::default()
                 });
             }
-            self.queue.submit([encoder.finish()]);
-            // SAFETY: the returned guard is dropped immediately after copying
-            // the raw handle; the image itself outlives it in `pending_frame`.
-            let image = unsafe {
-                let guard = surface_texture.texture.as_hal::<wgpu::hal::vulkan::Api>()?;
-                guard.raw_handle()
+            // Make the acquire-complete semaphore part of the same wgpu
+            // submission that consumes the swapchain's private acquire
+            // semaphore. Impeller waits on this before its first image use.
+            let Some(queue) = (unsafe { self.queue.as_hal::<wgpu::hal::vulkan::Api>() }) else {
+                self.destroy_frame_sync(sync);
+                return None;
             };
-            state.pending_frame = Some(surface_texture);
+            queue.add_signal_semaphore(sync.acquire, None);
+            self.queue.submit([encoder.finish()]);
+            state.pending_frame = Some(PendingFrame {
+                texture: surface_texture,
+                sync,
+            });
             Some(AcquiredImage {
                 image: image.as_raw(),
                 format: vk_format.as_raw() as u32,
+                acquire_semaphore: sync.acquire.as_raw(),
+                render_semaphore: sync.render.as_raw(),
             })
         }
 
         /// Presents the frame most recently returned by [`Self::acquire_image`].
         ///
-        /// Impeller's Vulkan submission of the drawing commands is not tracked
-        /// by wgpu's queue; cross-queue synchronization between that submit and
-        /// this present is a known gap carried forward from the interop broker
-        /// design and is not part of proving the phase 0 seam.
         pub fn present_image(&self) -> bool {
             let mut state = self.surface_state.lock().expect("surface lock poisoned");
-            let Some(surface_texture) = state.pending_frame.take() else {
+            let Some(queue) = (unsafe { self.queue.as_hal::<wgpu::hal::vulkan::Api>() }) else {
                 return false;
             };
-            self.queue.present(surface_texture);
+            let Some(pending) = state.pending_frame.take() else {
+                return false;
+            };
+            // Impeller signals `render` after its final layout transition. Make
+            // a real wgpu submission wait on it and touch the surface texture,
+            // so wgpu's own presentation semaphore is signalled only after all
+            // Impeller work is complete.
+            let view = pending
+                .texture
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Flutter Rust Shell present handoff"),
+                });
+            {
+                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Flutter Rust Shell present handoff"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+            }
+            queue.add_wait_semaphore(
+                pending.sync.render,
+                None,
+                ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            );
+            let submission = self.queue.submit([encoder.finish()]);
+            self.queue.present(pending.texture);
+            state.retired_frames.push_back(RetiredFrame {
+                submission,
+                sync: pending.sync,
+            });
             if let Some(configuration) = state.deferred_configuration.take() {
+                // Reconfiguration may retire the old swapchain. Wait through
+                // the final wgpu submission (which itself waited for Impeller)
+                // before allowing wgpu to replace any of its images or fences.
+                while let Some(retired) = state.retired_frames.pop_front() {
+                    if !self.wait_and_destroy(retired) {
+                        return false;
+                    }
+                }
                 self.surface.configure(&self.device, &configuration);
                 state.configuration = Some(configuration);
             }
@@ -283,6 +423,41 @@ mod linux {
                 user_data: (self as *const Self).cast_mut().cast::<c_void>(),
                 acquire_image: Some(acquire_image_callback),
                 present_image: Some(present_image_callback),
+            }
+        }
+    }
+
+    impl Drop for GpuBroker {
+        fn drop(&mut self) {
+            let state = self
+                .surface_state
+                .get_mut()
+                .expect("surface lock poisoned during broker destruction");
+            // SAFETY: no callback can enter the broker during `drop`. Waiting
+            // for the borrowed device to become idle makes every outstanding
+            // broker semaphore safe to destroy.
+            if let Some(device) = unsafe { self.device.as_hal::<wgpu::hal::vulkan::Api>() } {
+                let _ = unsafe { device.raw_device().device_wait_idle() };
+                if let Some(pending) = state.pending_frame.take() {
+                    unsafe {
+                        device
+                            .raw_device()
+                            .destroy_semaphore(pending.sync.acquire, None);
+                        device
+                            .raw_device()
+                            .destroy_semaphore(pending.sync.render, None);
+                    }
+                }
+                for retired in state.retired_frames.drain(..) {
+                    unsafe {
+                        device
+                            .raw_device()
+                            .destroy_semaphore(retired.sync.acquire, None);
+                        device
+                            .raw_device()
+                            .destroy_semaphore(retired.sync.render, None);
+                    }
+                }
             }
         }
     }
@@ -304,6 +479,8 @@ mod linux {
                     *out_image = FlutterRustVulkanImage {
                         image: image.image,
                         format: image.format,
+                        acquire_semaphore: image.acquire_semaphore,
+                        render_semaphore: image.render_semaphore,
                     };
                 }
                 1

@@ -38,6 +38,8 @@ class RustVulkanPresentation final : public GPUSurfaceVulkanDelegate {
   fml::RefPtr<vulkan::VulkanProcTable> vk_;
   std::shared_ptr<impeller::Context> context_;
   FlutterRustVulkanPresentationCallbacks callbacks_;
+  VkSemaphore acquire_semaphore_ = VK_NULL_HANDLE;
+  VkSemaphore render_semaphore_ = VK_NULL_HANDLE;
 };
 
 }  // namespace flutter
