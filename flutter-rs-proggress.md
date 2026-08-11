@@ -268,6 +268,11 @@ and deterministic startup/shutdown coverage follow that milestone.
   modern key-data packet so Flutter dispatches queued `HardwareKeyboard`
   events. Interactive checks confirmed ordinary editing, Backspace, and
   Ctrl+A selection.
+- Validated non-Latin preedit and commit through Fcitx 5's Wayland frontend and
+  Mozc. `nihongo` produced the composing string `にほんご`; Backspace changed it
+  to `にほん`; conversion and commit produced `日本語`; and left-arrow followed
+  by Backspace edited the committed value to `日語` without corrupting the
+  UTF-16 selection state.
 
 ### Phase 1 — compositor-driven vsync
 
@@ -392,6 +397,12 @@ and deterministic startup/shutdown coverage follow that milestone.
   `System.exitApplication` call with the framework's `cancel` or `exit`
   response. Native close requests use the same coordinator, duplicate requests
   are coalesced, and required exits still terminate immediately.
+- Added an injectable regular-window binding seam to the Rust framework owner
+  and automated its production lifecycle dispatcher. Framework tests now cover
+  typed creation parameters, synchronous native state, every regular-window
+  mutation, delegated close cancellation and acceptance, duplicate close
+  coalescing, and the asynchronous transition from a requested removal to a
+  host-confirmed destroyed window.
 
 ## Validation
 
@@ -476,17 +487,22 @@ and deterministic startup/shutdown coverage follow that milestone.
 - Re-ran `task stress-rust-shell` with the native-close path routed through
   `System.requestAppExit`; its default `exit` response still completed the
   500-resize validation run and in-flight teardown cleanly.
+- Ran the focused Rust-window framework tests together with the existing
+  windowing suite: 98 tests passed. Static analysis of the Rust framework
+  backend and its new test reports no issues.
+- Ran an interactive Japanese IME check against the real Rust-shell window
+  using Fcitx 5/Mozc over Wayland. Preedit, candidate conversion, Backspace
+  during composition, commit, cursor movement, and editing after commit all
+  remained live and produced the expected character counts and candidates.
+  The sample's bundled font rendered Japanese as missing-glyph boxes, so the
+  Fcitx candidate UI and controlled edit transitions were used to verify the
+  values independently of glyph rendering.
 
 ## Next implementation steps (phase 1)
 
-1. Add automated framework/host coverage for regular-window create, state,
-   delegated close, and asynchronous destruction rather than relying only on
-   the end-to-end compositor smoke test.
-2. Complete interactive non-Latin composition checks with a configured system
-   IME.
-3. Add main-thread dispatch for background isolate and Rust-worker callbacks,
+1. Add main-thread dispatch for background isolate and Rust-worker callbacks,
    and test synchronous FFI reentrancy and main-thread starvation behavior.
-4. Add deterministic startup and shutdown ownership tests for the merged
+2. Add deterministic startup and shutdown ownership tests for the merged
    runner.
 
 ## Constraints carried into implementation

@@ -23,24 +23,147 @@ bool get isRustShellWindowingAvailable {
   return Platform.isLinux && ffi.DynamicLibrary.process().providesSymbol(_createRegularSymbol);
 }
 
+/// Host operations used by the regular-window controller.
+///
+/// This interface keeps the controller lifecycle testable without requiring a
+/// process that exports the Rust shell's native symbols.
+@visibleForTesting
+abstract interface class RustRegularWindowBindings {
+  /// Creates a regular native window and returns its Flutter view ID.
+  int createRegularWindow({
+    required int engineId,
+    required Size? size,
+    required BoxConstraints? constraints,
+    required String title,
+    required bool resizable,
+  });
+
+  /// Returns the latest native state for [viewId].
+  RustWindowState getWindowState(int engineId, int viewId);
+
+  /// Requests asynchronous destruction of [viewId].
+  void destroyWindow(int engineId, int viewId);
+
+  /// Requests a new logical content size for [viewId].
+  void setSize(int engineId, int viewId, double width, double height);
+
+  /// Replaces the logical size constraints for [viewId].
+  void setConstraints(int engineId, int viewId, BoxConstraints constraints);
+
+  /// Replaces the native title for [viewId].
+  void setTitle(int engineId, int viewId, String title);
+
+  /// Requests native activation for [viewId].
+  void activate(int engineId, int viewId);
+
+  /// Changes the maximized state of [viewId].
+  void setMaximized(int engineId, int viewId, bool maximized);
+
+  /// Changes the minimized state of [viewId].
+  void setMinimized(int engineId, int viewId, bool minimized);
+
+  /// Changes the fullscreen state of [viewId].
+  void setFullscreen(int engineId, int viewId, bool fullscreen);
+}
+
+final class _FfiRegularWindowBindings implements RustRegularWindowBindings {
+  const _FfiRegularWindowBindings();
+
+  @override
+  int createRegularWindow({
+    required int engineId,
+    required Size? size,
+    required BoxConstraints? constraints,
+    required String title,
+    required bool resizable,
+  }) => _RustWindowing.createRegularWindow(
+    engineId: engineId,
+    size: size,
+    constraints: constraints,
+    title: title,
+    resizable: resizable,
+  );
+
+  @override
+  RustWindowState getWindowState(int engineId, int viewId) =>
+      _RustWindowing.getWindowState(engineId, viewId);
+
+  @override
+  void destroyWindow(int engineId, int viewId) => _RustWindowing.destroyWindow(engineId, viewId);
+
+  @override
+  void setSize(int engineId, int viewId, double width, double height) =>
+      _RustWindowing.setSize(engineId, viewId, width, height);
+
+  @override
+  void setConstraints(int engineId, int viewId, BoxConstraints constraints) =>
+      _RustWindowing.setConstraints(engineId, viewId, constraints);
+
+  @override
+  void setTitle(int engineId, int viewId, String title) =>
+      _RustWindowing.setTitle(engineId, viewId, title);
+
+  @override
+  void activate(int engineId, int viewId) => _RustWindowing.activate(engineId, viewId);
+
+  @override
+  void setMaximized(int engineId, int viewId, bool maximized) =>
+      _RustWindowing.setMaximized(engineId, viewId, maximized);
+
+  @override
+  void setMinimized(int engineId, int viewId, bool minimized) =>
+      _RustWindowing.setMinimized(engineId, viewId, minimized);
+
+  @override
+  void setFullscreen(int engineId, int viewId, bool fullscreen) =>
+      _RustWindowing.setFullscreen(engineId, viewId, fullscreen);
+}
+
 @internal
 class WindowingOwnerRust extends WindowingOwner {
   @internal
-  WindowingOwnerRust() {
+  WindowingOwnerRust()
+    : _regularWindowing = const _FfiRegularWindowBindings(),
+      _engineIdOverride = null,
+      _viewForIdOverride = null {
     if (!isRustShellWindowingAvailable) {
       throw UnsupportedError('The Flutter Rust windowing backend is unavailable.');
     }
     // Winit events are delivered outside a Dart invocation even though the
     // host and isolate share a thread. A listener callable safely schedules
     // the event into the owning isolate instead of re-entering it directly.
-    _eventCallback = ffi.NativeCallable<_WindowEventNative>.listener(_handleWindowEvent);
-    _RustWindowing.setEventCallback(_engineId, _eventCallback.nativeFunction);
+    final eventCallback = ffi.NativeCallable<_WindowEventNative>.listener(_handleWindowEvent);
+    _eventCallback = eventCallback;
+    _RustWindowing.setEventCallback(_engineId, eventCallback.nativeFunction);
   }
 
-  final Map<int, _RustLifecycleController> _controllers = <int, _RustLifecycleController>{};
-  late final ffi.NativeCallable<_WindowEventNative> _eventCallback;
+  /// Creates an owner backed by an injected host for framework tests.
+  @visibleForTesting
+  WindowingOwnerRust.test({
+    required RustRegularWindowBindings regularWindowing,
+    required int engineId,
+    required FlutterView Function(int viewId) viewForId,
+  }) : _regularWindowing = regularWindowing,
+       _engineIdOverride = engineId,
+       _viewForIdOverride = viewForId;
 
-  int get _engineId => WidgetsBinding.instance.platformDispatcher.engineId!;
+  final Map<int, _RustLifecycleController> _controllers = <int, _RustLifecycleController>{};
+  final RustRegularWindowBindings _regularWindowing;
+  final int? _engineIdOverride;
+  final FlutterView Function(int viewId)? _viewForIdOverride;
+  // The callable must remain alive while native code retains its function pointer.
+  // ignore: unused_field, use_late_for_private_fields_and_variables
+  ffi.NativeCallable<_WindowEventNative>? _eventCallback;
+
+  int get _engineId => _engineIdOverride ?? WidgetsBinding.instance.platformDispatcher.engineId!;
+
+  FlutterView _viewForId(int viewId) {
+    final FlutterView Function(int viewId)? override = _viewForIdOverride;
+    return override?.call(viewId) ??
+        WidgetsBinding.instance.platformDispatcher.views.firstWhere(
+          (FlutterView view) => view.viewId == viewId,
+        );
+  }
 
   @override
   WindowController createWindowController({
@@ -79,6 +202,12 @@ class WindowingOwnerRust extends WindowingOwner {
         controller._windowDestroyed();
         return;
     }
+  }
+
+  /// Delivers a native event through the production lifecycle dispatcher.
+  @visibleForTesting
+  void handleWindowEventForTesting(int viewId, int event) {
+    _handleWindowEvent(viewId, event);
   }
 
   @override
@@ -194,7 +323,7 @@ class WindowControllerRust extends WindowController implements _RustLifecycleCon
        _delegate = delegate,
        _title = title ?? 'Flutter',
        super.empty() {
-    final int viewId = _RustWindowing.createRegularWindow(
+    final int viewId = _owner._regularWindowing.createRegularWindow(
       engineId: _owner._engineId,
       size: size,
       constraints: constraints,
@@ -204,9 +333,7 @@ class WindowControllerRust extends WindowController implements _RustLifecycleCon
     if (viewId < 0) {
       throw StateError('The Rust shell failed to create a regular window.');
     }
-    rootView = WidgetsBinding.instance.platformDispatcher.views.firstWhere(
-      (FlutterView view) => view.viewId == viewId,
-    );
+    rootView = _owner._viewForId(viewId);
   }
 
   final WindowingOwnerRust _owner;
@@ -221,14 +348,14 @@ class WindowControllerRust extends WindowController implements _RustLifecycleCon
     }
   }
 
-  _WindowStateValue get _state {
+  RustWindowState get _state {
     _ensureNotDestroyed();
-    return _RustWindowing.getWindowState(_owner._engineId, rootView.viewId);
+    return _owner._regularWindowing.getWindowState(_owner._engineId, rootView.viewId);
   }
 
   @override
   Size get contentSize {
-    final _WindowStateValue state = _state;
+    final RustWindowState state = _state;
     return Size(state.width, state.height);
   }
 
@@ -259,25 +386,25 @@ class WindowControllerRust extends WindowController implements _RustLifecycleCon
       return;
     }
     _destroyRequested = true;
-    _RustWindowing.destroyWindow(_owner._engineId, rootView.viewId);
+    _owner._regularWindowing.destroyWindow(_owner._engineId, rootView.viewId);
   }
 
   @override
   void setSize(Size size) {
     _ensureNotDestroyed();
-    _RustWindowing.setSize(_owner._engineId, rootView.viewId, size.width, size.height);
+    _owner._regularWindowing.setSize(_owner._engineId, rootView.viewId, size.width, size.height);
   }
 
   @override
   void setConstraints(BoxConstraints constraints) {
     _ensureNotDestroyed();
-    _RustWindowing.setConstraints(_owner._engineId, rootView.viewId, constraints);
+    _owner._regularWindowing.setConstraints(_owner._engineId, rootView.viewId, constraints);
   }
 
   @override
   void setTitle(String title) {
     _ensureNotDestroyed();
-    _RustWindowing.setTitle(_owner._engineId, rootView.viewId, title);
+    _owner._regularWindowing.setTitle(_owner._engineId, rootView.viewId, title);
     _title = title;
     notifyListeners();
   }
@@ -285,25 +412,25 @@ class WindowControllerRust extends WindowController implements _RustLifecycleCon
   @override
   void activate() {
     _ensureNotDestroyed();
-    _RustWindowing.activate(_owner._engineId, rootView.viewId);
+    _owner._regularWindowing.activate(_owner._engineId, rootView.viewId);
   }
 
   @override
   void setMaximized(bool maximized) {
     _ensureNotDestroyed();
-    _RustWindowing.setMaximized(_owner._engineId, rootView.viewId, maximized);
+    _owner._regularWindowing.setMaximized(_owner._engineId, rootView.viewId, maximized);
   }
 
   @override
   void setMinimized(bool minimized) {
     _ensureNotDestroyed();
-    _RustWindowing.setMinimized(_owner._engineId, rootView.viewId, minimized);
+    _owner._regularWindowing.setMinimized(_owner._engineId, rootView.viewId, minimized);
   }
 
   @override
   void setFullscreen(bool fullscreen, {Display? display}) {
     _ensureNotDestroyed();
-    _RustWindowing.setFullscreen(_owner._engineId, rootView.viewId, fullscreen);
+    _owner._regularWindowing.setFullscreen(_owner._engineId, rootView.viewId, fullscreen);
   }
 
   @override
@@ -376,7 +503,7 @@ class DialogWindowControllerRust extends DialogWindowController
     }
   }
 
-  _WindowStateValue get _state {
+  RustWindowState get _state {
     _ensureNotDestroyed();
     return _RustWindowing.getWindowState(_owner._engineId, rootView.viewId);
   }
@@ -516,10 +643,7 @@ class TooltipWindowControllerRust extends TooltipWindowController
 
   @override
   Size get contentSize {
-    final _WindowStateValue state = _RustWindowing.getWindowState(
-      _owner._engineId,
-      rootView.viewId,
-    );
+    final RustWindowState state = _RustWindowing.getWindowState(_owner._engineId, rootView.viewId);
     return Size(state.width, state.height);
   }
 
@@ -611,10 +735,7 @@ class PopupWindowControllerRust extends PopupWindowController implements _RustLi
 
   @override
   Size get contentSize {
-    final _WindowStateValue state = _RustWindowing.getWindowState(
-      _owner._engineId,
-      rootView.viewId,
-    );
+    final RustWindowState state = _RustWindowing.getWindowState(_owner._engineId, rootView.viewId);
     return Size(state.width, state.height);
   }
 
@@ -747,7 +868,7 @@ class SatelliteWindowControllerRust extends SatelliteWindowController
     }
   }
 
-  _WindowStateValue get _state {
+  RustWindowState get _state {
     _ensureNotDestroyed();
     return _RustWindowing.getWindowState(_owner._engineId, rootView.viewId);
   }
@@ -1000,7 +1121,9 @@ final class _WindowState extends ffi.Struct {
 }
 
 typedef _WindowEventNative = ffi.Void Function(ffi.Int64 viewId, ffi.Int32 event);
-typedef _WindowStateValue = ({
+
+/// Snapshot of state reported synchronously by a Rust-hosted native window.
+typedef RustWindowState = ({
   double width,
   double height,
   int focused,
@@ -1200,7 +1323,7 @@ final class _RustWindowing {
     }
   }
 
-  static _WindowStateValue getWindowState(int engineId, int viewId) {
+  static RustWindowState getWindowState(int engineId, int viewId) {
     final ffi.Pointer<_WindowState> state = _malloc(
       ffi.sizeOf<_WindowState>(),
     ).cast<_WindowState>();
@@ -1211,7 +1334,7 @@ final class _RustWindowing {
       _free(state.cast());
       throw StateError('The Rust shell no longer has window $viewId.');
     }
-    final _WindowStateValue result = (
+    final RustWindowState result = (
       width: state.ref.width,
       height: state.ref.height,
       focused: state.ref.focused,
