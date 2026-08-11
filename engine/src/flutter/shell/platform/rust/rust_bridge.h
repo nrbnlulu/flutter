@@ -284,14 +284,31 @@ typedef struct FlutterRustShellSettings {
   const char* icu_data_path;
 } FlutterRustShellSettings;
 
-// Framework-to-host platform messages. All byte pointers are borrowed only
-// for the duration of the callback. Returning non-zero marks the method as
-// handled and completes its response with a JSON success envelope.
-typedef int (*FlutterRustHandlePlatformMessageCallback)(void* user_data,
-                                                        const uint8_t* channel,
-                                                        uint64_t channel_size,
-                                                        const uint8_t* message,
-                                                        uint64_t message_size);
+typedef struct FlutterRustPlatformMessageResponseHandle
+    FlutterRustPlatformMessageResponseHandle;
+
+typedef enum FlutterRustPlatformMessageDisposition {
+  kFlutterRustPlatformMessageUnhandled = 0,
+  kFlutterRustPlatformMessageSuccess = 1,
+  kFlutterRustPlatformMessagePending = 2,
+} FlutterRustPlatformMessageDisposition;
+
+typedef void (*FlutterRustPlatformMessageResponseCallback)(
+    void* user_data,
+    const uint8_t* response,
+    uint64_t response_size);
+
+// Framework-to-host platform messages. All byte pointers and the response
+// handle are borrowed only for the duration of the callback. Returning
+// Pending transfers ownership of a non-null response handle to Rust.
+typedef FlutterRustPlatformMessageDisposition (
+    *FlutterRustHandlePlatformMessageCallback)(
+    void* user_data,
+    const uint8_t* channel,
+    uint64_t channel_size,
+    const uint8_t* message,
+    uint64_t message_size,
+    FlutterRustPlatformMessageResponseHandle* response_handle);
 
 typedef struct FlutterRustPlatformMessageCallbacks {
   void* user_data;
@@ -508,6 +525,24 @@ FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSendPlatformMessage(
     uint64_t channel_size,
     const uint8_t* message,
     uint64_t message_size);
+
+// Dispatches a platform message and invokes callback once with the framework's
+// encoded response. Returns zero if the message could not be dispatched.
+FLUTTER_RUST_SHELL_EXPORT int FlutterRustShellSendPlatformMessageWithResponse(
+    void* shell,
+    const uint8_t* channel,
+    uint64_t channel_size,
+    const uint8_t* message,
+    uint64_t message_size,
+    FlutterRustPlatformMessageResponseCallback callback,
+    void* user_data);
+
+// Completes and releases a one-shot framework-to-host response retained after
+// a platform-message callback returned Pending.
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellCompletePlatformMessageResponse(
+    FlutterRustPlatformMessageResponseHandle* response_handle,
+    const uint8_t* response,
+    uint64_t response_size);
 
 // Delivers one compositor-aligned pulse. The interval is the active monitor's
 // nominal refresh period; C++ supplies its own monotonic timestamp so clock

@@ -34,9 +34,10 @@ mod linux {
     };
     #[cfg(not(test))]
     use flutter_shell_core::{
-        FlutterRustPlatformMessageCallbacks, FlutterRustShellSettings,
-        FlutterRustViewFocusDirection, FlutterRustViewFocusState, FlutterRustViewMetrics,
-        FlutterRustViewOperationCallbacks, FlutterRustVulkanContextData,
+        FlutterRustPlatformMessageCallbacks, FlutterRustPlatformMessageDisposition,
+        FlutterRustPlatformMessageResponseCallback, FlutterRustPlatformMessageResponseHandle,
+        FlutterRustShellSettings, FlutterRustViewFocusDirection, FlutterRustViewFocusState,
+        FlutterRustViewMetrics, FlutterRustViewOperationCallbacks, FlutterRustVulkanContextData,
         FlutterRustVulkanPresentationCallbacks, FlutterRustWindowEvent, FlutterRustWindowState,
         FlutterRustWindowingCallbacks,
     };
@@ -84,8 +85,16 @@ mod linux {
             operation: ViewOperation,
             succeeded: bool,
         },
+        #[cfg(not(test))]
+        RequestAppExit {
+            response: Option<PendingPlatformResponse>,
+        },
         ExitRequested,
     }
+
+    #[cfg(not(test))]
+    #[derive(Debug, Clone, Copy)]
+    struct PendingPlatformResponse(usize);
 
     #[derive(Clone)]
     struct HostEventSender {
@@ -1080,6 +1089,61 @@ mod linux {
     }
 
     #[cfg(not(test))]
+    fn send_cpp_platform_message_with_response(
+        shell: *mut c_void,
+        channel: &[u8],
+        message: &[u8],
+        callback: FlutterRustPlatformMessageResponseCallback,
+        user_data: *mut c_void,
+    ) -> bool {
+        unsafe extern "C" {
+            fn FlutterRustShellSendPlatformMessageWithResponse(
+                shell: *mut c_void,
+                channel: *const u8,
+                channel_size: u64,
+                message: *const u8,
+                message_size: u64,
+                callback: FlutterRustPlatformMessageResponseCallback,
+                user_data: *mut c_void,
+            ) -> i32;
+        }
+        // SAFETY: C++ copies both slices and retains only the callback and its
+        // owned user data. The callback consumes that data exactly once.
+        unsafe {
+            FlutterRustShellSendPlatformMessageWithResponse(
+                shell,
+                channel.as_ptr(),
+                channel.len() as u64,
+                message.as_ptr(),
+                message.len() as u64,
+                callback,
+                user_data,
+            ) != 0
+        }
+    }
+
+    #[cfg(not(test))]
+    fn complete_cpp_platform_message(response: PendingPlatformResponse, envelope: &[u8]) {
+        unsafe extern "C" {
+            fn FlutterRustShellCompletePlatformMessageResponse(
+                response: FlutterRustPlatformMessageResponseHandle,
+                envelope: *const u8,
+                envelope_size: u64,
+            );
+        }
+        // SAFETY: PendingPlatformResponse represents ownership transferred by
+        // C++ after the incoming callback returned Pending. Completion is
+        // one-shot and C++ copies the envelope before returning.
+        unsafe {
+            FlutterRustShellCompletePlatformMessageResponse(
+                FlutterRustPlatformMessageResponseHandle(response.0 as *mut c_void),
+                envelope.as_ptr(),
+                envelope.len() as u64,
+            )
+        }
+    }
+
+    #[cfg(not(test))]
     fn send_cpp_vsync(shell: *mut c_void, frame_interval_nanos: u64) {
         unsafe extern "C" {
             fn FlutterRustShellOnVsync(shell: *mut c_void, frame_interval_nanos: u64);
@@ -1327,6 +1391,9 @@ mod linux {
     const TEXT_INPUT_CHANNEL: &[u8] = b"flutter/textinput";
     #[cfg(not(test))]
     const PLATFORM_CHANNEL: &[u8] = b"flutter/platform";
+    #[cfg(not(test))]
+    const REQUEST_APP_EXIT_MESSAGE: &[u8] =
+        br#"{"method":"System.requestAppExit","args":{"type":"cancelable"}}"#;
     const KEY_EVENT_CHANNEL: &[u8] = b"flutter/keyevent";
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1524,6 +1591,12 @@ mod linux {
         Cancelable,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ApplicationExitResponse {
+        Exit,
+        Cancel,
+    }
+
     impl ApplicationExitRequest {
         fn decode(message: &[u8]) -> Option<Self> {
             let envelope: Value = serde_json::from_slice(message).ok()?;
@@ -1539,6 +1612,31 @@ mod linux {
                 _ => None,
             }
         }
+    }
+
+    impl ApplicationExitResponse {
+        fn decode(message: &[u8]) -> Option<Self> {
+            let envelope: Vec<Value> = serde_json::from_slice(message).ok()?;
+            match envelope.first()?.get("response")?.as_str()? {
+                "exit" => Some(Self::Exit),
+                "cancel" => Some(Self::Cancel),
+                _ => None,
+            }
+        }
+
+        fn envelope(self) -> &'static [u8] {
+            match self {
+                Self::Exit => br#"[{"response":"exit"}]"#,
+                Self::Cancel => br#"[{"response":"cancel"}]"#,
+            }
+        }
+    }
+
+    fn is_initialization_complete(message: &[u8]) -> bool {
+        serde_json::from_slice::<Value>(message)
+            .ok()
+            .and_then(|value| value.get("method")?.as_str().map(str::to_owned))
+            .is_some_and(|method| method == "System.initializationComplete")
     }
 
     impl TextInputCommand {
@@ -1582,6 +1680,43 @@ mod linux {
         commands: Mutex<VecDeque<TextInputCommand>>,
         #[cfg(not(test))]
         wake_proxy: HostEventSender,
+        #[cfg(not(test))]
+        exit: Arc<ApplicationExitCoordinator>,
+    }
+
+    #[cfg(not(test))]
+    struct ApplicationExitCoordinator {
+        initialized: AtomicBool,
+        pending: AtomicBool,
+        wake_proxy: HostEventSender,
+    }
+
+    #[cfg(not(test))]
+    impl ApplicationExitCoordinator {
+        fn begin(&self, response: Option<PendingPlatformResponse>) -> ExitRequestStart {
+            if !self.initialized.load(Ordering::Acquire) {
+                return ExitRequestStart::NotReady;
+            }
+            if self
+                .pending
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return ExitRequestStart::AlreadyPending;
+            }
+            let _ = self
+                .wake_proxy
+                .send_event(HostEvent::RequestAppExit { response });
+            ExitRequestStart::Started
+        }
+    }
+
+    #[cfg(not(test))]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ExitRequestStart {
+        Started,
+        NotReady,
+        AlreadyPending,
     }
 
     impl TextInputInbox {
@@ -1591,7 +1726,13 @@ mod linux {
             Self {
                 commands: Mutex::new(VecDeque::new()),
                 #[cfg(not(test))]
-                wake_proxy,
+                wake_proxy: wake_proxy.clone(),
+                #[cfg(not(test))]
+                exit: Arc::new(ApplicationExitCoordinator {
+                    initialized: AtomicBool::new(false),
+                    pending: AtomicBool::new(false),
+                    wake_proxy,
+                }),
             }
         }
 
@@ -1620,14 +1761,15 @@ mod linux {
         channel_size: u64,
         message: *const u8,
         message_size: u64,
-    ) -> i32 {
+        response_handle: FlutterRustPlatformMessageResponseHandle,
+    ) -> FlutterRustPlatformMessageDisposition {
         if user_data.is_null() || channel.is_null() || (message.is_null() && message_size != 0) {
-            return 0;
+            return FlutterRustPlatformMessageDisposition::Unhandled;
         }
         let (Ok(channel_size), Ok(message_size)) =
             (usize::try_from(channel_size), usize::try_from(message_size))
         else {
-            return 0;
+            return FlutterRustPlatformMessageDisposition::Unhandled;
         };
         // SAFETY: C++ guarantees these byte slices remain valid for the
         // duration of the callback. A zero-length message does not dereference
@@ -1640,24 +1782,37 @@ mod linux {
             unsafe { std::slice::from_raw_parts(message, message_size) }
         };
         if channel == PLATFORM_CHANNEL {
-            let Some(request) = ApplicationExitRequest::decode(message) else {
-                return 0;
-            };
-            // Cancelable application exits require a System.requestAppExit
-            // round trip. Until that response path exists, handling the call
-            // without exiting produces the framework's documented cancel
-            // result from the null success envelope.
-            if request == ApplicationExitRequest::Required {
-                let inbox = unsafe { &*user_data.cast::<TextInputInbox>() };
-                let _ = inbox.wake_proxy.send_event(HostEvent::ExitRequested);
+            let inbox = unsafe { &*user_data.cast::<TextInputInbox>() };
+            if is_initialization_complete(message) {
+                inbox.exit.initialized.store(true, Ordering::Release);
+                return FlutterRustPlatformMessageDisposition::Success;
             }
-            return 1;
+            let Some(request) = ApplicationExitRequest::decode(message) else {
+                return FlutterRustPlatformMessageDisposition::Unhandled;
+            };
+            if request == ApplicationExitRequest::Required || response_handle.0.is_null() {
+                let _ = inbox.wake_proxy.send_event(HostEvent::ExitRequested);
+                return FlutterRustPlatformMessageDisposition::Success;
+            }
+            return match inbox
+                .exit
+                .begin(Some(PendingPlatformResponse(response_handle.0 as usize)))
+            {
+                ExitRequestStart::Started => FlutterRustPlatformMessageDisposition::Pending,
+                ExitRequestStart::NotReady => {
+                    let _ = inbox.wake_proxy.send_event(HostEvent::ExitRequested);
+                    FlutterRustPlatformMessageDisposition::Success
+                }
+                // The JSON success envelope is null, which the framework
+                // deliberately interprets as a canceled exit.
+                ExitRequestStart::AlreadyPending => FlutterRustPlatformMessageDisposition::Success,
+            };
         }
         if channel != TEXT_INPUT_CHANNEL {
-            return 0;
+            return FlutterRustPlatformMessageDisposition::Unhandled;
         }
         let Some(command) = TextInputCommand::decode(message) else {
-            return 0;
+            return FlutterRustPlatformMessageDisposition::Unhandled;
         };
         // SAFETY: callbacks() uses the stable address of the boxed inbox, and
         // ShellApplication destroys the C++ shell before dropping that inbox.
@@ -1668,7 +1823,83 @@ mod linux {
             .expect("Flutter text input command queue poisoned")
             .push_back(command);
         let _ = inbox.wake_proxy.send_event(HostEvent::TaskScheduled);
-        1
+        FlutterRustPlatformMessageDisposition::Success
+    }
+
+    #[cfg(not(test))]
+    struct PendingApplicationExit {
+        coordinator: Arc<ApplicationExitCoordinator>,
+        response: Option<PendingPlatformResponse>,
+    }
+
+    #[cfg(not(test))]
+    extern "C" fn handle_application_exit_response(
+        user_data: *mut c_void,
+        response: *const u8,
+        response_size: u64,
+    ) {
+        if user_data.is_null() {
+            return;
+        }
+        // SAFETY: send_cancelable_exit_request transfers exactly one Box to
+        // the one-shot C++ response object, which invokes this callback once.
+        let pending = unsafe { Box::from_raw(user_data.cast::<PendingApplicationExit>()) };
+        let response = usize::try_from(response_size)
+            .ok()
+            .and_then(|size| {
+                if response.is_null() {
+                    (size == 0).then_some(&[][..])
+                } else {
+                    // SAFETY: C++ borrows its response mapping for this call.
+                    Some(unsafe { std::slice::from_raw_parts(response, size) })
+                }
+            })
+            .and_then(ApplicationExitResponse::decode)
+            // Match the upstream Linux shell: malformed/error responses do
+            // not trap an application that the OS asked to close.
+            .unwrap_or(ApplicationExitResponse::Exit);
+        pending.coordinator.pending.store(false, Ordering::Release);
+        if let Some(original) = pending.response {
+            complete_cpp_platform_message(original, response.envelope());
+        }
+        if response == ApplicationExitResponse::Exit {
+            let _ = pending
+                .coordinator
+                .wake_proxy
+                .send_event(HostEvent::ExitRequested);
+        }
+    }
+
+    #[cfg(not(test))]
+    fn send_cancelable_exit_request(
+        shell: *mut c_void,
+        coordinator: Arc<ApplicationExitCoordinator>,
+        response: Option<PendingPlatformResponse>,
+    ) {
+        let pending = Box::new(PendingApplicationExit {
+            coordinator,
+            response,
+        });
+        let user_data = Box::into_raw(pending).cast();
+        if !send_cpp_platform_message_with_response(
+            shell,
+            PLATFORM_CHANNEL,
+            REQUEST_APP_EXIT_MESSAGE,
+            handle_application_exit_response,
+            user_data,
+        ) {
+            // SAFETY: C++ rejected the send and therefore retained neither the
+            // callback nor its user data.
+            let pending = unsafe { Box::from_raw(user_data.cast::<PendingApplicationExit>()) };
+            pending.coordinator.pending.store(false, Ordering::Release);
+            if let Some(original) = pending.response {
+                complete_cpp_platform_message(original, ApplicationExitResponse::Exit.envelope());
+            }
+            let _ = pending
+                .coordinator
+                .wake_proxy
+                .send_event(HostEvent::ExitRequested);
+        }
     }
 
     #[derive(Default)]
@@ -3170,6 +3401,10 @@ mod linux {
                 }
                 WindowEvent::CloseRequested => {
                     if view_id == FlutterRustViewId::IMPLICIT {
+                        #[cfg(not(test))]
+                        if self.text_input_inbox.exit.begin(None) != ExitRequestStart::NotReady {
+                            return;
+                        }
                         let state = self.lifecycle_state.detached();
                         self.send_lifecycle_event(state);
                         event_loop.exit();
@@ -3250,6 +3485,31 @@ mod linux {
                             self.windows.borrow_mut().removing_views.remove(&view_id);
                         }
                     },
+                    #[cfg(not(test))]
+                    HostEvent::RequestAppExit { response } => {
+                        let shell = self.windows.borrow().shell;
+                        if let Some(shell) = shell {
+                            send_cancelable_exit_request(
+                                shell,
+                                Arc::clone(&self.text_input_inbox.exit),
+                                response,
+                            );
+                        } else {
+                            self.text_input_inbox
+                                .exit
+                                .pending
+                                .store(false, Ordering::Release);
+                            if let Some(response) = response {
+                                complete_cpp_platform_message(
+                                    response,
+                                    ApplicationExitResponse::Exit.envelope(),
+                                );
+                            }
+                            let state = self.lifecycle_state.detached();
+                            self.send_lifecycle_event(state);
+                            event_loop.exit();
+                        }
+                    }
                     HostEvent::ExitRequested => {
                         let state = self.lifecycle_state.detached();
                         self.send_lifecycle_event(state);
@@ -4199,7 +4459,7 @@ mod linux {
         }
 
         #[test]
-        fn decodes_required_and_cancelable_application_exit_requests() {
+        fn decodes_application_exit_requests_and_responses() {
             assert_eq!(
                 ApplicationExitRequest::decode(
                     br#"{"method":"System.exitApplication","args":{"type":"required","exitCode":7}}"#,
@@ -4222,6 +4482,22 @@ mod linux {
                 )
                 .is_none()
             );
+            assert!(is_initialization_complete(
+                br#"{"method":"System.initializationComplete","args":null}"#
+            ));
+            assert_eq!(
+                ApplicationExitResponse::decode(br#"[{"response":"cancel"}]"#),
+                Some(ApplicationExitResponse::Cancel)
+            );
+            assert_eq!(
+                ApplicationExitResponse::decode(br#"[{"response":"exit"}]"#),
+                Some(ApplicationExitResponse::Exit)
+            );
+            assert_eq!(
+                ApplicationExitResponse::Cancel.envelope(),
+                br#"[{"response":"cancel"}]"#
+            );
+            assert!(ApplicationExitResponse::decode(br#"[{"response":"invalid"}]"#).is_none());
         }
 
         #[test]

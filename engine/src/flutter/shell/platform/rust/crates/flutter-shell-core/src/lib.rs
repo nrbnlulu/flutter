@@ -248,13 +248,39 @@ pub struct FlutterRustShellSettings {
     pub icu_data_path: *const std::ffi::c_char,
 }
 
-/// Callback table for framework-to-host platform messages. Byte slices are
-/// borrowed only for the duration of the callback. A non-zero result means
-/// the message was handled and receives a JSON success envelope.
+/// Opaque, one-shot response retained by the host when message handling is
+/// asynchronous.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlutterRustPlatformMessageResponseHandle(pub *mut c_void);
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlutterRustPlatformMessageDisposition {
+    Unhandled = 0,
+    Success = 1,
+    Pending = 2,
+}
+
+pub type FlutterRustPlatformMessageResponseCallback = extern "C" fn(*mut c_void, *const u8, u64);
+
+/// Callback table for framework-to-host platform messages. Byte slices and
+/// the response handle are borrowed only for the duration of the callback.
+/// Returning `Pending` transfers ownership of a non-null response handle to
+/// Rust until it is completed through the bridge.
 #[repr(C)]
 pub struct FlutterRustPlatformMessageCallbacks {
     pub user_data: *mut c_void,
-    pub handle_message: Option<extern "C" fn(*mut c_void, *const u8, u64, *const u8, u64) -> i32>,
+    pub handle_message: Option<
+        extern "C" fn(
+            *mut c_void,
+            *const u8,
+            u64,
+            *const u8,
+            u64,
+            FlutterRustPlatformMessageResponseHandle,
+        ) -> FlutterRustPlatformMessageDisposition,
+    >,
 }
 
 /// Callback table used by Flutter to request a compositor-aligned frame from

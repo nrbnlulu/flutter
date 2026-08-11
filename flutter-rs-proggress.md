@@ -385,6 +385,13 @@ and deterministic startup/shutdown coverage follow that milestone.
   toplevel placement to the compositor; unlike tooltip/popup surfaces, a
   movable, resizable, keyboard-focusable satellite cannot use an `xdg_popup`
   role.
+- Implemented the cancelable desktop shutdown handshake without another ABI
+  version increment. The host recognizes `System.initializationComplete`,
+  retains asynchronous framework-to-host responses with an opaque one-shot
+  handle, invokes `System.requestAppExit`, and completes the original
+  `System.exitApplication` call with the framework's `cancel` or `exit`
+  response. Native close requests use the same coordinator, duplicate requests
+  are coalesced, and required exits still terminate immediately.
 
 ## Validation
 
@@ -461,18 +468,25 @@ and deterministic startup/shutdown coverage follow that milestone.
 - Re-ran `task stress-rust-shell` after the winit 0.31 migration: keyboard
   frame liveness, 500 compositor resizes, hide/restore, fullscreen changes,
   immediate teardown, and Vulkan validation all passed.
+- Built a temporary cancelable-exit smoke target whose first
+  `didRequestAppExit` response was `cancel` and whose second was `exit`. The
+  first `ServicesBinding.exitApplication(cancelable)` future completed with
+  `cancel`; the second terminated the Rust-shell process cleanly with status
+  zero. The temporary source was removed after validation.
+- Re-ran `task stress-rust-shell` with the native-close path routed through
+  `System.requestAppExit`; its default `exit` response still completed the
+  500-resize validation run and in-flight teardown cleanly.
 
 ## Next implementation steps (phase 1)
 
 1. Add automated framework/host coverage for regular-window create, state,
    delegated close, and asynchronous destruction rather than relying only on
    the end-to-end compositor smoke test.
-2. Implement the cancelable `System.requestAppExit` response round trip.
-3. Complete interactive non-Latin composition checks with a configured system
+2. Complete interactive non-Latin composition checks with a configured system
    IME.
-4. Add main-thread dispatch for background isolate and Rust-worker callbacks,
+3. Add main-thread dispatch for background isolate and Rust-worker callbacks,
    and test synchronous FFI reentrancy and main-thread starvation behavior.
-5. Add deterministic startup and shutdown ownership tests for the merged
+4. Add deterministic startup and shutdown ownership tests for the merged
    runner.
 
 ## Constraints carried into implementation

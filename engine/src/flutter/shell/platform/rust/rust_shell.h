@@ -72,6 +72,13 @@ class RustShell final {
                            uint64_t channel_size,
                            const uint8_t* message,
                            uint64_t message_size);
+  bool SendPlatformMessageWithResponse(
+      const uint8_t* channel,
+      uint64_t channel_size,
+      const uint8_t* message,
+      uint64_t message_size,
+      FlutterRustPlatformMessageResponseCallback callback,
+      void* user_data);
 
   // Delivers one compositor-aligned pulse to the platform view's waiter.
   void OnVsync(uint64_t frame_interval_nanos);

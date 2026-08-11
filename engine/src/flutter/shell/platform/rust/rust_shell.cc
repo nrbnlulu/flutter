@@ -26,9 +26,44 @@
 #include "flutter/shell/platform/rust/rust_task_runner.h"
 #include "flutter/shell/platform/rust/rust_vulkan_surface.h"
 
+struct FlutterRustPlatformMessageResponseHandle {
+  fml::RefPtr<flutter::PlatformMessageResponse> response;
+};
+
 namespace flutter {
 
 namespace {
+
+class RustPlatformMessageResponse final : public PlatformMessageResponse {
+ public:
+  RustPlatformMessageResponse(
+      FlutterRustPlatformMessageResponseCallback callback,
+      void* user_data)
+      : callback_(callback), user_data_(user_data) {}
+
+  void Complete(std::unique_ptr<fml::Mapping> data) override {
+    if (!callback_) {
+      return;
+    }
+    callback_(user_data_, data ? data->GetMapping() : nullptr,
+              data ? data->GetSize() : 0);
+  }
+
+  void CompleteEmpty() override {
+    if (callback_) {
+      callback_(user_data_, nullptr, 0);
+    }
+  }
+
+ private:
+  ~RustPlatformMessageResponse() override = default;
+
+  FlutterRustPlatformMessageResponseCallback callback_;
+  void* user_data_;
+
+  FML_FRIEND_MAKE_REF_COUNTED(RustPlatformMessageResponse);
+  FML_DISALLOW_COPY_AND_ASSIGN(RustPlatformMessageResponse);
+};
 
 ViewportMetrics ToViewportMetrics(const FlutterRustViewMetrics& metrics) {
   ViewportMetrics result(metrics.pixel_ratio, metrics.width, metrics.height,
@@ -97,17 +132,29 @@ std::unique_ptr<RustShell> RustShell::Create(
   };
   platform_view_configuration.handle_platform_message =
       [platform_message_callbacks](std::unique_ptr<PlatformMessage> message) {
-        bool handled = false;
+        auto response_handle =
+            message->response()
+                ? std::make_unique<FlutterRustPlatformMessageResponseHandle>(
+                      FlutterRustPlatformMessageResponseHandle{
+                          message->response()})
+                : nullptr;
+        FlutterRustPlatformMessageDisposition disposition =
+            kFlutterRustPlatformMessageUnhandled;
         if (platform_message_callbacks.handle_message) {
           const auto& channel = message->channel();
           const auto& data = message->data();
-          handled = platform_message_callbacks.handle_message(
-                        platform_message_callbacks.user_data,
-                        reinterpret_cast<const uint8_t*>(channel.data()),
-                        channel.size(), data.GetMapping(), data.GetSize()) != 0;
+          disposition = platform_message_callbacks.handle_message(
+              platform_message_callbacks.user_data,
+              reinterpret_cast<const uint8_t*>(channel.data()), channel.size(),
+              data.GetMapping(), data.GetSize(), response_handle.get());
+        }
+        if (disposition == kFlutterRustPlatformMessagePending &&
+            response_handle) {
+          response_handle.release();
+          return;
         }
         if (auto response = message->response()) {
-          if (handled) {
+          if (disposition == kFlutterRustPlatformMessageSuccess) {
             constexpr char kSuccessEnvelope[] = "[null]";
             response->Complete(
                 std::make_unique<fml::MallocMapping>(fml::MallocMapping::Copy(
@@ -319,6 +366,28 @@ void RustShell::SendPlatformMessage(const uint8_t* channel,
   platform_view->DispatchPlatformMessage(std::make_unique<PlatformMessage>(
       channel_string, fml::MallocMapping::Copy(message, message_size),
       fml::RefPtr<PlatformMessageResponse>()));
+}
+
+bool RustShell::SendPlatformMessageWithResponse(
+    const uint8_t* channel,
+    uint64_t channel_size,
+    const uint8_t* message,
+    uint64_t message_size,
+    FlutterRustPlatformMessageResponseCallback callback,
+    void* user_data) {
+  if (!shell_ || !channel || (!message && message_size != 0) || !callback) {
+    return false;
+  }
+  auto platform_view = shell_->GetPlatformView();
+  if (!platform_view) {
+    return false;
+  }
+  const std::string channel_string(reinterpret_cast<const char*>(channel),
+                                   channel_size);
+  platform_view->DispatchPlatformMessage(std::make_unique<PlatformMessage>(
+      channel_string, fml::MallocMapping::Copy(message, message_size),
+      fml::MakeRefCounted<RustPlatformMessageResponse>(callback, user_data)));
+  return true;
 }
 
 void RustShell::OnVsync(uint64_t frame_interval_nanos) {
@@ -658,6 +727,42 @@ extern "C" void FlutterRustShellSendPlatformMessage(void* shell,
   }
   static_cast<flutter::RustShell*>(shell)->SendPlatformMessage(
       channel, channel_size, message, message_size);
+}
+
+extern "C" int FlutterRustShellSendPlatformMessageWithResponse(
+    void* shell,
+    const uint8_t* channel,
+    uint64_t channel_size,
+    const uint8_t* message,
+    uint64_t message_size,
+    FlutterRustPlatformMessageResponseCallback callback,
+    void* user_data) {
+  if (!shell) {
+    return 0;
+  }
+  return static_cast<flutter::RustShell*>(shell)
+                 ->SendPlatformMessageWithResponse(channel, channel_size,
+                                                   message, message_size,
+                                                   callback, user_data)
+             ? 1
+             : 0;
+}
+
+extern "C" void FlutterRustShellCompletePlatformMessageResponse(
+    FlutterRustPlatformMessageResponseHandle* response_handle,
+    const uint8_t* response,
+    uint64_t response_size) {
+  std::unique_ptr<FlutterRustPlatformMessageResponseHandle> owned(
+      response_handle);
+  if (!owned || !owned->response || (!response && response_size != 0)) {
+    return;
+  }
+  if (!response) {
+    owned->response->CompleteEmpty();
+    return;
+  }
+  owned->response->Complete(std::make_unique<fml::MallocMapping>(
+      fml::MallocMapping::Copy(response, response_size)));
 }
 
 extern "C" void FlutterRustShellOnVsync(void* shell,
