@@ -22,6 +22,7 @@ mod linux {
         time::{Duration, Instant},
     };
 
+    use flutter_plugin_sdk::{MainThreadDispatcher, MainThreadTask, PluginRegistrar};
     use flutter_shell_core::{
         FLUTTER_RUST_KEY_CHARACTER_CAPACITY, FlutterRustKeyEvent, FlutterRustKeyEventType,
         FlutterRustLifecycleState, FlutterRustPointerDeviceKind, FlutterRustPointerEvent,
@@ -76,10 +77,10 @@ mod linux {
     };
 
     #[cfg_attr(test, allow(dead_code))]
-    #[derive(Debug, Clone, Copy)]
     enum HostEvent {
         TaskScheduled,
         VsyncRequested,
+        MainThreadTask(MainThreadTask),
         ViewOperationCompleted {
             view_id: FlutterRustViewId,
             operation: ViewOperation,
@@ -102,6 +103,8 @@ mod linux {
         proxy: EventLoopProxy,
     }
 
+    const MAX_HOST_EVENTS_PER_TURN: usize = 64;
+
     impl HostEventSender {
         fn new(proxy: EventLoopProxy) -> Self {
             Self {
@@ -120,12 +123,19 @@ mod linux {
         }
 
         fn drain(&self) -> Vec<HostEvent> {
-            self.queue
-                .lock()
-                .expect("Flutter host event queue poisoned")
-                .drain(..)
-                .collect()
+            let (events, has_more) = drain_host_event_batch(&self.queue);
+            if has_more {
+                self.proxy.wake_up();
+            }
+            events
         }
+    }
+
+    fn drain_host_event_batch(queue: &Mutex<VecDeque<HostEvent>>) -> (Vec<HostEvent>, bool) {
+        let mut queue = queue.lock().expect("Flutter host event queue poisoned");
+        let count = queue.len().min(MAX_HOST_EVENTS_PER_TURN);
+        let events = queue.drain(..count).collect();
+        (events, !queue.is_empty())
     }
 
     #[cfg_attr(test, allow(dead_code))]
@@ -2856,6 +2866,16 @@ mod linux {
         init_logging();
         let event_loop = EventLoop::new()?;
         let event_proxy = HostEventSender::new(event_loop.create_proxy());
+        let dispatcher_events = event_proxy.clone();
+        let main_thread_dispatcher = MainThreadDispatcher::for_shell(
+            move |task| {
+                dispatcher_events
+                    .send_event(HostEvent::MainThreadTask(task))
+                    .is_ok()
+            },
+            std::thread::current().id(),
+        );
+        let plugin_registrar = PluginRegistrar::for_shell(main_thread_dispatcher.clone());
         let task_runner_host = Box::new(TaskRunnerHost::with_wake_proxy(Some(event_proxy.clone())));
         task_runner_host.install_cpp_task_runner();
         let vsync_host = Box::new(VsyncHost::new(event_proxy.clone()));
@@ -2882,6 +2902,8 @@ mod linux {
             text_input_inbox,
             text_input_session: TextInputSession::default(),
             lifecycle_state: LifecycleState::new(),
+            main_thread_dispatcher,
+            _plugin_registrar: plugin_registrar,
         };
         event_loop.run_app(application)
     }
@@ -2897,6 +2919,8 @@ mod linux {
         text_input_inbox: Box<TextInputInbox>,
         text_input_session: TextInputSession,
         lifecycle_state: LifecycleState,
+        main_thread_dispatcher: MainThreadDispatcher,
+        _plugin_registrar: PluginRegistrar,
     }
 
     #[cfg_attr(test, allow(dead_code))]
@@ -2955,6 +2979,7 @@ mod linux {
 
     impl Drop for ShellApplication {
         fn drop(&mut self) {
+            self.main_thread_dispatcher.shutdown_for_shell();
             let mut windows = self.windows.borrow_mut();
             #[cfg(not(test))]
             if let Some(shell) = windows.shell.take() {
@@ -3451,6 +3476,7 @@ mod linux {
                             }
                         }
                     }
+                    HostEvent::MainThreadTask(task) => task(),
                     HostEvent::ViewOperationCompleted {
                         view_id,
                         operation,
@@ -4363,6 +4389,31 @@ mod linux {
             assert_eq!(ShellConfig::default().title, "Flutter Rust Shell");
             assert_eq!(TEXT_INPUT_CHANNEL, b"flutter/textinput");
             assert_eq!(KEY_EVENT_CHANNEL, b"flutter/keyevent");
+        }
+
+        #[test]
+        fn main_thread_callbacks_are_bounded_per_event_loop_turn() {
+            let queue = Mutex::new(VecDeque::new());
+            for _ in 0..(MAX_HOST_EVENTS_PER_TURN + 1) {
+                queue
+                    .lock()
+                    .unwrap()
+                    .push_back(HostEvent::MainThreadTask(Box::new(|| {})));
+            }
+
+            let (first, has_more) = drain_host_event_batch(&queue);
+            assert_eq!(first.len(), MAX_HOST_EVENTS_PER_TURN);
+            assert!(has_more);
+            for event in first {
+                let HostEvent::MainThreadTask(task) = event else {
+                    panic!("unexpected host event");
+                };
+                task();
+            }
+
+            let (second, has_more) = drain_host_event_batch(&queue);
+            assert_eq!(second.len(), 1);
+            assert!(!has_more);
         }
 
         #[test]

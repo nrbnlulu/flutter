@@ -15,7 +15,8 @@ validated. The current milestone is single-engine multi-view: one Flutter
 engine and Dart isolate per application, with one native winit window and GPU
 presentation surface per Flutter view. Regular, dialog, tooltip, popup, and
 satellite windows now work through the typed Rust backend; main-thread dispatch
-and deterministic startup/shutdown coverage follow that milestone.
+is now wired through the plugin SDK and winit host queue. End-to-end background
+isolate coverage and deterministic startup/shutdown ownership tests remain.
 
 ## Status
 
@@ -37,6 +38,7 @@ and deterministic startup/shutdown coverage follow that milestone.
 | Text input and IME | Complete for phase 1 plumbing | The Rust host handles the standard `flutter/textinput` protocol with typed commands and validated UTF-16 editing state, controls winit IME activation/cursor geometry, translates preedit/commit events, and sends `TextInputClient.updateEditingState` back to Flutter. Ordinary typing, Backspace, and Ctrl+A were verified interactively; a legacy `flutter/keyevent` terminator keeps Flutter's modern key-data queue moving. |
 | Vsync | Complete for the Linux Wayland host | Flutter's waiter requests a winit redraw through the private ABI. Wayland `RedrawRequested` pulses are throttled by compositor frame callbacks registered immediately before actual wgpu presentation; C++ timestamps each pulse in the FML clock domain and uses the active monitor's nominal interval as its target. Non-Wayland backends retain `VsyncWaiterFallback`. |
 | Multi-window | All five controller kinds implemented | View `0` remains the implicit engine view. Positive-ID winit windows share one engine, root isolate, plugin registry, task runner, and wgpu device while owning independent surfaces, metrics, input, and presentation state. Flutter's experimental window controllers select the Rust owner automatically in the Rust runner. Dialogs and satellites use native transient relationships. On Wayland, tooltip and popup views use real compositor-positioned `xdg_popup` roles; popup grabs are serial-bound and compositor dismissal enters the normal asynchronous Flutter view-removal path. Satellites support creation, shrink-wrap, reparenting, parent-driven teardown, and parent maximize/fullscreen visibility. Standard Wayland does not permit clients to choose absolute toplevel positions, so the initial satellite positioner is honored on X11 but compositor-selected on Wayland. |
+| Main-thread dispatch | SDK and winit host complete | `flutter-plugin-sdk` exposes a cloneable worker-safe dispatcher through `PluginRegistrar`. Work is always queued rather than invoked inline, executes through winit's owning thread, is limited to 64 callbacks per event-loop turn, and is rejected after shell shutdown. Unit coverage verifies worker posting, thread identity, nested non-reentrant dispatch, starvation bounds, and shutdown. |
 
 ## Implementation log
 
@@ -404,6 +406,23 @@ and deterministic startup/shutdown coverage follow that milestone.
   coalescing, and the asynchronous transition from a requested removal to a
   host-confirmed destroyed window.
 
+### Phase 1 — main-thread dispatch
+
+- Added `MainThreadDispatcher` to the semantically versioned plugin SDK and
+  exposed it through `PluginRegistrar`. Clones are `Send`/`Sync`, retain no
+  private engine objects, and accept ordinary `FnOnce + Send + 'static` work
+  from Rust workers or background-isolate FFI entry points.
+- Routed dispatcher work through a typed winit host event. Dispatch is always
+  asynchronous, even from the main thread, so plugin callbacks cannot
+  unexpectedly re-enter Dart or mutably borrowed platform state in the middle
+  of a synchronous FFI call.
+- Bounded host-event draining to 64 callbacks per event-loop turn and re-wake
+  winit when work remains. This preserves FIFO order while allowing window
+  input, Flutter tasks, and lifecycle events to make progress during a worker
+  callback flood.
+- Retained the dispatcher and registrar for the shell lifetime and disable all
+  dispatcher clones before native window and engine teardown begins.
+
 ## Validation
 
 - `git diff --check` passes.
@@ -497,11 +516,23 @@ and deterministic startup/shutdown coverage follow that milestone.
   The sample's bundled font rendered Japanese as missing-glyph boxes, so the
   Fcitx candidate UI and controlled edit transitions were used to verify the
   values independently of glyph rendering.
+- Ran `cargo +1.93.1 test --workspace --locked`: all 28 crate and documentation
+  tests pass. New tests post from a real worker thread, assert execution on the
+  recorded main thread, prove nested dispatch is deferred to a later queue
+  turn, reject dispatch after shutdown, and cap a 65-callback flood at 64
+  callbacks in its first event-loop turn.
+- Rebuilt `flutter_rust_shell_runner` and `libflutter_rust_engine.so` through
+  the host-debug GN build after wiring the SDK dependency into the real winit
+  host; the final native link passes. A live post-build launch mapped the
+  Rust-shell window normally, and immediate process teardown completed without
+  a dispatcher or registrar diagnostic.
 
 ## Next implementation steps (phase 1)
 
-1. Add main-thread dispatch for background isolate and Rust-worker callbacks,
-   and test synchronous FFI reentrancy and main-thread starvation behavior.
+1. Add an end-to-end background-Dart-isolate/FRB dispatch smoke test when the
+   application plugin-registration entry point is wired, including a
+   synchronous FFI reentrancy case. The SDK/host worker path and starvation
+   bounds are covered now.
 2. Add deterministic startup and shutdown ownership tests for the merged
    runner.
 

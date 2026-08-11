@@ -11,6 +11,7 @@ crate-type = ["rlib", "staticlib"]
 path = "src/lib.rs"
 
 [dependencies]
+flutter-plugin-sdk = { path = "../flutter-plugin-sdk", version = "0.1.0" }
 flutter-shell-core = { path = "../flutter-shell-core", version = "0.1.0" }
 flutter-shell-wgpu = { path = "../flutter-shell-wgpu", version = "0.1.0" }
 log = "=0.4.33"
