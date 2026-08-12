@@ -15,7 +15,6 @@ import subprocess
 import tempfile
 import time
 
-
 DIAGNOSTIC = re.compile(
     r"VUID-|validation error|failed waiting on fences|semaphore.*error|"
     r"invalid (?:Vk)?image|device lost",
@@ -93,6 +92,7 @@ def main() -> None:
           env=environment,
       )
       try:
+
         def initialized():
           nonlocal address
           for client in clients():
@@ -120,7 +120,8 @@ def main() -> None:
         if first_capture.read_bytes() == second_capture.read_bytes():
           raise RuntimeError("presentations advanced but captured pixels did not change")
 
-        subprocess.run(["hyprctl", "dispatch", "closewindow", f"address:{address}"], check=True,
+        subprocess.run(["hyprctl", "dispatch", "closewindow", f"address:{address}"],
+                       check=True,
                        stdout=subprocess.DEVNULL)
         process.wait(timeout=5)
         if process.returncode != 0:

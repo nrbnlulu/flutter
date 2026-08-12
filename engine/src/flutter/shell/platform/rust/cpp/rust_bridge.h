@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef FLUTTER_SHELL_PLATFORM_RUST_RUST_BRIDGE_H_
-#define FLUTTER_SHELL_PLATFORM_RUST_RUST_BRIDGE_H_
+#ifndef FLUTTER_SHELL_PLATFORM_RUST_CPP_RUST_BRIDGE_H_
+#define FLUTTER_SHELL_PLATFORM_RUST_CPP_RUST_BRIDGE_H_
 
 #include <stdint.h>
 
@@ -599,4 +599,4 @@ FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellDestroyShell(void* shell);
 }
 #endif
 
-#endif  // FLUTTER_SHELL_PLATFORM_RUST_RUST_BRIDGE_H_
+#endif  // FLUTTER_SHELL_PLATFORM_RUST_CPP_RUST_BRIDGE_H_

@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef FLUTTER_SHELL_PLATFORM_RUST_RUST_TASK_RUNNER_H_
-#define FLUTTER_SHELL_PLATFORM_RUST_RUST_TASK_RUNNER_H_
+#ifndef FLUTTER_SHELL_PLATFORM_RUST_CPP_RUST_TASK_RUNNER_H_
+#define FLUTTER_SHELL_PLATFORM_RUST_CPP_RUST_TASK_RUNNER_H_
 
 #include <functional>
 #include <mutex>
@@ -81,4 +81,4 @@ class RustTaskRunner final : public fml::TaskRunner {
 
 }  // namespace flutter
 
-#endif  // FLUTTER_SHELL_PLATFORM_RUST_RUST_TASK_RUNNER_H_
+#endif  // FLUTTER_SHELL_PLATFORM_RUST_CPP_RUST_TASK_RUNNER_H_
