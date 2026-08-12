@@ -84,6 +84,31 @@ pub trait WgpuTextureFrameBackend: Send + Sync {
     fn present(&self) -> Result<()>;
 }
 
+/// One producer callback that writes directly into shell-owned pixel memory.
+#[doc(hidden)]
+pub type PixelWriteTask = Box<dyn FnOnce(&mut [u8], usize) + Send + 'static>;
+
+/// Private runtime implementation behind a public [`PixelBufferTexture`].
+#[doc(hidden)]
+#[async_trait::async_trait]
+pub trait PixelBufferTextureBackendHandle: Send + Sync {
+    /// Flutter texture-registry identifier.
+    fn texture_id(&self) -> i64;
+    /// Attempts to reserve one shell-owned pixel buffer without blocking.
+    fn try_next_frame(&self) -> Result<Arc<dyn PixelBufferTextureFrameBackend>>;
+    /// Asynchronously waits until one shell-owned pixel buffer is available.
+    async fn next_frame(&self) -> Result<Arc<dyn PixelBufferTextureFrameBackend>>;
+}
+
+/// Private runtime implementation behind one reserved pixel-buffer frame.
+#[doc(hidden)]
+pub trait PixelBufferTextureFrameBackend: Send + Sync {
+    /// Lets the producer write directly into shell-owned memory.
+    fn write_pixels(&self, task: PixelWriteTask) -> Result<()>;
+    /// Publishes the written slot and marks the Flutter texture dirty.
+    fn present(&self) -> Result<()>;
+}
+
 /// Private runtime factory installed into [`PluginRegistrar`].
 #[doc(hidden)]
 pub trait WgpuTextureBackend: Send + Sync {
@@ -92,6 +117,11 @@ pub trait WgpuTextureBackend: Send + Sync {
         &self,
         descriptor: TextureDescriptor,
     ) -> Result<Arc<dyn WgpuTextureBackendHandle>>;
+    /// Creates one CPU-produced texture backed by shell-owned upload buffers.
+    fn create_pixel_buffer_texture(
+        &self,
+        descriptor: TextureDescriptor,
+    ) -> Result<Arc<dyn PixelBufferTextureBackendHandle>>;
 }
 
 /// GPU texture creation capability exposed by the plugin registrar.
@@ -112,10 +142,87 @@ impl GpuTextures {
         })
     }
 
+    /// Creates a CPU-produced texture. Producers write directly into reusable
+    /// shell-owned buffers, avoiding a plugin-to-shell pixel copy.
+    pub fn create_pixel_buffer_texture(
+        &self,
+        descriptor: TextureDescriptor,
+    ) -> Result<PixelBufferTexture> {
+        if !descriptor.is_valid() {
+            return Err(PluginError::InvalidDescriptor);
+        }
+        Ok(PixelBufferTexture {
+            backend: self.backend.create_pixel_buffer_texture(descriptor)?,
+        })
+    }
+
     /// Constructs the capability from the private shell runtime.
     #[doc(hidden)]
     pub fn for_shell(backend: Arc<dyn WgpuTextureBackend>) -> Self {
         Self { backend }
+    }
+}
+
+/// Safe CPU producer handle backed by shell-owned pixel buffers.
+pub struct PixelBufferTexture {
+    backend: Arc<dyn PixelBufferTextureBackendHandle>,
+}
+
+impl PixelBufferTexture {
+    /// Identifier consumed by Flutter's Dart `Texture` widget.
+    pub fn texture_id(&self) -> i64 {
+        self.backend.texture_id()
+    }
+
+    /// Attempts to reserve a writable pixel buffer without blocking.
+    pub fn try_next_frame(&self) -> Result<PixelBufferTextureFrame> {
+        Ok(PixelBufferTextureFrame::new(self.backend.try_next_frame()?))
+    }
+
+    /// Waits asynchronously for a writable pixel buffer.
+    pub async fn next_frame(&self) -> Result<PixelBufferTextureFrame> {
+        self.backend
+            .next_frame()
+            .await
+            .map(PixelBufferTextureFrame::new)
+    }
+}
+
+/// Exclusive reservation of one shell-owned CPU pixel buffer.
+pub struct PixelBufferTextureFrame {
+    backend: Arc<dyn PixelBufferTextureFrameBackend>,
+    written: bool,
+}
+
+impl PixelBufferTextureFrame {
+    fn new(backend: Arc<dyn PixelBufferTextureFrameBackend>) -> Self {
+        Self {
+            backend,
+            written: false,
+        }
+    }
+
+    /// Invokes `writer` with tightly packed RGBA8 storage and its row stride.
+    /// The slice belongs to the shell and is reused after Flutter releases the
+    /// frame; plugin code must not retain references into it.
+    pub fn write_pixels(
+        &mut self,
+        writer: impl FnOnce(&mut [u8], usize) + Send + 'static,
+    ) -> Result<()> {
+        if self.written {
+            return Err(PluginError::Busy);
+        }
+        self.backend.write_pixels(Box::new(writer))?;
+        self.written = true;
+        Ok(())
+    }
+
+    /// Publishes this buffer and schedules Flutter to repaint its texture.
+    pub fn present(self) -> Result<()> {
+        if !self.written {
+            return Err(PluginError::NoFrame);
+        }
+        self.backend.present()
     }
 }
 
@@ -356,6 +463,15 @@ mod tests {
         operations: Arc<Mutex<Vec<&'static str>>>,
     }
 
+    struct FakePixelTextureBackend {
+        operations: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    struct FakePixelFrameBackend {
+        operations: Arc<Mutex<Vec<&'static str>>>,
+        pixels: Mutex<Vec<u8>>,
+    }
+
     impl WgpuTextureBackend for FakeGpuBackend {
         fn create_texture(
             &self,
@@ -365,6 +481,48 @@ mod tests {
             Ok(Arc::new(FakeTextureBackend {
                 operations: Arc::clone(&self.operations),
             }))
+        }
+
+        fn create_pixel_buffer_texture(
+            &self,
+            _descriptor: TextureDescriptor,
+        ) -> Result<Arc<dyn PixelBufferTextureBackendHandle>> {
+            self.operations.lock().push("create_pixels");
+            Ok(Arc::new(FakePixelTextureBackend {
+                operations: Arc::clone(&self.operations),
+            }))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PixelBufferTextureBackendHandle for FakePixelTextureBackend {
+        fn texture_id(&self) -> i64 {
+            23
+        }
+
+        fn try_next_frame(&self) -> Result<Arc<dyn PixelBufferTextureFrameBackend>> {
+            self.operations.lock().push("reserve_pixels");
+            Ok(Arc::new(FakePixelFrameBackend {
+                operations: Arc::clone(&self.operations),
+                pixels: Mutex::new(vec![0; 32]),
+            }))
+        }
+
+        async fn next_frame(&self) -> Result<Arc<dyn PixelBufferTextureFrameBackend>> {
+            self.try_next_frame()
+        }
+    }
+
+    impl PixelBufferTextureFrameBackend for FakePixelFrameBackend {
+        fn write_pixels(&self, task: PixelWriteTask) -> Result<()> {
+            self.operations.lock().push("write_pixels");
+            task(&mut self.pixels.lock(), 16);
+            Ok(())
+        }
+
+        fn present(&self) -> Result<()> {
+            self.operations.lock().push("present_pixels");
+            Ok(())
         }
     }
 
@@ -464,6 +622,46 @@ mod tests {
         assert_eq!(
             *operations.lock(),
             vec!["create", "reserve", "reserve", "render", "present"]
+        );
+    }
+
+    #[test]
+    fn pixel_buffer_frames_write_directly_into_shell_storage() {
+        let operations = Arc::new(Mutex::new(Vec::new()));
+        let gpu = GpuTextures::for_shell(Arc::new(FakeGpuBackend {
+            operations: Arc::clone(&operations),
+        }));
+        let texture = gpu
+            .create_pixel_buffer_texture(TextureDescriptor {
+                width: 4,
+                height: 2,
+                format: TextureFormat::Rgba8Unorm,
+            })
+            .unwrap();
+        assert_eq!(texture.texture_id(), 23);
+        assert_eq!(
+            texture.try_next_frame().unwrap().present(),
+            Err(PluginError::NoFrame)
+        );
+        let mut frame = texture.try_next_frame().unwrap();
+        frame
+            .write_pixels(|pixels, row_bytes| {
+                assert_eq!(row_bytes, 16);
+                assert_eq!(pixels.len(), 32);
+                pixels.fill(0x7f);
+            })
+            .unwrap();
+        assert_eq!(frame.write_pixels(|_, _| {}), Err(PluginError::Busy));
+        frame.present().unwrap();
+        assert_eq!(
+            *operations.lock(),
+            vec![
+                "create_pixels",
+                "reserve_pixels",
+                "reserve_pixels",
+                "write_pixels",
+                "present_pixels"
+            ]
         );
     }
 

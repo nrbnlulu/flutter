@@ -56,7 +56,7 @@ entry point.
 | Rust external texture | Engine seam complete | `RustExternalTexture` uses Flutter's existing texture registry and dirty-frame scheduling path. It retains the last good image, honors freeze, retries failed acquisition, imports borrowed wgpu Vulkan image/view handles without taking ownership, and brackets Impeller sampling with producer/consumer semaphores. Context loss, unregister, and repeated teardown are covered by focused tests. |
 | Engine-owned wgpu texture | SDK runtime path complete | `WgpuTextureRing` owns three RGBA8 textures, views, and reusable semaphore pairs on the application's shared device. A bounded Tokio channel carries available slot IDs: `try_next_frame` applies immediate backpressure, `next_frame().await` sleeps until Flutter releases a slot, and an unpresented reservation returns its slot on drop. Ready frames remain queue-serialized through Flutter's acquire callback. The opt-in animated proof now runs through normal `FlutterRustPlugin` registration and public SDK operations. |
 | `WgpuTexture` plugin API | Public contract and Linux runtime adapter complete | `flutter-plugin-sdk` exposes validated texture descriptors, `GpuTextures::create_texture`, stable Flutter texture IDs, nonblocking `try_next_frame`, asynchronous `next_frame().await`, single-record frame reservations, and consuming `present(self)`. The hidden backend uses `async-trait`; no manual `Future` or `Poll` API leaks into the SDK. The winit factory registers the callback-owning ring, routes dirty notifications and handle-drop unregister through the main thread, and retains rings until C++ shell destruction drains the raster runner. The recording closure receives a device, encoder, and view—but no queue—so plugins cannot violate shared-queue external synchronization. |
-| CPU pixel-buffer texture | Not implemented | Track the second standard texture path explicitly: plugins must be able to publish CPU-backed pixel buffers for simple and portable producers. It should share texture registration, frame notification, freeze, unregister, and teardown semantics with `RustExternalTexture`, while resolving pixels into an engine image without exposing Impeller types through the plugin SDK. |
+| CPU pixel-buffer texture | Linux runtime path complete | `PixelBufferTexture` reserves one of three reusable shell-owned RGBA8 buffers through the same bounded channel/backpressure model. `write_pixels` lends the plugin that allocation and its row stride directly, eliminating a plugin-to-shell CPU copy; acquire performs the unavoidable wgpu CPU-to-GPU upload into the existing Vulkan external-texture ring. Registration, notification, freeze, release, unregister, and teardown reuse the proven hardware-texture seam. The permanent Dart fixture passes under Vulkan validation with changing pixels. |
 
 ## Implementation log
 
@@ -502,6 +502,13 @@ entry point.
   destruction has drained the raster runner. The animated demo is now a
   source-linked `FlutterRustPlugin` that creates, records, and presents frames
   entirely through the public SDK.
+- Added `PixelBufferTexture` as the CPU producer path. Each ring slot owns a
+  reusable, fallibly allocated RGBA8 buffer only when the pixel-buffer
+  constructor is selected. `write_pixels` invokes the plugin directly against
+  that storage with a validated tight row stride; `present` queues it and the
+  raster acquire callback performs the single necessary CPU-to-GPU upload on
+  the shared wgpu queue. Dropped reservations recycle normally, and no
+  plugin-owned `Vec` is copied into a second shell allocation.
 - Kept `WgpuTexture` unconditional in the public plugin SDK. Instead of hiding
   core API behind a Cargo feature, removed `flutter-shell-core`'s SDK dependency
   and let the lockstep ABI core own its expected numeric SDK version. The
@@ -529,6 +536,10 @@ entry point.
   two compositor captures after ten additional frames, scans synchronization
   diagnostics, and closes cleanly. The recorded run passed with 32 presented
   frames and visibly changing texture pixels.
+- Added and ran `task test-rust-shell-pixel-buffer-texture`, using the same
+  real Dart `Texture` widget, compositor capture comparison, Vulkan diagnostic
+  scan, and clean-shutdown checks. The CPU direct-write path passed with 30
+  presented frames.
 - Ran `cargo +1.93.1 test --workspace --locked`: all crate and documentation
   tests pass, including typed text-input decoding, invalid UTF-16 range
   rejection, Unicode selection replacement, hidden-cursor composition, and
@@ -643,12 +654,9 @@ entry point.
 
 ## Next implementation steps (phase 2)
 
-1. Implement and expose `PixelBufferTexture`, including pixel format, row-byte,
-   buffer-lifetime, resize, freeze, unregister, and teardown coverage. Verify it
-   through the same Flutter `Texture` widget and frame-notification path.
-2. Run validation-layer stress across texture resize, unregister, context loss,
+1. Run validation-layer stress across texture resize, unregister, context loss,
    and process teardown.
-3. Add an end-to-end background-Dart-isolate/FRB dispatch smoke test when the
+2. Add an end-to-end background-Dart-isolate/FRB dispatch smoke test when the
    application plugin-registration entry point is wired, including a
    synchronous FFI reentrancy case. The SDK/host worker path and starvation
    bounds are covered now.

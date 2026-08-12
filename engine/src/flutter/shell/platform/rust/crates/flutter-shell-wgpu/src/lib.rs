@@ -7,6 +7,7 @@
 mod linux {
     use ash::vk::Handle as _;
     use flutter_plugin_sdk::{
+        PixelBufferTextureBackendHandle, PixelBufferTextureFrameBackend, PixelWriteTask,
         PluginError, Result as PluginResult, WgpuRenderTask, WgpuTextureBackendHandle,
         WgpuTextureFrameBackend,
     };
@@ -92,6 +93,8 @@ mod linux {
         state: TextureSlotState,
         wait_for_flutter: bool,
         render_task: Option<WgpuRenderTask>,
+        pixels: Vec<u8>,
+        pixels_written: bool,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +110,12 @@ mod linux {
     const FRAME_RETURNED: u8 = 2;
 
     struct ReservedWgpuTextureFrame {
+        ring: Arc<WgpuTextureRingInner>,
+        slot: usize,
+        state: AtomicU8,
+    }
+
+    struct ReservedPixelBufferTextureFrame {
         ring: Arc<WgpuTextureRingInner>,
         slot: usize,
         state: AtomicU8,
@@ -235,7 +244,16 @@ mod linux {
             width: u32,
             height: u32,
         ) -> Result<Box<WgpuTextureRing>, String> {
-            WgpuTextureRing::new(Arc::clone(self), width, height)
+            WgpuTextureRing::new(Arc::clone(self), width, height, false)
+        }
+
+        /// Creates a texture ring with reusable shell-owned CPU pixel buffers.
+        pub fn create_pixel_buffer_texture_ring(
+            self: &Arc<Self>,
+            width: u32,
+            height: u32,
+        ) -> Result<Box<WgpuTextureRing>, String> {
+            WgpuTextureRing::new(Arc::clone(self), width, height, true)
         }
     }
 
@@ -244,11 +262,16 @@ mod linux {
             context: std::sync::Arc<GpuContext>,
             width: u32,
             height: u32,
+            allocate_pixels: bool,
         ) -> Result<Box<Self>, String> {
             if width == 0 || height == 0 {
                 return Err("external texture dimensions must be nonzero".to_owned());
             }
             let mut slots = Vec::with_capacity(3);
+            let pixel_bytes = (width as usize)
+                .checked_mul(height as usize)
+                .and_then(|size| size.checked_mul(4))
+                .ok_or_else(|| "pixel-buffer dimensions overflow address space".to_owned())?;
             for index in 0..3 {
                 let texture = context.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("Flutter Rust external texture slot"),
@@ -262,7 +285,8 @@ mod linux {
                     dimension: wgpu::TextureDimension::D2,
                     format: wgpu::TextureFormat::Rgba8Unorm,
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_DST,
                     view_formats: &[],
                 });
                 let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -295,6 +319,13 @@ mod linux {
                         return Err(format!("failed to create render semaphore: {error}"));
                     }
                 };
+                let mut pixels = Vec::new();
+                if allocate_pixels {
+                    pixels.try_reserve_exact(pixel_bytes).map_err(|error| {
+                        format!("failed to allocate pixel-buffer slot: {error}")
+                    })?;
+                    pixels.resize(pixel_bytes, 0);
+                }
                 slots.push(TextureSlot {
                     texture,
                     view,
@@ -304,6 +335,8 @@ mod linux {
                     state: TextureSlotState::Available,
                     wait_for_flutter: false,
                     render_task: None,
+                    pixels,
+                    pixels_written: false,
                 });
                 debug_assert_eq!(slots.len(), index + 1);
             }
@@ -432,10 +465,30 @@ mod linux {
             let Some(slot) = state.slots.get_mut(index) else {
                 return Err(PluginError::Shutdown);
             };
-            if slot.state != TextureSlotState::Reserved || slot.render_task.is_some() {
+            if slot.state != TextureSlotState::Reserved
+                || slot.render_task.is_some()
+                || slot.pixels_written
+            {
                 return Err(PluginError::Busy);
             }
             slot.render_task = Some(task);
+            Ok(())
+        }
+
+        fn write_pixels(&self, index: usize, task: PixelWriteTask) -> PluginResult<()> {
+            let mut state = self.state.lock();
+            let Some(slot) = state.slots.get_mut(index) else {
+                return Err(PluginError::Shutdown);
+            };
+            if slot.state != TextureSlotState::Reserved
+                || slot.render_task.is_some()
+                || slot.pixels_written
+                || slot.pixels.is_empty()
+            {
+                return Err(PluginError::Busy);
+            }
+            task(&mut slot.pixels, self.width as usize * 4);
+            slot.pixels_written = true;
             Ok(())
         }
 
@@ -448,7 +501,7 @@ mod linux {
                 if slot.state != TextureSlotState::Reserved {
                     return Err(PluginError::Busy);
                 }
-                if slot.render_task.is_none() {
+                if slot.render_task.is_none() && !slot.pixels_written {
                     return Err(PluginError::NoFrame);
                 }
                 slot.state = TextureSlotState::Ready;
@@ -480,6 +533,7 @@ mod linux {
                     return;
                 }
                 slot.render_task = None;
+                slot.pixels_written = false;
                 slot.state = TextureSlotState::Available;
                 true
             };
@@ -498,6 +552,7 @@ mod linux {
                     return;
                 }
                 slot.render_task = None;
+                slot.pixels_written = false;
                 slot.state = TextureSlotState::Available;
                 true
             };
@@ -577,6 +632,76 @@ mod linux {
         }
     }
 
+    #[async_trait::async_trait]
+    impl PixelBufferTextureBackendHandle for WgpuTextureRing {
+        fn texture_id(&self) -> i64 {
+            self.inner.texture_id.load(Ordering::Acquire)
+        }
+
+        fn try_next_frame(&self) -> PluginResult<Arc<dyn PixelBufferTextureFrameBackend>> {
+            let slot = self.inner.try_reserve_slot()?;
+            Ok(Arc::new(ReservedPixelBufferTextureFrame {
+                ring: Arc::clone(&self.inner),
+                slot,
+                state: AtomicU8::new(FRAME_RESERVED),
+            }))
+        }
+
+        async fn next_frame(&self) -> PluginResult<Arc<dyn PixelBufferTextureFrameBackend>> {
+            let slot = self.inner.reserve_slot().await?;
+            Ok(Arc::new(ReservedPixelBufferTextureFrame {
+                ring: Arc::clone(&self.inner),
+                slot,
+                state: AtomicU8::new(FRAME_RESERVED),
+            }))
+        }
+    }
+
+    impl PixelBufferTextureFrameBackend for ReservedPixelBufferTextureFrame {
+        fn write_pixels(&self, task: PixelWriteTask) -> PluginResult<()> {
+            if self.state.load(Ordering::Acquire) != FRAME_RESERVED {
+                return Err(PluginError::Busy);
+            }
+            self.ring.write_pixels(self.slot, task)
+        }
+
+        fn present(&self) -> PluginResult<()> {
+            self.state
+                .compare_exchange(
+                    FRAME_RESERVED,
+                    FRAME_PRESENTED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .map_err(|_| PluginError::Busy)?;
+            match self.ring.publish(self.slot, true) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    self.ring.return_reserved_slot(self.slot);
+                    self.state.store(FRAME_RETURNED, Ordering::Release);
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    impl Drop for ReservedPixelBufferTextureFrame {
+        fn drop(&mut self) {
+            if self
+                .state
+                .compare_exchange(
+                    FRAME_RESERVED,
+                    FRAME_RETURNED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                self.ring.return_reserved_slot(self.slot);
+            }
+        }
+    }
+
     impl Drop for WgpuTextureRingInner {
         fn drop(&mut self) {
             let Some(device) = (unsafe { self.context.device.as_hal::<wgpu::hal::vulkan::Api>() })
@@ -607,6 +732,15 @@ mod linux {
             height: u32,
         ) -> Result<Box<WgpuTextureRing>, String> {
             self.context.create_texture_ring(width, height)
+        }
+
+        /// Creates an external texture ring with reusable CPU pixel buffers.
+        pub fn create_pixel_buffer_texture_ring(
+            &self,
+            width: u32,
+            height: u32,
+        ) -> Result<Box<WgpuTextureRing>, String> {
+            self.context.create_pixel_buffer_texture_ring(width, height)
         }
 
         pub fn new(
@@ -1061,12 +1195,13 @@ mod linux {
         if slot.state != TextureSlotState::Ready {
             return 0;
         }
-        let Some(task) = slot.render_task.take() else {
+        let task = slot.render_task.take();
+        if task.is_none() && !slot.pixels_written {
             slot.state = TextureSlotState::Available;
             drop(state);
             let _ = ring.inner.available_tx.try_send(index);
             return 0;
-        };
+        }
         let mut encoder =
             ring.inner
                 .context
@@ -1074,7 +1209,30 @@ mod linux {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Flutter Rust external texture producer"),
                 });
-        task(&ring.inner.context.device, &mut encoder, &slot.view);
+        if let Some(task) = task {
+            task(&ring.inner.context.device, &mut encoder, &slot.view);
+        } else {
+            ring.inner.context.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &slot.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &slot.pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(ring.inner.width * 4),
+                    rows_per_image: Some(ring.inner.height),
+                },
+                wgpu::Extent3d {
+                    width: ring.inner.width,
+                    height: ring.inner.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            slot.pixels_written = false;
+        }
         encoder.transition_resources(
             std::iter::empty(),
             std::iter::once(wgpu::TextureTransition {

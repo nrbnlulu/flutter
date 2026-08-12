@@ -21,7 +21,8 @@ mod linux {
 
     #[cfg(not(test))]
     use flutter_plugin_sdk::{
-        FlutterRustPlugin, GpuTextures, PluginError, Result as PluginResult, TextureDescriptor,
+        FlutterRustPlugin, GpuTextures, PixelBufferTexture, PixelBufferTextureBackendHandle,
+        PixelBufferTextureFrameBackend, PluginError, Result as PluginResult, TextureDescriptor,
         TextureFormat, WgpuTexture, WgpuTextureBackend, WgpuTextureBackendHandle,
         WgpuTextureFrameBackend,
     };
@@ -2945,9 +2946,25 @@ mod linux {
 
     #[cfg(not(test))]
     struct DemoTexture {
-        texture: WgpuTexture,
+        texture: DemoTextureHandle,
         next_frame: Instant,
         phase: u64,
+    }
+
+    #[cfg(not(test))]
+    enum DemoTextureHandle {
+        Wgpu(WgpuTexture),
+        Pixels(PixelBufferTexture),
+    }
+
+    #[cfg(not(test))]
+    impl DemoTextureHandle {
+        fn texture_id(&self) -> i64 {
+            match self {
+                Self::Wgpu(texture) => texture.texture_id(),
+                Self::Pixels(texture) => texture.texture_id(),
+            }
+        }
     }
 
     #[cfg(not(test))]
@@ -3000,6 +3017,22 @@ mod linux {
     }
 
     #[cfg(not(test))]
+    #[async_trait::async_trait]
+    impl PixelBufferTextureBackendHandle for ShellWgpuTextureHandle {
+        fn texture_id(&self) -> i64 {
+            self.registration.texture_id
+        }
+
+        fn try_next_frame(&self) -> PluginResult<Arc<dyn PixelBufferTextureFrameBackend>> {
+            PixelBufferTextureBackendHandle::try_next_frame(self.registration.ring.as_ref())
+        }
+
+        async fn next_frame(&self) -> PluginResult<Arc<dyn PixelBufferTextureFrameBackend>> {
+            PixelBufferTextureBackendHandle::next_frame(self.registration.ring.as_ref()).await
+        }
+    }
+
+    #[cfg(not(test))]
     impl Drop for ShellWgpuTextureHandle {
         fn drop(&mut self) {
             self.unregister();
@@ -3014,11 +3047,11 @@ mod linux {
         }
 
         fn try_next_frame(&self) -> PluginResult<Arc<dyn WgpuTextureFrameBackend>> {
-            self.registration.ring.try_next_frame()
+            WgpuTextureBackendHandle::try_next_frame(self.registration.ring.as_ref())
         }
 
         async fn next_frame(&self) -> PluginResult<Arc<dyn WgpuTextureFrameBackend>> {
-            self.registration.ring.next_frame().await
+            WgpuTextureBackendHandle::next_frame(self.registration.ring.as_ref()).await
         }
     }
 
@@ -3067,21 +3100,71 @@ mod linux {
                 shell_address: self.shell_address,
             }))
         }
+
+        fn create_pixel_buffer_texture(
+            &self,
+            descriptor: TextureDescriptor,
+        ) -> PluginResult<Arc<dyn PixelBufferTextureBackendHandle>> {
+            if !self.dispatcher.is_main_thread() {
+                return Err(PluginError::Unsupported);
+            }
+            if descriptor.format != TextureFormat::Rgba8Unorm {
+                return Err(PluginError::InvalidDescriptor);
+            }
+            let ring = self
+                .context
+                .create_pixel_buffer_texture_ring(descriptor.width, descriptor.height)
+                .map_err(|_| PluginError::InvalidDescriptor)?;
+            let texture_id =
+                register_cpp_external_texture(self.shell_address as *mut c_void, ring.callbacks());
+            if texture_id <= 0 {
+                return Err(PluginError::Shutdown);
+            }
+            let dispatcher = self.dispatcher.clone();
+            let shell_address = self.shell_address;
+            ring.set_registration(texture_id, move |texture_id| {
+                dispatcher
+                    .dispatch(move || {
+                        mark_cpp_external_texture_frame_available(
+                            shell_address as *mut c_void,
+                            texture_id,
+                        );
+                    })
+                    .map_err(|_| PluginError::Shutdown)
+            });
+            let registration = Arc::new(RegisteredWgpuTexture {
+                ring,
+                texture_id,
+                unregistered: AtomicBool::new(false),
+            });
+            self.retained.lock().push(Arc::clone(&registration));
+            Ok(Arc::new(ShellWgpuTextureHandle {
+                registration,
+                dispatcher: self.dispatcher.clone(),
+                shell_address: self.shell_address,
+            }))
+        }
     }
 
     #[cfg(not(test))]
     struct DemoTexturePlugin {
-        texture: Arc<Mutex<Option<WgpuTexture>>>,
+        texture: Arc<Mutex<Option<DemoTextureHandle>>>,
+        pixel_buffer: bool,
     }
 
     #[cfg(not(test))]
     impl FlutterRustPlugin for DemoTexturePlugin {
         fn register(&self, registrar: &mut PluginRegistrar) -> PluginResult<()> {
-            let texture = registrar.gpu()?.create_texture(TextureDescriptor {
+            let descriptor = TextureDescriptor {
                 width: 256,
                 height: 256,
                 format: TextureFormat::Rgba8Unorm,
-            })?;
+            };
+            let texture = if self.pixel_buffer {
+                DemoTextureHandle::Pixels(registrar.gpu()?.create_pixel_buffer_texture(descriptor)?)
+            } else {
+                DemoTextureHandle::Wgpu(registrar.gpu()?.create_texture(descriptor)?)
+            };
             *self.texture.lock() = Some(texture);
             Ok(())
         }
@@ -3289,6 +3372,10 @@ mod linux {
                         let texture_slot = Arc::new(Mutex::new(None));
                         DemoTexturePlugin {
                             texture: Arc::clone(&texture_slot),
+                            pixel_buffer: std::env::var_os(
+                                "FLUTTER_RUST_PIXEL_BUFFER_TEXTURE_DEMO",
+                            )
+                            .is_some(),
                         }
                         .register(&mut self.plugin_registrar)
                         .expect("failed to register demo texture plugin");
@@ -3780,30 +3867,55 @@ mod linux {
                     (angle + 4.189).sin() * 0.5 + 0.5,
                     1.0,
                 ];
-                if let Ok(mut frame) = demo.texture.try_next_frame() {
-                    frame
-                        .render(move |_, encoder, view| {
-                            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: Some("Flutter Rust plugin demo clear"),
-                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view,
-                                    depth_slice: None,
-                                    resolve_target: None,
-                                    ops: wgpu::Operations {
-                                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                                            r: color[0],
-                                            g: color[1],
-                                            b: color[2],
-                                            a: color[3],
-                                        }),
-                                        store: wgpu::StoreOp::Store,
-                                    },
-                                })],
-                                ..Default::default()
-                            });
-                        })
-                        .expect("failed to record demo frame");
-                    frame.present().expect("failed to present demo frame");
+                match &demo.texture {
+                    DemoTextureHandle::Wgpu(texture) => {
+                        if let Ok(mut frame) = texture.try_next_frame() {
+                            frame
+                                .render(move |_, encoder, view| {
+                                    let _pass =
+                                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                            label: Some("Flutter Rust plugin demo clear"),
+                                            color_attachments: &[Some(
+                                                wgpu::RenderPassColorAttachment {
+                                                    view,
+                                                    depth_slice: None,
+                                                    resolve_target: None,
+                                                    ops: wgpu::Operations {
+                                                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                                                            r: color[0],
+                                                            g: color[1],
+                                                            b: color[2],
+                                                            a: color[3],
+                                                        }),
+                                                        store: wgpu::StoreOp::Store,
+                                                    },
+                                                },
+                                            )],
+                                            ..Default::default()
+                                        });
+                                })
+                                .expect("failed to record demo frame");
+                            frame.present().expect("failed to present demo frame");
+                        }
+                    }
+                    DemoTextureHandle::Pixels(texture) => {
+                        if let Ok(mut frame) = texture.try_next_frame() {
+                            frame
+                                .write_pixels(move |pixels, _row_bytes| {
+                                    let rgba = [
+                                        (color[0] * 255.0) as u8,
+                                        (color[1] * 255.0) as u8,
+                                        (color[2] * 255.0) as u8,
+                                        255,
+                                    ];
+                                    for pixel in pixels.chunks_exact_mut(4) {
+                                        pixel.copy_from_slice(&rgba);
+                                    }
+                                })
+                                .expect("failed to write demo pixels");
+                            frame.present().expect("failed to present demo pixels");
+                        }
+                    }
                 }
                 demo.phase += 1;
                 demo.next_frame = Instant::now() + Duration::from_millis(16);

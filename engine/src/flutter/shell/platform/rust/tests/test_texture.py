@@ -58,6 +58,7 @@ def main() -> None:
   parser.add_argument("--runner", required=True, type=Path)
   parser.add_argument("--assets", required=True, type=Path)
   parser.add_argument("--icu", required=True, type=Path)
+  parser.add_argument("--pixel-buffer", action="store_true")
   args = parser.parse_args()
 
   with tempfile.TemporaryDirectory(prefix="flutter-rust-texture-") as directory:
@@ -76,6 +77,8 @@ def main() -> None:
         "FLUTTER_RUST_PRESENTATION_STATS": str(presentations),
         "RUST_LOG": "wgpu_core=warn,wgpu_hal=warn",
     })
+    if args.pixel_buffer:
+      environment["FLUTTER_RUST_PIXEL_BUFFER_TEXTURE_DEMO"] = "1"
     if shutil.which("vulkaninfo"):
       vulkan = subprocess.run(["vulkaninfo"], capture_output=True, text=True)
       if "VK_LAYER_KHRONOS_validation" in vulkan.stdout + vulkan.stderr:
@@ -125,7 +128,11 @@ def main() -> None:
         diagnostics = log_path.read_text(errors="replace")
         if DIAGNOSTIC.search(diagnostics):
           raise RuntimeError("Vulkan synchronization diagnostics were reported")
-        print(f"Rust-shell wgpu texture fixture passed ({presentation_count(presentations)} presentations).")
+        producer = "pixel-buffer" if args.pixel_buffer else "wgpu"
+        print(
+            f"Rust-shell {producer} texture fixture passed "
+            f"({presentation_count(presentations)} presentations)."
+        )
       except Exception as error:
         log.flush()
         print(log_path.read_text(errors="replace"), end="")
