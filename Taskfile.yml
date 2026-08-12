@@ -9,6 +9,7 @@ vars:
   RUST_SHELL_SAMPLE: /run/media/dev/33da92da-1869-46ee-a0c1-fd5c4c9049e5/@home/dev/1tb_desktop/1tboss/bug
   RUST_WINDOWING_EXAMPLE: '{{.TASKFILE_DIR}}/examples/multiple_windows'
   RESIZE_ITERATIONS: 500
+  LIFECYCLE_ITERATIONS: 20
 
 tasks:
   fmt:
@@ -46,6 +47,77 @@ tasks:
         {{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/flutter_rust_shell_runner \
           {{.RUST_WINDOWING_EXAMPLE}}/build/flutter_assets \
           {{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/icudtl.dat
+
+  test-rust-shell-lifecycle:
+    desc: Repeatedly verify deterministic Rust-shell startup and compositor-driven shutdown.
+    deps: [build-rust-shell]
+    preconditions:
+      - sh: command -v hyprctl >/dev/null
+        msg: Hyprland's hyprctl is required for the native lifecycle test.
+      - sh: command -v jq >/dev/null
+        msg: jq is required to locate the runner window.
+      - sh: test -f {{.RUST_SHELL_SAMPLE}}/build/flutter_assets/kernel_blob.bin
+        msg: Build the sample Flutter bundle first or override RUST_SHELL_SAMPLE.
+    cmds:
+      - |
+        runner={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/flutter_rust_shell_runner
+        assets={{.RUST_SHELL_SAMPLE}}/build/flutter_assets
+        icu={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/icudtl.dat
+        for iteration in $(seq 1 {{.LIFECYCLE_ITERATIONS}}); do
+          lifecycle_log=$(mktemp /tmp/flutter-rust-lifecycle.XXXXXX.log)
+          status_file=$(mktemp /tmp/flutter-rust-lifecycle-status.XXXXXX)
+          unlink "$status_file"
+          /usr/bin/bash -c \
+            '"$1" "$2" "$3" >"$4" 2>&1; code=$?; printf "%s\n" "$code" >"$5"' \
+            lifecycle-wrapper "$runner" "$assets" "$icu" "$lifecycle_log" "$status_file" &
+          runner_pid=""
+          for _ in $(seq 1 20); do
+            runner_pid=$(pgrep -n -f "^$runner $assets $icu$")
+            [ -n "$runner_pid" ] && break
+            sleep 0.05
+          done
+          if [ -z "$runner_pid" ]; then
+            echo "Lifecycle iteration $iteration did not start a runner; log: $lifecycle_log" >&2
+            cat "$lifecycle_log" >&2
+            exit 1
+          fi
+          address=""
+          for _ in $(seq 1 400); do
+            address=$(hyprctl clients -j | jq -r --arg pid "$runner_pid" \
+              '.[] | select((.pid | tostring) == $pid and .title == "Flutter Rust Shell") | .address')
+            [ -n "$address" ] && break
+            kill -0 "$runner_pid" 2>/dev/null || break
+            sleep 0.05
+          done
+          if [ -z "$address" ]; then
+            echo "Lifecycle iteration $iteration did not map a window; log: $lifecycle_log" >&2
+            kill -KILL "$runner_pid" 2>/dev/null || true
+            cat "$lifecycle_log" >&2
+            exit 1
+          fi
+          hyprctl dispatch closewindow "address:$address" >/dev/null
+          for _ in $(seq 1 100); do
+            kill -0 "$runner_pid" 2>/dev/null || break
+            sleep 0.05
+          done
+          if kill -0 "$runner_pid" 2>/dev/null; then
+            echo "Lifecycle iteration $iteration did not stop; log: $lifecycle_log" >&2
+            kill -KILL "$runner_pid" 2>/dev/null || true
+            exit 1
+          fi
+          for _ in $(seq 1 100); do
+            [ -s "$status_file" ] && break
+            sleep 0.01
+          done
+          if [ ! -s "$status_file" ] || [ "$(cat "$status_file")" -ne 0 ]; then
+            echo "Lifecycle iteration $iteration exited unsuccessfully; log: $lifecycle_log" >&2
+            cat "$lifecycle_log" >&2
+            exit 1
+          fi
+          unlink "$lifecycle_log"
+          unlink "$status_file"
+        done
+        echo "Rust-shell lifecycle passed ({{.LIFECYCLE_ITERATIONS}} startup/shutdown iterations)."
 
   stress-rust-shell:
     desc: Stress Vulkan synchronization and verify input/resize frame liveness under compositor-driven timing.

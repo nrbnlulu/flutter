@@ -6,6 +6,7 @@
 #define FLUTTER_SHELL_PLATFORM_RUST_RUST_SHELL_H_
 
 #include <memory>
+#include <unordered_set>
 
 #include "flutter/common/settings.h"
 #include "flutter/fml/task_runner.h"
@@ -83,6 +84,11 @@ class RustShell final {
   // Delivers one compositor-aligned pulse to the platform view's waiter.
   void OnVsync(uint64_t frame_interval_nanos);
 
+  int64_t RegisterExternalTexture(
+      FlutterRustExternalTextureCallbacks callbacks);
+  void MarkExternalTextureFrameAvailable(int64_t texture_id);
+  void UnregisterExternalTexture(int64_t texture_id);
+
   FlutterRustViewId CreateRegularWindow(
       const FlutterRustRegularWindowRequest* request);
   FlutterRustViewId CreateDialogWindow(
@@ -124,6 +130,8 @@ class RustShell final {
   FlutterRustWindowingCallbacks windowing_callbacks_;
   Settings settings_;
   bool running_ = false;
+  int64_t next_texture_id_ = 1;
+  std::unordered_set<int64_t> external_texture_ids_;
 };
 
 }  // namespace flutter

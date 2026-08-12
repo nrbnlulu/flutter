@@ -8,11 +8,12 @@
 // attribute is explicitly marked unsafe in Rust edition 2024.
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use flutter_plugin_sdk::PLUGIN_SDK_API_VERSION;
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 7;
+pub const SHELL_ABI_VERSION: u32 = 8;
+/// Plugin SDK API version expected by this lockstep private runtime.
+pub const PLUGIN_SDK_API_VERSION: u32 = 1;
 
 /// Engine-scoped identity of one Flutter view/native window pair.
 #[repr(transparent)]
@@ -238,6 +239,29 @@ pub struct FlutterRustVulkanPresentationCallbacks {
     pub acquire_image:
         Option<extern "C" fn(*mut c_void, u32, u32, *mut FlutterRustVulkanImage) -> i32>,
     pub present_image: Option<extern "C" fn(*mut c_void, FlutterRustVulkanImage) -> i32>,
+}
+
+/// A plugin-produced Vulkan frame borrowed by Impeller, ABI-compatible with
+/// `FlutterRustExternalTextureFrame` in `rust_bridge.h`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlutterRustExternalTextureFrame {
+    pub image: u64,
+    pub image_view: u64,
+    pub format: u32,
+    pub width: u32,
+    pub height: u32,
+    pub acquire_semaphore: u64,
+    pub render_semaphore: u64,
+}
+
+/// ABI-compatible with `FlutterRustExternalTextureCallbacks`.
+#[repr(C)]
+pub struct FlutterRustExternalTextureCallbacks {
+    pub user_data: *mut c_void,
+    pub acquire_frame:
+        Option<extern "C" fn(*mut c_void, u32, u32, *mut FlutterRustExternalTextureFrame) -> i32>,
+    pub release_frame: Option<extern "C" fn(*mut c_void, FlutterRustExternalTextureFrame)>,
 }
 
 /// Paths borrowed only for the duration of the `FlutterRustShellCreateShell`

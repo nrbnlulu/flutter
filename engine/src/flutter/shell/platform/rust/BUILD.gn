@@ -101,6 +101,7 @@ source_set("flutter_rust_shell") {
   public = [
     "platform_view_rust.h",
     "rust_bridge.h",
+    "rust_external_texture.h",
     "rust_shell.h",
     "rust_task_runner.h",
     "rust_vulkan_surface.h",
@@ -110,6 +111,7 @@ source_set("flutter_rust_shell") {
   sources = [
     "platform_view_rust.cc",
     "rust_shell.cc",
+    "rust_external_texture.cc",
     "rust_task_runner.cc",
     "rust_vulkan_surface.cc",
     "vulkan_context_rust.cc",
@@ -204,6 +206,7 @@ if (enable_unittests) {
 
     sources = [
       "platform_view_rust_unittests.cc",
+      "rust_external_texture_unittests.cc",
       "rust_task_runner_unittests.cc",
     ]
 

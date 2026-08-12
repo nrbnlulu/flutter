@@ -23,6 +23,7 @@
 #include "flutter/shell/common/thread_host.h"
 #include "flutter/shell/platform/common/engine_switches.h"
 #include "flutter/shell/platform/rust/platform_view_rust.h"
+#include "flutter/shell/platform/rust/rust_external_texture.h"
 #include "flutter/shell/platform/rust/rust_task_runner.h"
 #include "flutter/shell/platform/rust/rust_vulkan_surface.h"
 
@@ -401,6 +402,43 @@ void RustShell::OnVsync(uint64_t frame_interval_nanos) {
   }
 }
 
+int64_t RustShell::RegisterExternalTexture(
+    FlutterRustExternalTextureCallbacks callbacks) {
+  if (!shell_) {
+    return -1;
+  }
+  auto platform_view = shell_->GetPlatformView();
+  if (!platform_view || !callbacks.acquire_frame || !callbacks.release_frame ||
+      next_texture_id_ <= 0) {
+    return -1;
+  }
+  const int64_t texture_id = next_texture_id_++;
+  external_texture_ids_.insert(texture_id);
+  platform_view->RegisterTexture(
+      std::make_shared<RustExternalTexture>(texture_id, callbacks));
+  return texture_id;
+}
+
+void RustShell::MarkExternalTextureFrameAvailable(int64_t texture_id) {
+  if (!shell_) {
+    return;
+  }
+  auto platform_view = shell_->GetPlatformView();
+  if (platform_view && external_texture_ids_.contains(texture_id)) {
+    platform_view->MarkTextureFrameAvailable(texture_id);
+  }
+}
+
+void RustShell::UnregisterExternalTexture(int64_t texture_id) {
+  if (!shell_) {
+    return;
+  }
+  auto platform_view = shell_->GetPlatformView();
+  if (platform_view && external_texture_ids_.erase(texture_id) == 1u) {
+    platform_view->UnregisterTexture(texture_id);
+  }
+}
+
 FlutterRustViewId RustShell::CreateRegularWindow(
     const FlutterRustRegularWindowRequest* request) {
   if (!request || !windowing_callbacks_.create_regular_window) {
@@ -771,6 +809,32 @@ extern "C" void FlutterRustShellOnVsync(void* shell,
     return;
   }
   static_cast<flutter::RustShell*>(shell)->OnVsync(frame_interval_nanos);
+}
+
+extern "C" int64_t FlutterRustShellRegisterExternalTexture(
+    void* shell,
+    FlutterRustExternalTextureCallbacks callbacks) {
+  return shell
+             ? static_cast<flutter::RustShell*>(shell)->RegisterExternalTexture(
+                   callbacks)
+             : -1;
+}
+
+extern "C" void FlutterRustShellMarkExternalTextureFrameAvailable(
+    void* shell,
+    int64_t texture_id) {
+  if (shell) {
+    static_cast<flutter::RustShell*>(shell)->MarkExternalTextureFrameAvailable(
+        texture_id);
+  }
+}
+
+extern "C" void FlutterRustShellUnregisterExternalTexture(void* shell,
+                                                          int64_t texture_id) {
+  if (shell) {
+    static_cast<flutter::RustShell*>(shell)->UnregisterExternalTexture(
+        texture_id);
+  }
 }
 
 extern "C" FlutterRustViewId FlutterRustShellWindowCreateRegular(

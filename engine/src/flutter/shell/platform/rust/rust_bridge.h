@@ -19,7 +19,7 @@ extern "C" {
 
 // This private ABI is lockstep-versioned with the Flutter fork. It is not the
 // Flutter Embedder API and is never exposed to application plugins.
-#define FLUTTER_RUST_SHELL_ABI_VERSION 7u
+#define FLUTTER_RUST_SHELL_ABI_VERSION 8u
 #define FLUTTER_RUST_PLUGIN_SDK_API_VERSION 1u
 
 typedef struct FlutterRustShellAbi {
@@ -249,6 +249,35 @@ typedef struct FlutterRustVulkanPresentationCallbacks {
   FlutterRustAcquireVulkanImageCallback acquire_image;
   FlutterRustPresentVulkanImageCallback present_image;
 } FlutterRustVulkanPresentationCallbacks;
+
+// One plugin-produced Vulkan texture frame. Rust owns the image and both
+// semaphores until release_frame is called. The image must arrive in
+// SHADER_READ_ONLY_OPTIMAL and remain alive until the render semaphore is
+// consumed by the producer.
+typedef struct FlutterRustExternalTextureFrame {
+  uint64_t image;
+  uint64_t image_view;
+  uint32_t format;
+  uint32_t width;
+  uint32_t height;
+  uint64_t acquire_semaphore;
+  uint64_t render_semaphore;
+} FlutterRustExternalTextureFrame;
+
+typedef int (*FlutterRustAcquireExternalTextureFrameCallback)(
+    void* user_data,
+    uint32_t requested_width,
+    uint32_t requested_height,
+    FlutterRustExternalTextureFrame* frame);
+typedef void (*FlutterRustReleaseExternalTextureFrameCallback)(
+    void* user_data,
+    FlutterRustExternalTextureFrame frame);
+
+typedef struct FlutterRustExternalTextureCallbacks {
+  void* user_data;
+  FlutterRustAcquireExternalTextureFrameCallback acquire_frame;
+  FlutterRustReleaseExternalTextureFrameCallback release_frame;
+} FlutterRustExternalTextureCallbacks;
 
 FlutterRustShellAbi FlutterRustShellGetAbi(void);
 
@@ -550,6 +579,19 @@ FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellCompletePlatformMessageResponse(
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellOnVsync(
     void* shell,
     uint64_t frame_interval_nanos);
+
+// Registers a plugin-produced Vulkan texture with Flutter's existing texture
+// registry. Returns a positive engine-generated texture ID, or -1 on failure.
+// All three calls must run on the merged Rust UI/platform task runner.
+FLUTTER_RUST_SHELL_EXPORT int64_t FlutterRustShellRegisterExternalTexture(
+    void* shell,
+    FlutterRustExternalTextureCallbacks callbacks);
+FLUTTER_RUST_SHELL_EXPORT void
+FlutterRustShellMarkExternalTextureFrameAvailable(void* shell,
+                                                  int64_t texture_id);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellUnregisterExternalTexture(
+    void* shell,
+    int64_t texture_id);
 
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellDestroyShell(void* shell);
 

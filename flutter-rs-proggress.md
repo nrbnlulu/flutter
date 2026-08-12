@@ -6,7 +6,8 @@ for the architectural plan.
 
 ## Current focus
 
-Phase 0 is complete. Phase 1 — winit platform host — is in progress. Pointer,
+Phase 0 and the independent Phase 1 host work are complete. Phase 2 — shared
+GPU and texture proof — is in progress. Pointer,
 window metrics, display updates, lifecycle, raw keyboard events, and a rendered
 Impeller/wgpu frame are working. The explicit Vulkan semaphore broker is now
 implemented and passes rapid-resize and in-flight teardown stress. Typed text
@@ -15,8 +16,15 @@ validated. The current milestone is single-engine multi-view: one Flutter
 engine and Dart isolate per application, with one native winit window and GPU
 presentation surface per Flutter view. Regular, dialog, tooltip, popup, and
 satellite windows now work through the typed Rust backend; main-thread dispatch
-is now wired through the plugin SDK and winit host queue. End-to-end background
-isolate coverage and deterministic startup/shutdown ownership tests remain.
+is now wired through the plugin SDK and winit host queue, and deterministic
+startup/shutdown ownership is covered in both unit and repeated native tests.
+The engine-side `RustExternalTexture` seam, private registration ABI, and a
+triple-buffered wgpu texture ring are implemented. An opt-in internal producer
+has rendered continuously changing zero-copy frames in a real Flutter
+`Texture` widget. The next decisive slice is exposing that ring as the safe
+plugin SDK capability. The only deferred Phase 1 coverage is an end-to-end
+background-isolate/FRB case that depends on the application plugin-registration
+entry point.
 
 ## Status
 
@@ -25,7 +33,7 @@ isolate coverage and deterministic startup/shutdown ownership tests remain.
 | Existing shells remain available | Complete | The Rust target is opt-in and is not added to the existing platform-selection group. |
 | In-tree Rust platform target | Complete | `//flutter/shell/platform/rust:flutter_rust_shell` builds. |
 | Internal PlatformView adapter | Complete | `PlatformViewRust` builds and its focused tests pass. |
-| Rust/C++ ABI | Multi-view child-window extension complete | ABI v7 adds typed view IDs, loose per-view layout constraints, pointer and focus routing, asynchronous add/remove-view operations, per-view Vulkan presentation registration, typed synchronous creation for all five window kinds, satellite reparenting, and asynchronous lifecycle events. |
+| Rust/C++ ABI | External-texture extension complete | ABI v8 retains the multi-view/windowing contract and adds engine-generated external-texture IDs plus acquire, mark-frame-available, release, and unregister operations for borrowed Vulkan image/image-view handles and semaphore pairs. |
 | Rust workspace and `flutter-plugin-sdk` | Complete for foundation | Workspace uses Rust edition 2024, concrete toolchain 1.93.1, and passes its tests. |
 | Winit event loop | Complete for phase 0 | Linux host owns the window and event loop, dispatches Flutter task batons, and drives the Rust-owned Vulkan presentation loop end to end. |
 | Merged UI/platform task runner | Complete for phase 0 | `RustTaskRunner` queues batons for the Rust host, winit returns due batons through opaque C++ handles, and it now also drives Dart's per-task microtask flush (see below). |
@@ -39,6 +47,11 @@ isolate coverage and deterministic startup/shutdown ownership tests remain.
 | Vsync | Complete for the Linux Wayland host | Flutter's waiter requests a winit redraw through the private ABI. Wayland `RedrawRequested` pulses are throttled by compositor frame callbacks registered immediately before actual wgpu presentation; C++ timestamps each pulse in the FML clock domain and uses the active monitor's nominal interval as its target. Non-Wayland backends retain `VsyncWaiterFallback`. |
 | Multi-window | All five controller kinds implemented | View `0` remains the implicit engine view. Positive-ID winit windows share one engine, root isolate, plugin registry, task runner, and wgpu device while owning independent surfaces, metrics, input, and presentation state. Flutter's experimental window controllers select the Rust owner automatically in the Rust runner. Dialogs and satellites use native transient relationships. On Wayland, tooltip and popup views use real compositor-positioned `xdg_popup` roles; popup grabs are serial-bound and compositor dismissal enters the normal asynchronous Flutter view-removal path. Satellites support creation, shrink-wrap, reparenting, parent-driven teardown, and parent maximize/fullscreen visibility. Standard Wayland does not permit clients to choose absolute toplevel positions, so the initial satellite positioner is honored on X11 but compositor-selected on Wayland. |
 | Main-thread dispatch | SDK and winit host complete | `flutter-plugin-sdk` exposes a cloneable worker-safe dispatcher through `PluginRegistrar`. Work is always queued rather than invoked inline, executes through winit's owning thread, is limited to 64 callbacks per event-loop turn, and is rejected after shell shutdown. Unit coverage verifies worker posting, thread identity, nested non-reentrant dispatch, starvation bounds, and shutdown. |
+| Startup and shutdown ownership | Complete for merged runner | The dispatcher rejects work during bootstrap, starts only after the C++ shell and implicit view are installed, stops before shell/window teardown, and suppresses already queued callbacks after shutdown. A native lifecycle task requires 20 consecutive mapped-window startup, compositor-close, and status-zero shutdown cycles. |
+| Rust external texture | Engine seam complete | `RustExternalTexture` uses Flutter's existing texture registry and dirty-frame scheduling path. It retains the last good image, honors freeze, retries failed acquisition, imports borrowed wgpu Vulkan image/view handles without taking ownership, and brackets Impeller sampling with producer/consumer semaphores. Context loss, unregister, and repeated teardown are covered by focused tests. |
+| Engine-owned wgpu texture | Internal animated proof complete | `WgpuTextureRing` owns three RGBA8 textures, views, and reusable semaphore pairs on the application's shared device. Slots move through available, ready, Flutter-owned, and returned states; wgpu transitions completed frames to shader-read state before Impeller samples them. An opt-in host producer displayed changing colors through a real Dart `Texture(textureId: 1)` with no CPU readback or Dart rebuild. Adapting the ring to the new public SDK backend traits is still pending. |
+| `WgpuTexture` plugin API | Public contract complete; runtime adapter pending | `flutter-plugin-sdk` exposes validated texture descriptors, `GpuTextures::create_texture`, stable Flutter texture IDs, nonblocking `try_next_frame`, asynchronous `next_frame().await`, single-record frame reservations, and consuming `present(self)`. Hidden backend traits keep the private ABI out of plugins. The recording closure receives a device, encoder, and view—but no queue—so plugins cannot violate shared-queue external synchronization. Fake-backend tests cover capability installation, descriptor rejection, synchronous/async reservation, invalid present, duplicate render, and successful present. |
+| CPU pixel-buffer texture | Not implemented | Track the second standard texture path explicitly: plugins must be able to publish CPU-backed pixel buffers for simple and portable producers. It should share texture registration, frame notification, freeze, unregister, and teardown semantics with `RustExternalTexture`, while resolving pixels into an engine image without exposing Impeller types through the plugin SDK. |
 
 ## Implementation log
 
@@ -422,6 +435,58 @@ isolate coverage and deterministic startup/shutdown ownership tests remain.
   callback flood.
 - Retained the dispatcher and registrar for the shell lifetime and disable all
   dispatcher clones before native window and engine teardown begins.
+- Replaced the dispatcher's Boolean acceptance flag with explicit starting,
+  running, and shutdown states. Calls made before the implicit view exists fail
+  with `NotReady`; startup is one-shot; shutdown is terminal; and every queued
+  callback rechecks the shared state before touching plugin or shell data.
+- Added `task test-rust-shell-lifecycle`, which launches the real GN runner,
+  identifies its mapped Wayland window by PID, requests compositor close,
+  records the actual process status through a wrapper, and repeats the complete
+  ownership cycle 20 times. Failure cleanup is bounded and force-stops only the
+  exact runner PID.
+
+### Phase 2 — Rust external texture seam
+
+- Bumped the lockstep private ABI to v8 and added a Vulkan external-texture
+  frame descriptor containing borrowed image and image-view handles, dimensions,
+  format, and an acquire/render binary-semaphore pair.
+- Added engine-generated texture registration, frame notification, and
+  idempotent unregister calls. They route through `PlatformView` and Flutter's
+  existing `TextureRegistry`, so notifications schedule frames without a Dart
+  widget rebuild or a parallel compositor protocol.
+- Added `RustExternalTexture`. On the raster thread it waits for the producer,
+  wraps the borrowed image/view in an Impeller `TextureVK`, preserves the last
+  good frame across failed acquisition and frozen paints, then signals and
+  releases replaced frames. Rust remains owner of all Vulkan objects.
+- Added focused native tests for notified/frozen rotation, failed-acquire retry,
+  context loss, repeated unregister, and post-unregister suppression.
+- Added an engine-owned triple-buffered wgpu texture ring. Each slot retains
+  its wgpu texture/view and binary semaphore pair, explicitly transitions from
+  color-target to shader-resource state, and is not reused until Flutter has
+  returned it through the ABI release callback.
+- Added an opt-in `FLUTTER_RUST_TEXTURE_DEMO` producer to validate the private
+  path before making it public SDK surface. Rendering is deferred to Flutter's
+  acquire callback so wgpu and Impeller submissions to their shared `VkQueue`
+  remain externally serialized.
+- Fixed a Vulkan submit-info lifetime bug found by validation: the wait
+  semaphore/stage arrays must remain alive through `vkQueueSubmit`. Also retain
+  the texture ring through C++ shell destruction so asynchronous unregister on
+  the raster runner completes before its semaphores are destroyed.
+- Added the semver-facing `WgpuTexture` SDK contract and hidden runtime backend
+  traits. Plugins record commands against an engine-owned target and call
+  `present`; only the shell may submit the command buffer or notify Flutter.
+  The SDK deliberately does not expose `wgpu::Queue`, preventing plugins from
+  racing Impeller on the shared Vulkan queue.
+- Refined the contract around explicit frame reservations. Producers may use
+  `try_next_frame()` for immediate backpressure or `next_frame().await` without
+  blocking a thread. A reserved `WgpuTextureFrame` records at most once and is
+  consumed by `present(self)`; presenting before render and recording twice are
+  rejected before reaching the runtime backend.
+- Kept `WgpuTexture` unconditional in the public plugin SDK. Instead of hiding
+  core API behind a Cargo feature, removed `flutter-shell-core`'s SDK dependency
+  and let the lockstep ABI core own its expected numeric SDK version. The
+  existing C++/Rust ABI assertion checks that value while the ABI archive stays
+  independent of the full wgpu graph.
 
 ## Validation
 
@@ -432,11 +497,11 @@ isolate coverage and deterministic startup/shutdown ownership tests remain.
   `//flutter/shell/platform/rust:flutter_shell_winit_rust`, and
   `//flutter/shell/platform/rust:flutter_rust_shell_runner` with the
   host-debug GN configuration (`et build`-managed `out/host_debug`).
-- Ran `flutter_rust_shell_unittests`: 14 tests passed.
+- Ran `flutter_rust_shell_unittests`: 17 tests passed.
 - Ran `cargo +1.93.1 test --workspace --locked`: all crate and documentation
   tests pass, including typed text-input decoding, invalid UTF-16 range
   rejection, Unicode selection replacement, hidden-cursor composition, and
-  framework update serialization. The winit crate now has 23 passing tests,
+  framework update serialization. The winit crate now has 24 passing tests,
   including monitor-refresh-to-frame-interval conversion, target-view
   preservation for pointer events, and application-exit decoding.
 - Ran the focused Vulkan surface test proving that the raster surface forwards
@@ -516,25 +581,53 @@ isolate coverage and deterministic startup/shutdown ownership tests remain.
   The sample's bundled font rendered Japanese as missing-glyph boxes, so the
   Fcitx candidate UI and controlled edit transitions were used to verify the
   values independently of glyph rendering.
-- Ran `cargo +1.93.1 test --workspace --locked`: all 28 crate and documentation
+- Ran `cargo +1.93.1 test --workspace --locked`: all 29 crate and documentation
   tests pass. New tests post from a real worker thread, assert execution on the
   recorded main thread, prove nested dispatch is deferred to a later queue
   turn, reject dispatch after shutdown, and cap a 65-callback flood at 64
-  callbacks in its first event-loop turn.
+  callbacks in its first event-loop turn. One hundred repeated lifecycle-unit
+  cycles also verify bootstrap rejection, one-shot activation, terminal
+  shutdown, and suppression of a callback queued before teardown.
 - Rebuilt `flutter_rust_shell_runner` and `libflutter_rust_engine.so` through
   the host-debug GN build after wiring the SDK dependency into the real winit
   host; the final native link passes. A live post-build launch mapped the
   Rust-shell window normally, and immediate process teardown completed without
   a dispatcher or registrar diagnostic.
+- Ran `task test-rust-shell-lifecycle`: 20 consecutive real runner processes
+  mapped their Wayland windows, handled compositor close through the framework
+  exit path, and terminated with status zero. No iteration hung or required
+  failure cleanup.
+- Rebuilt `flutter_rust_shell_runner`, `libflutter_rust_engine.so`, and the
+  native test binary against ABI v8. All 17 native tests and all 29 Rust tests
+  pass; strict rustdoc, Cargo formatting, and `git diff --check` pass.
+- Built a temporary Dart bundle containing `Texture(textureId: 1)`, then
+  restored the test application's source. With `FLUTTER_RUST_TEXTURE_DEMO=1`,
+  the real Wayland runner displayed the 256×256 wgpu texture; successive screen
+  captures differed as the producer changed color. The final validation run
+  emitted no Vulkan or queue-threading diagnostics, and compositor-driven
+  unregister/shutdown exited cleanly. No CPU readback was used.
+- Added SDK fake-backend coverage; the workspace now has 30 passing Rust tests.
+  `flutter-shell-core` now has an empty dependency tree and remains free of
+  both the SDK implementation and wgpu.
 
-## Next implementation steps (phase 1)
+## Next implementation steps (phase 2)
 
-1. Add an end-to-end background-Dart-isolate/FRB dispatch smoke test when the
+1. Implement the SDK backend traits with `WgpuTextureRing`, install the
+   capability after shell startup, and replace the internal demo owner with a
+   normal `FlutterRustPlugin` registration path. Texture-handle drop must retain
+   the ring until asynchronous raster-thread unregister has completed.
+2. Add a permanent animated producer integration fixture and automated frame
+   liveness/validation check; the current real-widget proof used a temporary
+   Dart entry point that was restored after bundling.
+3. Implement and expose `PixelBufferTexture`, including pixel format, row-byte,
+   buffer-lifetime, resize, freeze, unregister, and teardown coverage. Verify it
+   through the same Flutter `Texture` widget and frame-notification path.
+4. Run validation-layer stress across texture resize, unregister, context loss,
+   and process teardown.
+5. Add an end-to-end background-Dart-isolate/FRB dispatch smoke test when the
    application plugin-registration entry point is wired, including a
    synchronous FFI reentrancy case. The SDK/host worker path and starvation
    bounds are covered now.
-2. Add deterministic startup and shutdown ownership tests for the merged
-   runner.
 
 ## Constraints carried into implementation
 

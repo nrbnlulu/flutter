@@ -44,6 +44,8 @@ mod linux {
     };
     use flutter_shell_wgpu::GpuBroker;
     #[cfg(not(test))]
+    use flutter_shell_wgpu::WgpuTextureRing;
+    #[cfg(not(test))]
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
     use serde::{Deserialize, Serialize, de::IgnoredAny};
     use serde_json::Value;
@@ -1161,6 +1163,39 @@ mod linux {
         // SAFETY: `shell` remains owned by this application and the interval
         // is a plain value in the private ABI.
         unsafe { FlutterRustShellOnVsync(shell, frame_interval_nanos) }
+    }
+
+    #[cfg(not(test))]
+    fn register_cpp_external_texture(
+        shell: *mut c_void,
+        callbacks: flutter_shell_core::FlutterRustExternalTextureCallbacks,
+    ) -> i64 {
+        unsafe extern "C" {
+            fn FlutterRustShellRegisterExternalTexture(
+                shell: *mut c_void,
+                callbacks: flutter_shell_core::FlutterRustExternalTextureCallbacks,
+            ) -> i64;
+        }
+        unsafe { FlutterRustShellRegisterExternalTexture(shell, callbacks) }
+    }
+
+    #[cfg(not(test))]
+    fn mark_cpp_external_texture_frame_available(shell: *mut c_void, texture_id: i64) {
+        unsafe extern "C" {
+            fn FlutterRustShellMarkExternalTextureFrameAvailable(
+                shell: *mut c_void,
+                texture_id: i64,
+            );
+        }
+        unsafe { FlutterRustShellMarkExternalTextureFrameAvailable(shell, texture_id) }
+    }
+
+    #[cfg(not(test))]
+    fn unregister_cpp_external_texture(shell: *mut c_void, texture_id: i64) {
+        unsafe extern "C" {
+            fn FlutterRustShellUnregisterExternalTexture(shell: *mut c_void, texture_id: i64);
+        }
+        unsafe { FlutterRustShellUnregisterExternalTexture(shell, texture_id) }
     }
 
     /// Winit host configuration, shared across the platforms this crate will
@@ -2662,7 +2697,7 @@ mod linux {
         }
 
         /// The opaque C++ task runner handle installed by
-        /// [`Self::install_cpp_task_runner`]. Used as the merged Flutter
+        /// `install_cpp_task_runner`. Used as the merged Flutter
         /// UI/platform task runner when creating the Rust shell.
         pub fn task_runner_handle(&self) -> *mut c_void {
             self.task_runner
@@ -2867,7 +2902,7 @@ mod linux {
         let event_loop = EventLoop::new()?;
         let event_proxy = HostEventSender::new(event_loop.create_proxy());
         let dispatcher_events = event_proxy.clone();
-        let main_thread_dispatcher = MainThreadDispatcher::for_shell(
+        let main_thread_dispatcher = MainThreadDispatcher::for_shell_inactive(
             move |task| {
                 dispatcher_events
                     .send_event(HostEvent::MainThreadTask(task))
@@ -2904,6 +2939,8 @@ mod linux {
             lifecycle_state: LifecycleState::new(),
             main_thread_dispatcher,
             _plugin_registrar: plugin_registrar,
+            #[cfg(not(test))]
+            demo_texture: None,
         };
         event_loop.run_app(application)
     }
@@ -2921,6 +2958,16 @@ mod linux {
         lifecycle_state: LifecycleState,
         main_thread_dispatcher: MainThreadDispatcher,
         _plugin_registrar: PluginRegistrar,
+        #[cfg(not(test))]
+        demo_texture: Option<DemoTexture>,
+    }
+
+    #[cfg(not(test))]
+    struct DemoTexture {
+        ring: Box<WgpuTextureRing>,
+        texture_id: i64,
+        next_frame: Instant,
+        phase: u64,
     }
 
     #[cfg_attr(test, allow(dead_code))]
@@ -2983,7 +3030,15 @@ mod linux {
             let mut windows = self.windows.borrow_mut();
             #[cfg(not(test))]
             if let Some(shell) = windows.shell.take() {
+                let demo = self.demo_texture.take();
+                if let Some(demo) = &demo {
+                    unregister_cpp_external_texture(shell, demo.texture_id);
+                }
                 destroy_cpp_shell(shell);
+                // Unregister posts to the raster runner. Shell destruction
+                // drains and joins that runner before the callback owner and
+                // its Vulkan semaphores are released here.
+                drop(demo);
             }
 
             // Each ViewWindow declares its broker before its Arc<Window>, so
@@ -3097,6 +3152,26 @@ mod linux {
                         FlutterRustViewId::IMPLICIT,
                         WindowMetrics::from_window(window.as_ref(), window.scale_factor()),
                     );
+                    if std::env::var_os("FLUTTER_RUST_TEXTURE_DEMO").is_some() {
+                        let ring = gpu_broker
+                            .create_texture_ring(256, 256)
+                            .expect("failed to create demo texture ring");
+                        let texture_id = register_cpp_external_texture(shell, ring.callbacks());
+                        assert!(texture_id > 0, "failed to register demo texture");
+                        ring.request_clear([1.0, 0.0, 0.0, 1.0]);
+                        mark_cpp_external_texture_frame_available(shell, texture_id);
+                        log::info!("Flutter Rust demo texture ID: {texture_id}");
+                        if let Some(path) = std::env::var_os("FLUTTER_RUST_TEXTURE_ID_FILE") {
+                            std::fs::write(path, format!("{texture_id}\n"))
+                                .expect("failed to write demo texture ID");
+                        }
+                        self.demo_texture = Some(DemoTexture {
+                            ring,
+                            texture_id,
+                            next_frame: Instant::now() + Duration::from_millis(16),
+                            phase: 0,
+                        });
+                    }
                     self.windows.borrow_mut().shell = Some(shell);
                 }
 
@@ -3125,6 +3200,11 @@ mod linux {
                 if focused {
                     windows.focused_window = Some(window_id);
                 }
+                drop(windows);
+                assert!(
+                    self.main_thread_dispatcher.start_for_shell(),
+                    "main-thread dispatcher started more than once"
+                );
             }
             let (visible, focused) = self.windows.borrow().aggregate_window_state();
             let state = self.lifecycle_state.resumed(visible, focused);
@@ -3553,7 +3633,35 @@ mod linux {
             #[cfg(test)]
             self.task_runner_host.dispatch_due_tasks();
             self.apply_text_input_commands();
-            match self.task_runner_host.next_deadline() {
+            #[cfg(not(test))]
+            if let Some(demo) = &mut self.demo_texture
+                && Instant::now() >= demo.next_frame
+            {
+                let angle = demo.phase as f64 * 0.04;
+                let color = [
+                    angle.sin() * 0.5 + 0.5,
+                    (angle + 2.094).sin() * 0.5 + 0.5,
+                    (angle + 4.189).sin() * 0.5 + 0.5,
+                    1.0,
+                ];
+                demo.ring.request_clear(color);
+                if let Some(shell) = self.windows.borrow().shell {
+                    mark_cpp_external_texture_frame_available(shell, demo.texture_id);
+                }
+                demo.phase += 1;
+                demo.next_frame = Instant::now() + Duration::from_millis(16);
+            }
+            let task_deadline = self.task_runner_host.next_deadline();
+            #[cfg(not(test))]
+            let next_deadline = match (task_deadline, self.demo_texture.as_ref()) {
+                (Some(task), Some(demo)) => Some(task.min(demo.next_frame)),
+                (Some(task), None) => Some(task),
+                (None, Some(demo)) => Some(demo.next_frame),
+                (None, None) => None,
+            };
+            #[cfg(test)]
+            let next_deadline = task_deadline;
+            match next_deadline {
                 Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
                 None => event_loop.set_control_flow(ControlFlow::Wait),
             }
