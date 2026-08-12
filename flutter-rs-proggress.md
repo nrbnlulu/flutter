@@ -21,8 +21,13 @@ startup/shutdown ownership is covered in both unit and repeated native tests.
 The engine-side `RustExternalTexture` seam, private registration ABI, and a
 triple-buffered wgpu texture ring are implemented. An opt-in internal producer
 has rendered continuously changing zero-copy frames in a real Flutter
-`Texture` widget. The next decisive slice is exposing that ring as the safe
-plugin SDK capability. The only deferred Phase 1 coverage is an end-to-end
+`Texture` widget. The ring now implements the safe SDK handle and frame backend
+using a bounded Tokio channel for asynchronous slot availability. Its creation
+factory is installed in `PluginRegistrar` after shell startup, and the animated
+proof now registers as a normal source-linked plugin using only public SDK
+operations. The next decisive slice is making that proof a permanent automated
+integration fixture. That fixture is now checked in and passes locally; the
+next texture slice is the CPU-backed pixel-buffer path. The only deferred Phase 1 coverage is an end-to-end
 background-isolate/FRB case that depends on the application plugin-registration
 entry point.
 
@@ -49,8 +54,8 @@ entry point.
 | Main-thread dispatch | SDK and winit host complete | `flutter-plugin-sdk` exposes a cloneable worker-safe dispatcher through `PluginRegistrar`. Work is always queued rather than invoked inline, executes through winit's owning thread, is limited to 64 callbacks per event-loop turn, and is rejected after shell shutdown. Unit coverage verifies worker posting, thread identity, nested non-reentrant dispatch, starvation bounds, and shutdown. |
 | Startup and shutdown ownership | Complete for merged runner | The dispatcher rejects work during bootstrap, starts only after the C++ shell and implicit view are installed, stops before shell/window teardown, and suppresses already queued callbacks after shutdown. A native lifecycle task requires 20 consecutive mapped-window startup, compositor-close, and status-zero shutdown cycles. |
 | Rust external texture | Engine seam complete | `RustExternalTexture` uses Flutter's existing texture registry and dirty-frame scheduling path. It retains the last good image, honors freeze, retries failed acquisition, imports borrowed wgpu Vulkan image/view handles without taking ownership, and brackets Impeller sampling with producer/consumer semaphores. Context loss, unregister, and repeated teardown are covered by focused tests. |
-| Engine-owned wgpu texture | Internal animated proof complete | `WgpuTextureRing` owns three RGBA8 textures, views, and reusable semaphore pairs on the application's shared device. Slots move through available, ready, Flutter-owned, and returned states; wgpu transitions completed frames to shader-read state before Impeller samples them. An opt-in host producer displayed changing colors through a real Dart `Texture(textureId: 1)` with no CPU readback or Dart rebuild. Adapting the ring to the new public SDK backend traits is still pending. |
-| `WgpuTexture` plugin API | Public contract complete; runtime adapter pending | `flutter-plugin-sdk` exposes validated texture descriptors, `GpuTextures::create_texture`, stable Flutter texture IDs, nonblocking `try_next_frame`, asynchronous `next_frame().await`, single-record frame reservations, and consuming `present(self)`. Hidden backend traits keep the private ABI out of plugins. The recording closure receives a device, encoder, and view—but no queue—so plugins cannot violate shared-queue external synchronization. Fake-backend tests cover capability installation, descriptor rejection, synchronous/async reservation, invalid present, duplicate render, and successful present. |
+| Engine-owned wgpu texture | SDK runtime path complete | `WgpuTextureRing` owns three RGBA8 textures, views, and reusable semaphore pairs on the application's shared device. A bounded Tokio channel carries available slot IDs: `try_next_frame` applies immediate backpressure, `next_frame().await` sleeps until Flutter releases a slot, and an unpresented reservation returns its slot on drop. Ready frames remain queue-serialized through Flutter's acquire callback. The opt-in animated proof now runs through normal `FlutterRustPlugin` registration and public SDK operations. |
+| `WgpuTexture` plugin API | Public contract and Linux runtime adapter complete | `flutter-plugin-sdk` exposes validated texture descriptors, `GpuTextures::create_texture`, stable Flutter texture IDs, nonblocking `try_next_frame`, asynchronous `next_frame().await`, single-record frame reservations, and consuming `present(self)`. The hidden backend uses `async-trait`; no manual `Future` or `Poll` API leaks into the SDK. The winit factory registers the callback-owning ring, routes dirty notifications and handle-drop unregister through the main thread, and retains rings until C++ shell destruction drains the raster runner. The recording closure receives a device, encoder, and view—but no queue—so plugins cannot violate shared-queue external synchronization. |
 | CPU pixel-buffer texture | Not implemented | Track the second standard texture path explicitly: plugins must be able to publish CPU-backed pixel buffers for simple and portable producers. It should share texture registration, frame notification, freeze, unregister, and teardown semantics with `RustExternalTexture`, while resolving pixels into an engine image without exposing Impeller types through the plugin SDK. |
 
 ## Implementation log
@@ -119,12 +124,12 @@ entry point.
   presentation callbacks/settings in `flutter-shell-core`, plus C ABI functions
   `FlutterRustShellCreateShell`, `FlutterRustShellRunShell`,
   `FlutterRustShellSetViewportMetrics`, and `FlutterRustShellDestroyShell` in
-  `rust_shell.cc`.
+  `cpp/rust_shell.cc`.
 - Wired `flutter-shell-winit`'s `resumed()`/`window_event()` to actually create
   and run the `RustShell`: it extracts Vulkan handles via
   `GpuBroker::with_vulkan_context`, builds the presentation callback table from
   `GpuBroker::presentation_callbacks`, and calls the new shell lifecycle FFI.
-- Added `main.cc` and the `flutter_rust_shell_runner` GN executable: a
+- Added `cpp/main.cc` and the `flutter_rust_shell_runner` GN executable: a
   two-line C++ process entry point that calls straight into Rust's
   `FlutterRustShellRun` (in `flutter-shell-winit`), which owns the winit event
   loop for the rest of the process lifetime. See "Who owns the final link" in
@@ -482,6 +487,21 @@ entry point.
   blocking a thread. A reserved `WgpuTextureFrame` records at most once and is
   consumed by `present(self)`; presenting before render and recording twice are
   rejected before reaching the runtime backend.
+- Implemented those reservation traits on the real `WgpuTextureRing`. Its
+  three available slot IDs live in a bounded Tokio `mpsc` channel; releases
+  wake asynchronous waiters, nonblocking reservation reports `Busy`, and
+  dropping an unpublished frame returns its slot. `async-trait` supplies the
+  object-safe hidden async backend method, so the public SDK contains no manual
+  polling implementation. `present` queues the recorded closure, dispatches
+  Flutter's dirty notification through the main thread, and leaves actual wgpu
+  submission in the raster acquire callback to preserve shared-queue ordering.
+- Added the Linux `WgpuTextureBackend` factory and install it in the registrar
+  once the engine and implicit view exist. Each public handle delegates to a
+  stable callback-owning ring; drop schedules idempotent unregister on the main
+  thread, while a host retention list keeps Vulkan resources alive until shell
+  destruction has drained the raster runner. The animated demo is now a
+  source-linked `FlutterRustPlugin` that creates, records, and presents frames
+  entirely through the public SDK.
 - Kept `WgpuTexture` unconditional in the public plugin SDK. Instead of hiding
   core API behind a Cargo feature, removed `flutter-shell-core`'s SDK dependency
   and let the lockstep ABI core own its expected numeric SDK version. The
@@ -498,6 +518,17 @@ entry point.
   `//flutter/shell/platform/rust:flutter_rust_shell_runner` with the
   host-debug GN configuration (`et build`-managed `out/host_debug`).
 - Ran `flutter_rust_shell_unittests`: 17 tests passed.
+- Rebuilt `flutter_rust_shell_runner`, `flutter_rust_shell_unittests`, and
+  `libflutter_rust_engine.so` after installing the public SDK texture factory;
+  the final Rust/C++ static link succeeds using the repository's bundled
+  depot_tools environment.
+- Added and ran `task test-rust-shell-texture`. It builds the permanent
+  `examples/texture/lib/rust_shell_main.dart` entry point, launches the real
+  Rust runner and source-linked plugin under Vulkan validation when available,
+  verifies engine texture ID `1`, waits for continued presentation, compares
+  two compositor captures after ten additional frames, scans synchronization
+  diagnostics, and closes cleanly. The recorded run passed with 32 presented
+  frames and visibly changing texture pixels.
 - Ran `cargo +1.93.1 test --workspace --locked`: all crate and documentation
   tests pass, including typed text-input decoding, invalid UTF-16 range
   rejection, Unicode selection replacement, hidden-cursor composition, and
@@ -612,19 +643,12 @@ entry point.
 
 ## Next implementation steps (phase 2)
 
-1. Implement the SDK backend traits with `WgpuTextureRing`, install the
-   capability after shell startup, and replace the internal demo owner with a
-   normal `FlutterRustPlugin` registration path. Texture-handle drop must retain
-   the ring until asynchronous raster-thread unregister has completed.
-2. Add a permanent animated producer integration fixture and automated frame
-   liveness/validation check; the current real-widget proof used a temporary
-   Dart entry point that was restored after bundling.
-3. Implement and expose `PixelBufferTexture`, including pixel format, row-byte,
+1. Implement and expose `PixelBufferTexture`, including pixel format, row-byte,
    buffer-lifetime, resize, freeze, unregister, and teardown coverage. Verify it
    through the same Flutter `Texture` widget and frame-notification path.
-4. Run validation-layer stress across texture resize, unregister, context loss,
+2. Run validation-layer stress across texture resize, unregister, context loss,
    and process teardown.
-5. Add an end-to-end background-Dart-isolate/FRB dispatch smoke test when the
+3. Add an end-to-end background-Dart-isolate/FRB dispatch smoke test when the
    application plugin-registration entry point is wired, including a
    synchronous FFI reentrancy case. The SDK/host worker path and starvation
    bounds are covered now.

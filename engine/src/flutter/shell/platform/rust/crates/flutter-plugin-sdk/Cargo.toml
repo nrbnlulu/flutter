@@ -10,4 +10,8 @@ description = "Public Rust plugin API for the Flutter Rust shell"
 path = "src/lib.rs"
 
 [dependencies]
+async-trait = "=0.1.89"
 wgpu = { git = "https://github.com/gfx-rs/wgpu.git", rev = "014d9e84813a2946febfa4888694c0b70565b2f5", default-features = false }
+
+[dev-dependencies]
+parking_lot = "=0.12.5"

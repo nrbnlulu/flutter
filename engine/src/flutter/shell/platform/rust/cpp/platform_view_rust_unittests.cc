@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "flutter/shell/platform/rust/platform_view_rust.h"
-#include "flutter/shell/platform/rust/rust_bridge.h"
+#include "flutter/shell/platform/rust/cpp/platform_view_rust.h"
+#include "flutter/shell/platform/rust/cpp/rust_bridge.h"
 
 #include <cstring>
 #include <memory>

@@ -10,8 +10,8 @@
 
 #include "flutter/common/settings.h"
 #include "flutter/fml/task_runner.h"
-#include "flutter/shell/platform/rust/rust_bridge.h"
-#include "flutter/shell/platform/rust/vulkan_context_rust.h"
+#include "flutter/shell/platform/rust/cpp/rust_bridge.h"
+#include "flutter/shell/platform/rust/cpp/vulkan_context_rust.h"
 
 namespace flutter {
 

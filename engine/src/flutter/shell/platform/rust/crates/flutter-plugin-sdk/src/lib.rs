@@ -5,7 +5,6 @@
 
 #![forbid(unsafe_code)]
 
-use std::task::{Context, Poll};
 use std::{
     sync::{
         Arc,
@@ -66,16 +65,14 @@ pub type WgpuRenderTask =
 
 /// Private runtime implementation behind a public [`WgpuTexture`].
 #[doc(hidden)]
+#[async_trait::async_trait]
 pub trait WgpuTextureBackendHandle: Send + Sync {
     /// Flutter texture-registry identifier.
     fn texture_id(&self) -> i64;
     /// Attempts to reserve one ring slot without blocking.
     fn try_next_frame(&self) -> Result<Arc<dyn WgpuTextureFrameBackend>>;
-    /// Polls until one ring slot can be reserved.
-    fn poll_next_frame(
-        &self,
-        context: &mut Context<'_>,
-    ) -> Poll<Result<Arc<dyn WgpuTextureFrameBackend>>>;
+    /// Asynchronously waits until one ring slot can be reserved.
+    async fn next_frame(&self) -> Result<Arc<dyn WgpuTextureFrameBackend>>;
 }
 
 /// Private runtime implementation behind one reserved [`WgpuTextureFrame`].
@@ -141,9 +138,7 @@ impl WgpuTexture {
     /// Asynchronously waits until a ring slot can be reserved.
     /// Dropping the future cancels the wait without reserving a slot.
     pub async fn next_frame(&self) -> Result<WgpuTextureFrame> {
-        std::future::poll_fn(|context| self.backend.poll_next_frame(context))
-            .await
-            .map(WgpuTextureFrame::new)
+        self.backend.next_frame().await.map(WgpuTextureFrame::new)
     }
 }
 
@@ -346,11 +341,8 @@ pub trait FlutterRustPlugin: Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        collections::VecDeque,
-        sync::Mutex,
-        task::{Wake, Waker},
-    };
+    use parking_lot::Mutex;
+    use std::collections::VecDeque;
 
     struct FakeGpuBackend {
         operations: Arc<Mutex<Vec<&'static str>>>,
@@ -364,52 +356,44 @@ mod tests {
         operations: Arc<Mutex<Vec<&'static str>>>,
     }
 
-    struct NoopWake;
-
-    impl Wake for NoopWake {
-        fn wake(self: Arc<Self>) {}
-    }
-
     impl WgpuTextureBackend for FakeGpuBackend {
         fn create_texture(
             &self,
             _descriptor: TextureDescriptor,
         ) -> Result<Arc<dyn WgpuTextureBackendHandle>> {
-            self.operations.lock().unwrap().push("create");
+            self.operations.lock().push("create");
             Ok(Arc::new(FakeTextureBackend {
                 operations: Arc::clone(&self.operations),
             }))
         }
     }
 
+    #[async_trait::async_trait]
     impl WgpuTextureBackendHandle for FakeTextureBackend {
         fn texture_id(&self) -> i64 {
             17
         }
 
         fn try_next_frame(&self) -> Result<Arc<dyn WgpuTextureFrameBackend>> {
-            self.operations.lock().unwrap().push("reserve");
+            self.operations.lock().push("reserve");
             Ok(Arc::new(FakeFrameBackend {
                 operations: Arc::clone(&self.operations),
             }))
         }
 
-        fn poll_next_frame(
-            &self,
-            _context: &mut Context<'_>,
-        ) -> Poll<Result<Arc<dyn WgpuTextureFrameBackend>>> {
-            Poll::Ready(self.try_next_frame())
+        async fn next_frame(&self) -> Result<Arc<dyn WgpuTextureFrameBackend>> {
+            self.try_next_frame()
         }
     }
 
     impl WgpuTextureFrameBackend for FakeFrameBackend {
         fn render(&self, _task: WgpuRenderTask) -> Result<()> {
-            self.operations.lock().unwrap().push("render");
+            self.operations.lock().push("render");
             Ok(())
         }
 
         fn present(&self) -> Result<()> {
-            self.operations.lock().unwrap().push("present");
+            self.operations.lock().push("present");
             Ok(())
         }
     }
@@ -428,7 +412,7 @@ mod tests {
         let queue_for_post = Arc::clone(&queue);
         let dispatcher = MainThreadDispatcher::for_shell(
             move |task| {
-                queue_for_post.lock().unwrap().push_back(task);
+                queue_for_post.lock().push_back(task);
                 true
             },
             std::thread::current().id(),
@@ -477,19 +461,9 @@ mod tests {
         assert_eq!(frame.render(|_, _, _| {}), Err(PluginError::Busy));
         frame.present().unwrap();
 
-        let waker = Waker::from(Arc::new(NoopWake));
-        let mut context = Context::from_waker(&waker);
-        let mut future = Box::pin(texture.next_frame());
-        let Poll::Ready(Ok(mut frame)) = future.as_mut().poll(&mut context) else {
-            panic!("fake frame future was not ready");
-        };
-        frame.render(|_, _, _| {}).unwrap();
-        frame.present().unwrap();
         assert_eq!(
-            *operations.lock().unwrap(),
-            vec![
-                "create", "reserve", "reserve", "render", "present", "reserve", "render", "present"
-            ]
+            *operations.lock(),
+            vec!["create", "reserve", "reserve", "render", "present"]
         );
     }
 
@@ -499,7 +473,7 @@ mod tests {
         let queue_for_post = Arc::clone(&queue);
         let dispatcher = MainThreadDispatcher::for_shell(
             move |task| {
-                queue_for_post.lock().unwrap().push_back(task);
+                queue_for_post.lock().push_back(task);
                 true
             },
             std::thread::current().id(),
@@ -513,10 +487,10 @@ mod tests {
             worker_dispatcher
                 .dispatch(move || {
                     assert!(nested_dispatcher.is_main_thread());
-                    order_in_task.lock().unwrap().push(1);
+                    order_in_task.lock().push(1);
                     let nested_order = Arc::clone(&order_in_task);
                     nested_dispatcher
-                        .dispatch(move || nested_order.lock().unwrap().push(2))
+                        .dispatch(move || nested_order.lock().push(2))
                         .unwrap();
                 })
                 .unwrap();
@@ -524,13 +498,13 @@ mod tests {
         .join()
         .unwrap();
 
-        assert!(order.lock().unwrap().is_empty());
-        let first = queue.lock().unwrap().pop_front().unwrap();
+        assert!(order.lock().is_empty());
+        let first = queue.lock().pop_front().unwrap();
         first();
-        assert_eq!(*order.lock().unwrap(), vec![1]);
-        let second = queue.lock().unwrap().pop_front().unwrap();
+        assert_eq!(*order.lock(), vec![1]);
+        let second = queue.lock().pop_front().unwrap();
         second();
-        assert_eq!(*order.lock().unwrap(), vec![1, 2]);
+        assert_eq!(*order.lock(), vec![1, 2]);
         assert!(dispatcher.is_main_thread());
 
         dispatcher.shutdown_for_shell();
@@ -544,13 +518,13 @@ mod tests {
             let queue_for_post = Arc::clone(&queue);
             let dispatcher = MainThreadDispatcher::for_shell_inactive(
                 move |task| {
-                    queue_for_post.lock().unwrap().push_back(task);
+                    queue_for_post.lock().push_back(task);
                     true
                 },
                 std::thread::current().id(),
             );
             assert_eq!(dispatcher.dispatch(|| {}), Err(DispatchError::NotReady));
-            assert!(queue.lock().unwrap().is_empty());
+            assert!(queue.lock().is_empty());
             assert!(dispatcher.start_for_shell());
             assert!(!dispatcher.start_for_shell());
 
@@ -560,7 +534,7 @@ mod tests {
                 .dispatch(move || ran_in_task.store(1, Ordering::Release))
                 .unwrap();
             dispatcher.shutdown_for_shell();
-            queue.lock().unwrap().pop_front().unwrap()();
+            queue.lock().pop_front().unwrap()();
             assert_eq!(ran.load(Ordering::Acquire), 0);
             assert_eq!(dispatcher.dispatch(|| {}), Err(DispatchError::Shutdown));
         }

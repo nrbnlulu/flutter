@@ -98,15 +98,24 @@ Shared shell implementation in the Flutter fork:
 engine/src/flutter/shell/platform/rust/
   BUILD.gn
 
-  bridge/
+  cpp/
+    main.cc
     platform_view_rust.h
     platform_view_rust.cc
-    rust_rendering_surface.h
-    rust_rendering_surface.cc
+    rust_bridge.h
     rust_external_texture.h
     rust_external_texture.cc
-    rust_platform_message_handler.h
-    rust_platform_message_handler.cc
+    rust_shell.h
+    rust_shell.cc
+    rust_task_runner.h
+    rust_task_runner.cc
+    rust_vulkan_surface.h
+    rust_vulkan_surface.cc
+    vulkan_context_rust.h
+    vulkan_context_rust.cc
+
+  tests/
+    test_texture.py
 
   crates/
     flutter-shell-core/

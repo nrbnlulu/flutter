@@ -99,22 +99,22 @@ action("flutter_shell_wgpu_rust") {
 # by the existing GTK, Win32, Android, or Darwin shell targets.
 source_set("flutter_rust_shell") {
   public = [
-    "platform_view_rust.h",
-    "rust_bridge.h",
-    "rust_external_texture.h",
-    "rust_shell.h",
-    "rust_task_runner.h",
-    "rust_vulkan_surface.h",
-    "vulkan_context_rust.h",
+    "cpp/platform_view_rust.h",
+    "cpp/rust_bridge.h",
+    "cpp/rust_external_texture.h",
+    "cpp/rust_shell.h",
+    "cpp/rust_task_runner.h",
+    "cpp/rust_vulkan_surface.h",
+    "cpp/vulkan_context_rust.h",
   ]
 
   sources = [
-    "platform_view_rust.cc",
-    "rust_shell.cc",
-    "rust_external_texture.cc",
-    "rust_task_runner.cc",
-    "rust_vulkan_surface.cc",
-    "vulkan_context_rust.cc",
+    "cpp/platform_view_rust.cc",
+    "cpp/rust_external_texture.cc",
+    "cpp/rust_shell.cc",
+    "cpp/rust_task_runner.cc",
+    "cpp/rust_vulkan_surface.cc",
+    "cpp/vulkan_context_rust.cc",
   ]
 
   public_deps = [
@@ -137,7 +137,7 @@ shared_library("flutter_rust_engine") {
   output_name = "flutter_rust_engine"
 
   # Ninja must relink if the Linux export policy changes.
-  inputs = [ "rust_engine_exports.lst" ]
+  inputs = [ "cpp/rust_engine_exports.lst" ]
 
   # source_set object files only propagate through public_deps.  The shared
   # object is the owner of this implementation, so make the implementation
@@ -155,7 +155,7 @@ shared_library("flutter_rust_engine") {
   # unaware of Dart, Impeller, and Skia.
   if (is_linux) {
     ldflags = [ "-Wl,--version-script=" +
-                rebase_path("rust_engine_exports.lst", root_build_dir) ]
+                rebase_path("cpp/rust_engine_exports.lst", root_build_dir) ]
   }
 
   public_configs = [ "//flutter:config" ]
@@ -166,8 +166,8 @@ shared_library("flutter_rust_engine") {
 # ABI callback implementations linked in through :flutter_rust_shell.
 executable("flutter_rust_shell_runner") {
   sources = [
-    "main.cc",
-    "rust_runner.h",
+    "cpp/main.cc",
+    "cpp/rust_runner.h",
   ]
 
   # The Dart VM resolves its JIT snapshot symbols by looking inside the
@@ -175,7 +175,7 @@ executable("flutter_rust_shell_runner") {
   # hidden-visibility build config. See shell_host_executable in
   # //flutter/shell/common/BUILD.gn for the same requirement.
   if (is_linux) {
-    inputs = [ "rust_runner_exports.sym" ]
+    inputs = [ "cpp/rust_runner_exports.sym" ]
     ldflags = [ "-Wl,--dynamic-list=" + rebase_path(inputs[0], root_build_dir) ]
   } else {
     public_configs = [ "//flutter:export_dynamic_symbols" ]
@@ -205,9 +205,9 @@ if (enable_unittests) {
     testonly = true
 
     sources = [
-      "platform_view_rust_unittests.cc",
-      "rust_external_texture_unittests.cc",
-      "rust_task_runner_unittests.cc",
+      "cpp/platform_view_rust_unittests.cc",
+      "cpp/rust_external_texture_unittests.cc",
+      "cpp/rust_task_runner_unittests.cc",
     ]
 
     deps = [

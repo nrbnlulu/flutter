@@ -4,7 +4,7 @@
 
 #include <cstdio>
 
-#include "flutter/shell/platform/rust/rust_runner.h"
+#include "flutter/shell/platform/rust/cpp/rust_runner.h"
 
 // Standalone native runner for the optional, in-tree Rust shell. It is not
 // part of Flutter's public Embedder API and is not selected by the existing

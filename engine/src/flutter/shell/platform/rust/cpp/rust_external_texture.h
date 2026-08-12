@@ -8,7 +8,7 @@
 #include <optional>
 
 #include "flutter/common/graphics/texture.h"
-#include "flutter/shell/platform/rust/rust_bridge.h"
+#include "flutter/shell/platform/rust/cpp/rust_bridge.h"
 
 namespace impeller {
 class Context;

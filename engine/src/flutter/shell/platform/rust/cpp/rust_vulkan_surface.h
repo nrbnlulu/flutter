@@ -11,7 +11,7 @@
 
 #include "flutter/flow/surface.h"
 #include "flutter/shell/gpu/gpu_surface_vulkan_delegate.h"
-#include "flutter/shell/platform/rust/rust_bridge.h"
+#include "flutter/shell/platform/rust/cpp/rust_bridge.h"
 #include "flutter/vulkan/procs/vulkan_proc_table.h"
 #include "impeller/renderer/context.h"
 

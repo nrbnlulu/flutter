@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "flutter/shell/platform/rust/rust_vulkan_surface.h"
+#include "flutter/shell/platform/rust/cpp/rust_vulkan_surface.h"
 
 #include "flutter/shell/gpu/gpu_surface_vulkan_impeller.h"
 #include "impeller/renderer/backend/vulkan/command_buffer_vk.h"

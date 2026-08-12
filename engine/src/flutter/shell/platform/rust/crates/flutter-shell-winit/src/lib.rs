@@ -14,14 +14,17 @@ mod linux {
         path::PathBuf,
         rc::Rc,
         sync::Arc,
-        sync::{
-            Mutex,
-            atomic::{AtomicBool, Ordering},
-        },
+        sync::atomic::{AtomicBool, Ordering},
         thread::ThreadId,
         time::{Duration, Instant},
     };
 
+    #[cfg(not(test))]
+    use flutter_plugin_sdk::{
+        FlutterRustPlugin, GpuTextures, PluginError, Result as PluginResult, TextureDescriptor,
+        TextureFormat, WgpuTexture, WgpuTextureBackend, WgpuTextureBackendHandle,
+        WgpuTextureFrameBackend,
+    };
     use flutter_plugin_sdk::{MainThreadDispatcher, MainThreadTask, PluginRegistrar};
     use flutter_shell_core::{
         FLUTTER_RUST_KEY_CHARACTER_CAPACITY, FlutterRustKeyEvent, FlutterRustKeyEventType,
@@ -44,7 +47,8 @@ mod linux {
     };
     use flutter_shell_wgpu::GpuBroker;
     #[cfg(not(test))]
-    use flutter_shell_wgpu::WgpuTextureRing;
+    use flutter_shell_wgpu::{GpuContext, WgpuTextureRing};
+    use parking_lot::Mutex;
     #[cfg(not(test))]
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
     use serde::{Deserialize, Serialize, de::IgnoredAny};
@@ -116,10 +120,7 @@ mod linux {
         }
 
         fn send_event(&self, event: HostEvent) -> Result<(), ()> {
-            self.queue
-                .lock()
-                .expect("Flutter host event queue poisoned")
-                .push_back(event);
+            self.queue.lock().push_back(event);
             self.proxy.wake_up();
             Ok(())
         }
@@ -134,7 +135,7 @@ mod linux {
     }
 
     fn drain_host_event_batch(queue: &Mutex<VecDeque<HostEvent>>) -> (Vec<HostEvent>, bool) {
-        let mut queue = queue.lock().expect("Flutter host event queue poisoned");
+        let mut queue = queue.lock();
         let count = queue.len().min(MAX_HOST_EVENTS_PER_TURN);
         let events = queue.drain(..count).collect();
         (events, !queue.is_empty())
@@ -1790,12 +1791,7 @@ mod linux {
         }
 
         fn drain(&self) -> VecDeque<TextInputCommand> {
-            std::mem::take(
-                &mut *self
-                    .commands
-                    .lock()
-                    .expect("Flutter text input command queue poisoned"),
-            )
+            std::mem::take(&mut *self.commands.lock())
         }
     }
 
@@ -1862,11 +1858,7 @@ mod linux {
         // SAFETY: callbacks() uses the stable address of the boxed inbox, and
         // ShellApplication destroys the C++ shell before dropping that inbox.
         let inbox = unsafe { &*user_data.cast::<TextInputInbox>() };
-        inbox
-            .commands
-            .lock()
-            .expect("Flutter text input command queue poisoned")
-            .push_back(command);
+        inbox.commands.lock().push_back(command);
         let _ = inbox.wake_proxy.send_event(HostEvent::TaskScheduled);
         FlutterRustPlatformMessageDisposition::Success
     }
@@ -2686,10 +2678,7 @@ mod linux {
         }
 
         pub fn take_due(&self, now: Instant) -> Vec<ScheduledTask> {
-            self.queue
-                .lock()
-                .expect("Flutter task queue poisoned")
-                .take_due(now)
+            self.queue.lock().take_due(now)
         }
 
         pub fn is_destroyed(&self) -> bool {
@@ -2702,7 +2691,6 @@ mod linux {
         pub fn task_runner_handle(&self) -> *mut c_void {
             self.task_runner
                 .lock()
-                .expect("Flutter task runner poisoned")
                 .expect("the C++ task runner has not been installed yet") as *mut c_void
         }
 
@@ -2712,10 +2700,7 @@ mod linux {
                 !task_runner.is_null(),
                 "C++ failed to create the Flutter Rust task runner"
             );
-            *self
-                .task_runner
-                .lock()
-                .expect("Flutter task runner poisoned") = Some(task_runner as usize);
+            *self.task_runner.lock() = Some(task_runner as usize);
         }
 
         fn dispatch_due_tasks(&self) {
@@ -2725,20 +2710,13 @@ mod linux {
         }
 
         fn next_deadline(&self) -> Option<Instant> {
-            self.queue
-                .lock()
-                .expect("Flutter task queue poisoned")
-                .next_deadline()
+            self.queue.lock().next_deadline()
         }
     }
 
     impl Drop for TaskRunnerHost {
         fn drop(&mut self) {
-            let task_runner = self
-                .task_runner
-                .get_mut()
-                .expect("Flutter task runner poisoned")
-                .take();
+            let task_runner = self.task_runner.get_mut().take();
             if let Some(task_runner) = task_runner {
                 destroy_cpp_task_runner(task_runner as *mut c_void);
             }
@@ -2755,16 +2733,13 @@ mod linux {
         // and C++ promises to stop calling it before task_runner_destroyed.
         let host = unsafe { &*user_data.cast::<TaskRunnerHost>() };
         let deadline = Instant::now() + Duration::from_nanos(delay_nanos);
-        host.queue
-            .lock()
-            .expect("Flutter task queue poisoned")
-            .schedule(
-                ScheduledTask {
-                    task_runner: task_runner as usize,
-                    task_baton,
-                },
-                deadline,
-            );
+        host.queue.lock().schedule(
+            ScheduledTask {
+                task_runner: task_runner as usize,
+                task_baton,
+            },
+            deadline,
+        );
         if let Some(wake_proxy) = &host.wake_proxy {
             let _ = wake_proxy.send_event(HostEvent::TaskScheduled);
         }
@@ -2911,6 +2886,8 @@ mod linux {
             std::thread::current().id(),
         );
         let plugin_registrar = PluginRegistrar::for_shell(main_thread_dispatcher.clone());
+        #[cfg(not(test))]
+        let retained_textures = Arc::new(Mutex::new(Vec::new()));
         let task_runner_host = Box::new(TaskRunnerHost::with_wake_proxy(Some(event_proxy.clone())));
         task_runner_host.install_cpp_task_runner();
         let vsync_host = Box::new(VsyncHost::new(event_proxy.clone()));
@@ -2938,7 +2915,9 @@ mod linux {
             text_input_session: TextInputSession::default(),
             lifecycle_state: LifecycleState::new(),
             main_thread_dispatcher,
-            _plugin_registrar: plugin_registrar,
+            plugin_registrar,
+            #[cfg(not(test))]
+            retained_textures,
             #[cfg(not(test))]
             demo_texture: None,
         };
@@ -2957,17 +2936,155 @@ mod linux {
         text_input_session: TextInputSession,
         lifecycle_state: LifecycleState,
         main_thread_dispatcher: MainThreadDispatcher,
-        _plugin_registrar: PluginRegistrar,
+        plugin_registrar: PluginRegistrar,
+        #[cfg(not(test))]
+        retained_textures: Arc<Mutex<Vec<Arc<RegisteredWgpuTexture>>>>,
         #[cfg(not(test))]
         demo_texture: Option<DemoTexture>,
     }
 
     #[cfg(not(test))]
     struct DemoTexture {
-        ring: Box<WgpuTextureRing>,
-        texture_id: i64,
+        texture: WgpuTexture,
         next_frame: Instant,
         phase: u64,
+    }
+
+    #[cfg(not(test))]
+    struct RegisteredWgpuTexture {
+        ring: Box<WgpuTextureRing>,
+        texture_id: i64,
+        unregistered: AtomicBool,
+    }
+
+    #[cfg(not(test))]
+    struct ShellWgpuTextureBackend {
+        context: Arc<GpuContext>,
+        dispatcher: MainThreadDispatcher,
+        shell_address: usize,
+        retained: Arc<Mutex<Vec<Arc<RegisteredWgpuTexture>>>>,
+    }
+
+    #[cfg(not(test))]
+    struct ShellWgpuTextureHandle {
+        registration: Arc<RegisteredWgpuTexture>,
+        dispatcher: MainThreadDispatcher,
+        shell_address: usize,
+    }
+
+    #[cfg(not(test))]
+    impl ShellWgpuTextureHandle {
+        fn unregister(&self) {
+            if self
+                .registration
+                .unregistered
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return;
+            }
+            let shell_address = self.shell_address;
+            let texture_id = self.registration.texture_id;
+            if self
+                .dispatcher
+                .dispatch(move || {
+                    unregister_cpp_external_texture(shell_address as *mut c_void, texture_id);
+                })
+                .is_err()
+            {
+                self.registration
+                    .unregistered
+                    .store(false, Ordering::Release);
+            }
+        }
+    }
+
+    #[cfg(not(test))]
+    impl Drop for ShellWgpuTextureHandle {
+        fn drop(&mut self) {
+            self.unregister();
+        }
+    }
+
+    #[cfg(not(test))]
+    #[async_trait::async_trait]
+    impl WgpuTextureBackendHandle for ShellWgpuTextureHandle {
+        fn texture_id(&self) -> i64 {
+            self.registration.texture_id
+        }
+
+        fn try_next_frame(&self) -> PluginResult<Arc<dyn WgpuTextureFrameBackend>> {
+            self.registration.ring.try_next_frame()
+        }
+
+        async fn next_frame(&self) -> PluginResult<Arc<dyn WgpuTextureFrameBackend>> {
+            self.registration.ring.next_frame().await
+        }
+    }
+
+    #[cfg(not(test))]
+    impl WgpuTextureBackend for ShellWgpuTextureBackend {
+        fn create_texture(
+            &self,
+            descriptor: TextureDescriptor,
+        ) -> PluginResult<Arc<dyn WgpuTextureBackendHandle>> {
+            if !self.dispatcher.is_main_thread() {
+                return Err(PluginError::Unsupported);
+            }
+            if descriptor.format != TextureFormat::Rgba8Unorm {
+                return Err(PluginError::InvalidDescriptor);
+            }
+            let ring = self
+                .context
+                .create_texture_ring(descriptor.width, descriptor.height)
+                .map_err(|_| PluginError::InvalidDescriptor)?;
+            let texture_id =
+                register_cpp_external_texture(self.shell_address as *mut c_void, ring.callbacks());
+            if texture_id <= 0 {
+                return Err(PluginError::Shutdown);
+            }
+            let dispatcher = self.dispatcher.clone();
+            let shell_address = self.shell_address;
+            ring.set_registration(texture_id, move |texture_id| {
+                dispatcher
+                    .dispatch(move || {
+                        mark_cpp_external_texture_frame_available(
+                            shell_address as *mut c_void,
+                            texture_id,
+                        );
+                    })
+                    .map_err(|_| PluginError::Shutdown)
+            });
+            let registration = Arc::new(RegisteredWgpuTexture {
+                ring,
+                texture_id,
+                unregistered: AtomicBool::new(false),
+            });
+            self.retained.lock().push(Arc::clone(&registration));
+            Ok(Arc::new(ShellWgpuTextureHandle {
+                registration,
+                dispatcher: self.dispatcher.clone(),
+                shell_address: self.shell_address,
+            }))
+        }
+    }
+
+    #[cfg(not(test))]
+    struct DemoTexturePlugin {
+        texture: Arc<Mutex<Option<WgpuTexture>>>,
+    }
+
+    #[cfg(not(test))]
+    impl FlutterRustPlugin for DemoTexturePlugin {
+        fn register(&self, registrar: &mut PluginRegistrar) -> PluginResult<()> {
+            let texture = registrar.gpu()?.create_texture(TextureDescriptor {
+                width: 256,
+                height: 256,
+                format: TextureFormat::Rgba8Unorm,
+            })?;
+            *self.texture.lock() = Some(texture);
+            Ok(())
+        }
     }
 
     #[cfg_attr(test, allow(dead_code))]
@@ -3031,14 +3148,19 @@ mod linux {
             #[cfg(not(test))]
             if let Some(shell) = windows.shell.take() {
                 let demo = self.demo_texture.take();
-                if let Some(demo) = &demo {
-                    unregister_cpp_external_texture(shell, demo.texture_id);
+                drop(demo);
+                for registration in self.retained_textures.lock().iter() {
+                    registration.unregistered.store(true, Ordering::Release);
+                    // The C++ operation is idempotent. Repeat it here even if
+                    // handle drop tried to enqueue it, because dispatcher
+                    // shutdown suppresses queued callbacks during teardown.
+                    unregister_cpp_external_texture(shell, registration.texture_id);
                 }
                 destroy_cpp_shell(shell);
                 // Unregister posts to the raster runner. Shell destruction
                 // drains and joins that runner before the callback owner and
                 // its Vulkan semaphores are released here.
-                drop(demo);
+                self.retained_textures.lock().clear();
             }
 
             // Each ViewWindow declares its broker before its Arc<Window>, so
@@ -3152,22 +3274,36 @@ mod linux {
                         FlutterRustViewId::IMPLICIT,
                         WindowMetrics::from_window(window.as_ref(), window.scale_factor()),
                     );
+                    let gpu_backend = Arc::new(ShellWgpuTextureBackend {
+                        context: gpu_broker.shared_context(),
+                        dispatcher: self.main_thread_dispatcher.clone(),
+                        shell_address: shell as usize,
+                        retained: Arc::clone(&self.retained_textures),
+                    });
+                    assert!(
+                        self.plugin_registrar
+                            .install_gpu_for_shell(GpuTextures::for_shell(gpu_backend)),
+                        "GPU capability installed more than once"
+                    );
                     if std::env::var_os("FLUTTER_RUST_TEXTURE_DEMO").is_some() {
-                        let ring = gpu_broker
-                            .create_texture_ring(256, 256)
-                            .expect("failed to create demo texture ring");
-                        let texture_id = register_cpp_external_texture(shell, ring.callbacks());
-                        assert!(texture_id > 0, "failed to register demo texture");
-                        ring.request_clear([1.0, 0.0, 0.0, 1.0]);
-                        mark_cpp_external_texture_frame_available(shell, texture_id);
+                        let texture_slot = Arc::new(Mutex::new(None));
+                        DemoTexturePlugin {
+                            texture: Arc::clone(&texture_slot),
+                        }
+                        .register(&mut self.plugin_registrar)
+                        .expect("failed to register demo texture plugin");
+                        let texture = texture_slot
+                            .lock()
+                            .take()
+                            .expect("demo plugin did not create its texture");
+                        let texture_id = texture.texture_id();
                         log::info!("Flutter Rust demo texture ID: {texture_id}");
                         if let Some(path) = std::env::var_os("FLUTTER_RUST_TEXTURE_ID_FILE") {
                             std::fs::write(path, format!("{texture_id}\n"))
                                 .expect("failed to write demo texture ID");
                         }
                         self.demo_texture = Some(DemoTexture {
-                            ring,
-                            texture_id,
+                            texture,
                             next_frame: Instant::now() + Duration::from_millis(16),
                             phase: 0,
                         });
@@ -3644,9 +3780,30 @@ mod linux {
                     (angle + 4.189).sin() * 0.5 + 0.5,
                     1.0,
                 ];
-                demo.ring.request_clear(color);
-                if let Some(shell) = self.windows.borrow().shell {
-                    mark_cpp_external_texture_frame_available(shell, demo.texture_id);
+                if let Ok(mut frame) = demo.texture.try_next_frame() {
+                    frame
+                        .render(move |_, encoder, view| {
+                            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("Flutter Rust plugin demo clear"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view,
+                                    depth_slice: None,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                                            r: color[0],
+                                            g: color[1],
+                                            b: color[2],
+                                            a: color[3],
+                                        }),
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                })],
+                                ..Default::default()
+                            });
+                        })
+                        .expect("failed to record demo frame");
+                    frame.present().expect("failed to present demo frame");
                 }
                 demo.phase += 1;
                 demo.next_frame = Instant::now() + Duration::from_millis(16);
@@ -4505,7 +4662,6 @@ mod linux {
             for _ in 0..(MAX_HOST_EVENTS_PER_TURN + 1) {
                 queue
                     .lock()
-                    .unwrap()
                     .push_back(HostEvent::MainThreadTask(Box::new(|| {})));
             }
 

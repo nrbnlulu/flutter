@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "flutter/shell/platform/rust/rust_shell.h"
+#include "flutter/shell/platform/rust/cpp/rust_shell.h"
 
 #include <vector>
 
@@ -22,10 +22,10 @@
 #include "flutter/shell/common/switches.h"
 #include "flutter/shell/common/thread_host.h"
 #include "flutter/shell/platform/common/engine_switches.h"
-#include "flutter/shell/platform/rust/platform_view_rust.h"
-#include "flutter/shell/platform/rust/rust_external_texture.h"
-#include "flutter/shell/platform/rust/rust_task_runner.h"
-#include "flutter/shell/platform/rust/rust_vulkan_surface.h"
+#include "flutter/shell/platform/rust/cpp/platform_view_rust.h"
+#include "flutter/shell/platform/rust/cpp/rust_external_texture.h"
+#include "flutter/shell/platform/rust/cpp/rust_task_runner.h"
+#include "flutter/shell/platform/rust/cpp/rust_vulkan_surface.h"
 
 struct FlutterRustPlatformMessageResponseHandle {
   fml::RefPtr<flutter::PlatformMessageResponse> response;

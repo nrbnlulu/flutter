@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "flutter/shell/platform/rust/vulkan_context_rust.h"
+#include "flutter/shell/platform/rust/cpp/vulkan_context_rust.h"
 
 #include "flutter/fml/mapping.h"
 #include "flutter/impeller/entity/vk/entity_shaders_vk.h"

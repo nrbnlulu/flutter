@@ -6,16 +6,23 @@
 #[cfg(target_os = "linux")]
 mod linux {
     use ash::vk::Handle as _;
+    use flutter_plugin_sdk::{
+        PluginError, Result as PluginResult, WgpuRenderTask, WgpuTextureBackendHandle,
+        WgpuTextureFrameBackend,
+    };
     use flutter_shell_core::{
         FlutterRustExternalTextureCallbacks, FlutterRustExternalTextureFrame,
         FlutterRustVulkanImage, FlutterRustVulkanPresentationCallbacks,
     };
+    use parking_lot::Mutex;
     use std::collections::VecDeque;
     use std::ffi::c_void;
     use std::fs::File;
     use std::io::Write;
     use std::path::PathBuf;
-    use std::sync::Mutex;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
+    use tokio::sync::mpsc;
 
     /// Application-scoped wgpu/Vulkan ownership shared by every native view.
     pub struct GpuContext {
@@ -54,17 +61,26 @@ mod linux {
 
     /// Engine-owned triple-buffered texture storage shared by wgpu producers
     /// and Flutter's Impeller raster thread.
+    #[derive(Clone)]
     pub struct WgpuTextureRing {
-        context: std::sync::Arc<GpuContext>,
+        inner: Arc<WgpuTextureRingInner>,
+    }
+
+    struct WgpuTextureRingInner {
+        context: Arc<GpuContext>,
         width: u32,
         height: u32,
         state: Mutex<TextureRingState>,
+        available_tx: mpsc::Sender<usize>,
+        available_rx: tokio::sync::Mutex<mpsc::Receiver<usize>>,
         pending_clear: Mutex<Option<[f64; 4]>>,
+        texture_id: AtomicI64,
+        mark_frame_available: Mutex<Option<Arc<dyn Fn(i64) -> PluginResult<()> + Send + Sync>>>,
     }
 
     struct TextureRingState {
         slots: Vec<TextureSlot>,
-        ready: Option<usize>,
+        ready: VecDeque<usize>,
     }
 
     struct TextureSlot {
@@ -75,13 +91,25 @@ mod linux {
         sync: FrameSync,
         state: TextureSlotState,
         wait_for_flutter: bool,
+        render_task: Option<WgpuRenderTask>,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum TextureSlotState {
         Available,
+        Reserved,
         Ready,
         InFlutter,
+    }
+
+    const FRAME_RESERVED: u8 = 0;
+    const FRAME_PRESENTED: u8 = 1;
+    const FRAME_RETURNED: u8 = 2;
+
+    struct ReservedWgpuTextureFrame {
+        ring: Arc<WgpuTextureRingInner>,
+        slot: usize,
+        state: AtomicU8,
     }
 
     struct PresentationStats {
@@ -200,6 +228,15 @@ mod linux {
                 queue,
             }))
         }
+
+        /// Creates external-texture storage on this shared device.
+        pub fn create_texture_ring(
+            self: &Arc<Self>,
+            width: u32,
+            height: u32,
+        ) -> Result<Box<WgpuTextureRing>, String> {
+            WgpuTextureRing::new(Arc::clone(self), width, height)
+        }
     }
 
     impl WgpuTextureRing {
@@ -266,64 +303,65 @@ mod linux {
                     sync: FrameSync { acquire, render },
                     state: TextureSlotState::Available,
                     wait_for_flutter: false,
+                    render_task: None,
                 });
                 debug_assert_eq!(slots.len(), index + 1);
             }
+            let (available_tx, available_rx) = mpsc::channel(3);
+            for index in 0..3 {
+                available_tx
+                    .try_send(index)
+                    .expect("new texture-ring channel has capacity");
+            }
             Ok(Box::new(Self {
-                context,
-                width,
-                height,
-                state: Mutex::new(TextureRingState { slots, ready: None }),
-                pending_clear: Mutex::new(None),
+                inner: Arc::new(WgpuTextureRingInner {
+                    context,
+                    width,
+                    height,
+                    state: Mutex::new(TextureRingState {
+                        slots,
+                        ready: VecDeque::new(),
+                    }),
+                    available_tx,
+                    available_rx: tokio::sync::Mutex::new(available_rx),
+                    pending_clear: Mutex::new(None),
+                    texture_id: AtomicI64::new(-1),
+                    mark_frame_available: Mutex::new(None),
+                }),
             }))
+        }
+
+        /// Connects this ring to the shell texture registry. This is private
+        /// runtime plumbing; plugins receive only the SDK handle.
+        pub fn set_registration(
+            &self,
+            texture_id: i64,
+            mark_frame_available: impl Fn(i64) -> PluginResult<()> + Send + Sync + 'static,
+        ) {
+            self.inner.texture_id.store(texture_id, Ordering::Release);
+            *self.inner.mark_frame_available.lock() = Some(Arc::new(mark_frame_available));
         }
 
         /// Requests a solid-color frame. Rendering is deliberately deferred to
         /// Flutter's acquire callback so wgpu and Impeller never submit to the
         /// shared Vulkan queue concurrently.
         pub fn request_clear(&self, color: [f64; 4]) {
-            *self
-                .pending_clear
-                .lock()
-                .expect("texture clear request lock poisoned") = Some(color);
+            *self.inner.pending_clear.lock() = Some(color);
         }
 
         fn render_pending_clear(&self) -> bool {
-            let Some(color) = self
-                .pending_clear
-                .lock()
-                .expect("texture clear request lock poisoned")
-                .take()
-            else {
+            let Some(color) = self.inner.pending_clear.lock().take() else {
                 return false;
             };
-            let mut state = self.state.lock().expect("texture ring lock poisoned");
-            if state.ready.is_some() {
-                *self
-                    .pending_clear
-                    .lock()
-                    .expect("texture clear request lock poisoned") = Some(color);
-                return false;
-            }
-            let Some(index) = state
-                .slots
-                .iter()
-                .position(|slot| slot.state == TextureSlotState::Available)
-            else {
+            let Ok(index) = self.inner.try_reserve_slot() else {
+                *self.inner.pending_clear.lock() = Some(color);
                 return false;
             };
-            let slot = &mut state.slots[index];
-            let mut encoder =
-                self.context
-                    .device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("Flutter Rust external texture producer"),
-                    });
-            {
+            let task: WgpuRenderTask = Box::new(move |_, encoder, view| {
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Flutter Rust external texture clear"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &slot.view,
+                        view,
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
@@ -338,32 +376,8 @@ mod linux {
                     })],
                     ..Default::default()
                 });
-            }
-            encoder.transition_resources(
-                std::iter::empty(),
-                std::iter::once(wgpu::TextureTransition {
-                    texture: &slot.texture,
-                    selector: None,
-                    state: wgpu::TextureUses::RESOURCE,
-                }),
-            );
-            let Some(queue) = (unsafe { self.context.queue.as_hal::<wgpu::hal::vulkan::Api>() })
-            else {
-                return false;
-            };
-            if slot.wait_for_flutter {
-                queue.add_wait_semaphore(
-                    slot.sync.render,
-                    None,
-                    ash::vk::PipelineStageFlags::ALL_COMMANDS,
-                );
-                slot.wait_for_flutter = false;
-            }
-            queue.add_signal_semaphore(slot.sync.acquire, None);
-            self.context.queue.submit([encoder.finish()]);
-            slot.state = TextureSlotState::Ready;
-            state.ready = Some(index);
-            true
+            });
+            self.inner.record(index, task).is_ok() && self.inner.publish(index, false).is_ok()
         }
 
         /// Returns callbacks whose user data is valid while this boxed ring
@@ -377,17 +391,200 @@ mod linux {
         }
     }
 
-    impl Drop for WgpuTextureRing {
+    impl WgpuTextureRingInner {
+        fn claim_slot(&self, index: usize) -> PluginResult<usize> {
+            let mut state = self.state.lock();
+            let Some(slot) = state.slots.get_mut(index) else {
+                return Err(PluginError::Shutdown);
+            };
+            if slot.state != TextureSlotState::Available {
+                return Err(PluginError::Busy);
+            }
+            slot.state = TextureSlotState::Reserved;
+            Ok(index)
+        }
+
+        fn try_reserve_slot(&self) -> PluginResult<usize> {
+            let mut receiver = self
+                .available_rx
+                .try_lock()
+                .map_err(|_| PluginError::Busy)?;
+            match receiver.try_recv() {
+                Ok(index) => self.claim_slot(index),
+                Err(mpsc::error::TryRecvError::Empty) => Err(PluginError::Busy),
+                Err(mpsc::error::TryRecvError::Disconnected) => Err(PluginError::Shutdown),
+            }
+        }
+
+        async fn reserve_slot(&self) -> PluginResult<usize> {
+            let index = self
+                .available_rx
+                .lock()
+                .await
+                .recv()
+                .await
+                .ok_or(PluginError::Shutdown)?;
+            self.claim_slot(index)
+        }
+
+        fn record(&self, index: usize, task: WgpuRenderTask) -> PluginResult<()> {
+            let mut state = self.state.lock();
+            let Some(slot) = state.slots.get_mut(index) else {
+                return Err(PluginError::Shutdown);
+            };
+            if slot.state != TextureSlotState::Reserved || slot.render_task.is_some() {
+                return Err(PluginError::Busy);
+            }
+            slot.render_task = Some(task);
+            Ok(())
+        }
+
+        fn publish(&self, index: usize, notify_flutter: bool) -> PluginResult<()> {
+            {
+                let mut state = self.state.lock();
+                let Some(slot) = state.slots.get_mut(index) else {
+                    return Err(PluginError::Shutdown);
+                };
+                if slot.state != TextureSlotState::Reserved {
+                    return Err(PluginError::Busy);
+                }
+                if slot.render_task.is_none() {
+                    return Err(PluginError::NoFrame);
+                }
+                slot.state = TextureSlotState::Ready;
+                state.ready.push_back(index);
+            }
+            if notify_flutter {
+                let texture_id = self.texture_id.load(Ordering::Acquire);
+                let mark = self.mark_frame_available.lock().clone();
+                let Some(mark) = mark else {
+                    self.return_ready_slot(index);
+                    return Err(PluginError::Shutdown);
+                };
+                if let Err(error) = mark(texture_id) {
+                    self.return_ready_slot(index);
+                    return Err(error);
+                }
+            }
+            Ok(())
+        }
+
+        fn return_ready_slot(&self, index: usize) {
+            let should_send = {
+                let mut state = self.state.lock();
+                state.ready.retain(|ready| *ready != index);
+                let Some(slot) = state.slots.get_mut(index) else {
+                    return;
+                };
+                if slot.state != TextureSlotState::Ready {
+                    return;
+                }
+                slot.render_task = None;
+                slot.state = TextureSlotState::Available;
+                true
+            };
+            if should_send {
+                let _ = self.available_tx.try_send(index);
+            }
+        }
+
+        fn return_reserved_slot(&self, index: usize) {
+            let should_send = {
+                let mut state = self.state.lock();
+                let Some(slot) = state.slots.get_mut(index) else {
+                    return;
+                };
+                if slot.state != TextureSlotState::Reserved {
+                    return;
+                }
+                slot.render_task = None;
+                slot.state = TextureSlotState::Available;
+                true
+            };
+            if should_send {
+                let _ = self.available_tx.try_send(index);
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WgpuTextureBackendHandle for WgpuTextureRing {
+        fn texture_id(&self) -> i64 {
+            self.inner.texture_id.load(Ordering::Acquire)
+        }
+
+        fn try_next_frame(&self) -> PluginResult<Arc<dyn WgpuTextureFrameBackend>> {
+            let slot = self.inner.try_reserve_slot()?;
+            Ok(Arc::new(ReservedWgpuTextureFrame {
+                ring: Arc::clone(&self.inner),
+                slot,
+                state: AtomicU8::new(FRAME_RESERVED),
+            }))
+        }
+
+        async fn next_frame(&self) -> PluginResult<Arc<dyn WgpuTextureFrameBackend>> {
+            let slot = self.inner.reserve_slot().await?;
+            Ok(Arc::new(ReservedWgpuTextureFrame {
+                ring: Arc::clone(&self.inner),
+                slot,
+                state: AtomicU8::new(FRAME_RESERVED),
+            }))
+        }
+    }
+
+    impl WgpuTextureFrameBackend for ReservedWgpuTextureFrame {
+        fn render(&self, task: WgpuRenderTask) -> PluginResult<()> {
+            if self.state.load(Ordering::Acquire) != FRAME_RESERVED {
+                return Err(PluginError::Busy);
+            }
+            self.ring.record(self.slot, task)
+        }
+
+        fn present(&self) -> PluginResult<()> {
+            self.state
+                .compare_exchange(
+                    FRAME_RESERVED,
+                    FRAME_PRESENTED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .map_err(|_| PluginError::Busy)?;
+            match self.ring.publish(self.slot, true) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    self.ring.return_reserved_slot(self.slot);
+                    self.state.store(FRAME_RETURNED, Ordering::Release);
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    impl Drop for ReservedWgpuTextureFrame {
+        fn drop(&mut self) {
+            if self
+                .state
+                .compare_exchange(
+                    FRAME_RESERVED,
+                    FRAME_RETURNED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                self.ring.return_reserved_slot(self.slot);
+            }
+        }
+    }
+
+    impl Drop for WgpuTextureRingInner {
         fn drop(&mut self) {
             let Some(device) = (unsafe { self.context.device.as_hal::<wgpu::hal::vulkan::Api>() })
             else {
                 return;
             };
             let _ = unsafe { device.raw_device().device_wait_idle() };
-            let state = self
-                .state
-                .get_mut()
-                .expect("texture ring lock poisoned during destruction");
+            let state = self.state.get_mut();
             for slot in &state.slots {
                 unsafe {
                     device
@@ -409,7 +606,7 @@ mod linux {
             width: u32,
             height: u32,
         ) -> Result<Box<WgpuTextureRing>, String> {
-            WgpuTextureRing::new(std::sync::Arc::clone(&self.context), width, height)
+            self.context.create_texture_ring(width, height)
         }
 
         pub fn new(
@@ -551,7 +748,7 @@ mod linux {
             if width == 0 || height == 0 {
                 return Ok(());
             }
-            let mut state = self.surface_state.lock().expect("surface lock poisoned");
+            let mut state = self.surface_state.lock();
             let capabilities = self.surface.get_capabilities(&self.context.adapter);
             // Impeller's Vulkan backend only recognizes these two swapchain
             // formats (see VkFormatToImpellerFormat); sRGB and other variants
@@ -598,7 +795,7 @@ mod linux {
             requested_width: u32,
             requested_height: u32,
         ) -> Option<AcquiredImage> {
-            let mut state = self.surface_state.lock().expect("surface lock poisoned");
+            let mut state = self.surface_state.lock();
             if state.pending_frame.is_some() {
                 return None;
             }
@@ -733,7 +930,7 @@ mod linux {
         /// Presents the frame most recently returned by [`Self::acquire_image`].
         ///
         pub fn present_image(&self) -> bool {
-            let mut state = self.surface_state.lock().expect("surface lock poisoned");
+            let mut state = self.surface_state.lock();
             let Some(queue) = (unsafe { self.context.queue.as_hal::<wgpu::hal::vulkan::Api>() })
             else {
                 return false;
@@ -787,7 +984,6 @@ mod linux {
             {
                 stats
                     .lock()
-                    .expect("presentation stats lock poisoned")
                     .record(configuration.width, configuration.height);
             }
             state.retired_frames.push_back(RetiredFrame {
@@ -810,10 +1006,7 @@ mod linux {
 
     impl Drop for GpuBroker {
         fn drop(&mut self) {
-            let state = self
-                .surface_state
-                .get_mut()
-                .expect("surface lock poisoned during broker destruction");
+            let state = self.surface_state.get_mut();
             // SAFETY: no callback can enter the broker during `drop`. Waiting
             // for the borrowed device to become idle makes every outstanding
             // broker semaphore safe to destroy.
@@ -856,30 +1049,64 @@ mod linux {
         // SAFETY: callbacks() points at a boxed ring retained by the host, and
         // the C++ bridge supplies a writable output for this call.
         let ring = unsafe { &*user_data.cast::<WgpuTextureRing>() };
-        let has_ready = ring
-            .state
-            .lock()
-            .expect("texture ring lock poisoned")
-            .ready
-            .is_some();
+        let has_ready = !ring.inner.state.lock().ready.is_empty();
         if !has_ready {
             ring.render_pending_clear();
         }
-        let mut state = ring.state.lock().expect("texture ring lock poisoned");
-        let Some(index) = state.ready.take() else {
+        let mut state = ring.inner.state.lock();
+        let Some(index) = state.ready.pop_front() else {
             return 0;
         };
         let slot = &mut state.slots[index];
         if slot.state != TextureSlotState::Ready {
             return 0;
         }
+        let Some(task) = slot.render_task.take() else {
+            slot.state = TextureSlotState::Available;
+            drop(state);
+            let _ = ring.inner.available_tx.try_send(index);
+            return 0;
+        };
+        let mut encoder =
+            ring.inner
+                .context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Flutter Rust external texture producer"),
+                });
+        task(&ring.inner.context.device, &mut encoder, &slot.view);
+        encoder.transition_resources(
+            std::iter::empty(),
+            std::iter::once(wgpu::TextureTransition {
+                texture: &slot.texture,
+                selector: None,
+                state: wgpu::TextureUses::RESOURCE,
+            }),
+        );
+        let Some(queue) = (unsafe { ring.inner.context.queue.as_hal::<wgpu::hal::vulkan::Api>() })
+        else {
+            slot.state = TextureSlotState::Available;
+            drop(state);
+            let _ = ring.inner.available_tx.try_send(index);
+            return 0;
+        };
+        if slot.wait_for_flutter {
+            queue.add_wait_semaphore(
+                slot.sync.render,
+                None,
+                ash::vk::PipelineStageFlags::ALL_COMMANDS,
+            );
+            slot.wait_for_flutter = false;
+        }
+        queue.add_signal_semaphore(slot.sync.acquire, None);
+        ring.inner.context.queue.submit([encoder.finish()]);
         slot.state = TextureSlotState::InFlutter;
         let frame = FlutterRustExternalTextureFrame {
             image: slot.image.as_raw(),
             image_view: slot.image_view.as_raw(),
             format: ash::vk::Format::R8G8B8A8_UNORM.as_raw() as u32,
-            width: ring.width,
-            height: ring.height,
+            width: ring.inner.width,
+            height: ring.inner.height,
             acquire_semaphore: slot.sync.acquire.as_raw(),
             render_semaphore: slot.sync.render.as_raw(),
         };
@@ -896,17 +1123,20 @@ mod linux {
         }
         // SAFETY: see acquire_external_texture_frame.
         let ring = unsafe { &*user_data.cast::<WgpuTextureRing>() };
-        let mut state = ring.state.lock().expect("texture ring lock poisoned");
-        let Some(slot) = state
+        let mut state = ring.inner.state.lock();
+        let Some((index, slot)) = state
             .slots
             .iter_mut()
-            .find(|slot| slot.image.as_raw() == frame.image)
+            .enumerate()
+            .find(|(_, slot)| slot.image.as_raw() == frame.image)
         else {
             return;
         };
         if slot.state == TextureSlotState::InFlutter {
             slot.state = TextureSlotState::Available;
             slot.wait_for_flutter = true;
+            drop(state);
+            let _ = ring.inner.available_tx.try_send(index);
         }
     }
 

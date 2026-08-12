@@ -9,7 +9,7 @@
 #include <memory>
 
 #include "flutter/shell/common/platform_view.h"
-#include "flutter/shell/platform/rust/rust_bridge.h"
+#include "flutter/shell/platform/rust/cpp/rust_bridge.h"
 
 namespace flutter {
 
