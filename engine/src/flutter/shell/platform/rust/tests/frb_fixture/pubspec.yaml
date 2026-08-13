@@ -1,0 +1,14 @@
+name: flutter_rust_shell_frb_fixture
+description: End-to-end FRB dispatch fixture for the Flutter Rust shell.
+publish_to: none
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_rust_bridge: 2.12.0
+
+flutter:
+  uses-material-design: true

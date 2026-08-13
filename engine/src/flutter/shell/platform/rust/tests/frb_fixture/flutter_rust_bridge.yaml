@@ -1,0 +1,17 @@
+rust_input: crate::api
+rust_root: rust
+rust_output: rust/src/frb_generated.rs
+dart_output: lib/src/rust
+dart_entrypoint_class_name: RustLib
+dart_preamble: |
+  // Copyright 2026 The Flutter Authors. All rights reserved.
+  // Use of this source code is governed by a BSD-style license that can be
+  // found in the LICENSE file.
+rust_preamble: |
+  // Copyright 2026 The Flutter Authors. All rights reserved.
+  // Use of this source code is governed by a BSD-style license that can be
+  // found in the LICENSE file.
+web: false
+dart_format: true
+dart_fix: false
+rust_format: true

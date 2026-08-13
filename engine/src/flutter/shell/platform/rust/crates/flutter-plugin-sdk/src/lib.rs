@@ -16,6 +16,13 @@ use std::{
 /// The source compatibility version of this SDK.
 pub const PLUGIN_SDK_API_VERSION: u32 = 1;
 
+/// GPU API types pinned to the version used by the Rust shell.
+///
+/// Plugins must use this re-export for values passed through SDK callbacks.
+pub mod gpu {
+    pub use wgpu;
+}
+
 /// Errors returned while registering a Rust-shell plugin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginError {

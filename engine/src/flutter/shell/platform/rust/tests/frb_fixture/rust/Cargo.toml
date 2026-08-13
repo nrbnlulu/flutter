@@ -1,0 +1,34 @@
+[package]
+name = "flutter-rust-shell-frb-fixture"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "flutter-rust-shell-frb-fixture"
+path = "src/main.rs"
+required-features = ["runner"]
+
+[features]
+runner = []
+
+[dependencies]
+flutter-plugin-sdk = { path = "../../../crates/flutter-plugin-sdk" }
+flutter-shell-winit = { path = "../../../crates/flutter-shell-winit" }
+flutter_rust_bridge = "=2.12.0"
+
+[profile.flutter-profile]
+inherits = "release"
+debug = true
+
+[workspace]
+
+[patch.crates-io]
+winit-wayland = { path = "../../../third_party/winit-wayland" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(frb_expand)"] }

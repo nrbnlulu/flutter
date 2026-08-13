@@ -9,6 +9,7 @@ vars:
   RUST_SHELL_SAMPLE: /run/media/dev/33da92da-1869-46ee-a0c1-fd5c4c9049e5/@home/dev/1tb_desktop/1tboss/bug
   RUST_WINDOWING_EXAMPLE: '{{.TASKFILE_DIR}}/examples/multiple_windows'
   RUST_TEXTURE_EXAMPLE: '{{.TASKFILE_DIR}}/examples/texture'
+  RUST_FRB_FIXTURE: '{{.ENGINE_SRC}}/flutter/shell/platform/rust/tests/frb_fixture'
   RESIZE_ITERATIONS: 500
   LIFECYCLE_ITERATIONS: 20
   TEXTURE_LIFECYCLE_ITERATIONS: 40
@@ -116,6 +117,34 @@ tasks:
           --lifecycle-iterations={{.TEXTURE_LIFECYCLE_ITERATIONS}} \
           --runner={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/flutter_rust_shell_runner \
           --assets={{.RUST_TEXTURE_EXAMPLE}}/build/flutter_assets \
+          --icu={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/icudtl.dat
+
+  test-rust-shell-frb-dispatch:
+    desc: Verify FRB isolate dispatch plus wgpu and pixel-buffer textures end to end.
+    deps: [build-rust-shell]
+    preconditions:
+      - sh: command -v hyprctl >/dev/null
+        msg: Hyprland's hyprctl is required for the native FRB dispatch test.
+      - sh: command -v grim >/dev/null
+        msg: grim is required to verify both FRB texture producers.
+    cmds:
+      - |
+        cd {{.RUST_FRB_FIXTURE}}
+        {{.TASKFILE_DIR}}/bin/flutter pub get
+        {{.TASKFILE_DIR}}/bin/flutter build bundle --debug \
+          --target=lib/main.dart \
+          --local-engine={{.LOCAL_ENGINE}} \
+          --local-engine-host={{.LOCAL_ENGINE}} \
+          --local-engine-src-path={{.ENGINE_SRC}}
+      - |
+        cd {{.RUST_FRB_FIXTURE}}/rust
+        FLUTTER_RUST_ENGINE_DIR={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}} \
+          cargo +1.93.1 build --locked --features runner \
+            --bin flutter-rust-shell-frb-fixture
+      - |
+        python3 {{.ENGINE_SRC}}/flutter/shell/platform/rust/tests/test_frb_dispatch.py \
+          --runner={{.RUST_FRB_FIXTURE}}/rust/target/debug/flutter-rust-shell-frb-fixture \
+          --assets={{.RUST_FRB_FIXTURE}}/build/flutter_assets \
           --icu={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/icudtl.dat
 
   test-rust-shell-lifecycle:

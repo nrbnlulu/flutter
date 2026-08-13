@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flutter Rust FRB Plugin"
+  short_description: "Build FRB plugins with Flutter GPU textures"
+  default_prompt: "Use $plugin to create an FRB plugin that produces GPU and pixel-buffer textures."
