@@ -67,6 +67,8 @@ mod linux {
         inner: Arc<WgpuTextureRingInner>,
     }
 
+    type FrameAvailableCallback = Arc<dyn Fn(i64) -> PluginResult<()> + Send + Sync>;
+
     struct WgpuTextureRingInner {
         context: Arc<GpuContext>,
         width: u32,
@@ -75,7 +77,7 @@ mod linux {
         available: AvailableSlots,
         pending_clear: Mutex<Option<[f64; 4]>>,
         texture_id: AtomicI64,
-        mark_frame_available: Mutex<Option<Arc<dyn Fn(i64) -> PluginResult<()> + Send + Sync>>>,
+        mark_frame_available: Mutex<Option<FrameAvailableCallback>>,
     }
 
     struct AvailableSlots {

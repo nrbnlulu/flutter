@@ -34,6 +34,10 @@ live texture replacement and proves presentation resumes afterward. The only
 deferred Phase 1 coverage is an end-to-end
 background-isolate/FRB case that depends on the application plugin-registration
 entry point.
+The winit host is no longer hidden inside a Linux-only module: shared event-loop,
+input, lifecycle, window bookkeeping, texture, and plugin code compiles at the
+crate root. Native operations use statically dispatched platform traits, with
+the current Linux implementation isolated under `platform/linux.rs`.
 
 ## Status
 
@@ -45,6 +49,7 @@ entry point.
 | Rust/C++ ABI | External-texture extension complete | ABI v10 retains the multi-view/windowing contract and adds engine-generated external-texture IDs plus acquire, mark-frame-available, release, and unregister operations for borrowed Vulkan image/image-view handles and semaphore pairs. Raster unregister reports completion so Rust can reclaim callback owners safely; a private test-only entry point injects texture-registry context destruction/recreation on the raster runner. |
 | Rust workspace and `flutter-plugin-sdk` | Complete for foundation | Workspace uses Rust edition 2024, concrete toolchain 1.93.1, and passes its tests. |
 | Winit event loop | Complete for phase 0 | Linux host owns the window and event loop, dispatches Flutter task batons, and drives the Rust-owned Vulkan presentation loop end to end. |
+| Cross-platform host boundary | Linux adapter extracted | Shared host code is unconditionally compiled. `PlatformBackend` statically selects native popup creation, transient parenting, window attributes, compositor detection, and legacy key encoding; `LinuxPlatform` contains the Wayland/X11 implementation. `EngineBridge` similarly centralizes the C++ task-runner boundary and its test fake. No shell-owned backend trait uses dynamic dispatch, and test configuration is confined to the engine implementation selector plus `mod tests`. |
 | Merged UI/platform task runner | Complete for phase 0 | `RustTaskRunner` queues batons for the Rust host, winit returns due batons through opaque C++ handles, and it now also drives Dart's per-task microtask flush (see below). |
 | Impeller/wgpu interop | Explicit synchronization implemented and stress-tested | wgpu owns the Vulkan device/surface; C++ creates `ContextVK` from borrowed handles plus the in-tree Impeller Vulkan shader bundle. Per-frame binary semaphores now order wgpu acquire → Impeller render → wgpu present, synchronization objects stay alive through the consuming submission, and resize waits for that submission before swapchain replacement. A repeatable 500-resize compositor stress run, including hide/restore, fullscreen, and immediate teardown, exits cleanly with no wgpu or Impeller synchronization diagnostics. |
 | Linux runnable shell | Complete for rendered-frame proof | `flutter_rust_shell_runner` boots a real kernel-snapshot Flutter app; a live Hyprland capture shows the Flutter title, text field, button, and debug banner rendered in the Rust shell. |
@@ -684,6 +689,15 @@ entry point.
   then completes the remaining wgpu/pixel-buffer replacements. The validation
   run produced 472 presentations after the injection and exited without a
   Vulkan or teardown diagnostic.
+- Removed the crate-wide Linux guard and the transitional `host` wrapper from
+  `flutter-shell-winit`. Platform operations now cross a statically dispatched
+  `PlatformBackend`, selected as `CurrentPlatform = LinuxPlatform`; the native
+  implementation owns all direct Wayland/X11 imports. Legacy Linux/GTK key
+  metadata and fallback key-plane policy moved behind the same boundary. The
+  private task-runner FFI is similarly selected through `EngineBridge`, with
+  its only test `cfg` declarations centralized in `engine.rs`. Shared host code
+  contains no production `cfg(test)` branches, and windowing test helpers are
+  generic rather than trait objects.
 
 ## Next implementation steps (phase 2)
 
