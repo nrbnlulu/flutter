@@ -3,7 +3,6 @@
 //! The host keeps Flutter UI/platform task batons in a monotonic task queue.
 //! The private C++ bridge will install the callback that executes a due baton.
 
-
 mod engine;
 mod platform;
 
@@ -63,8 +62,8 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::{Key, KeyCode, ModifiersState, NamedKey, NativeKey, NativeKeyCode, PhysicalKey},
     window::{
-        ImeCapabilities, ImeEnableRequest, ImeHint, ImePurpose, ImeRequest, ImeRequestData,
-        Window, WindowAttributes, WindowId,
+        ImeCapabilities, ImeEnableRequest, ImeHint, ImePurpose, ImeRequest, ImeRequestData, Window,
+        WindowAttributes, WindowId,
     },
 };
 enum HostEvent {
@@ -1112,6 +1111,41 @@ pub struct ShellConfig {
     /// Optional append-only stream of `frame width height` records used by
     /// integration tests to verify that presentation remains live.
     pub presentation_stats_path: Option<PathBuf>,
+}
+
+/// Failure while starting or running a Rust-shell application.
+#[derive(Debug)]
+pub enum RunError {
+    /// Winit could not create or run the native event loop.
+    EventLoop(winit::error::EventLoopError),
+    /// The application's source-linked Rust plugins failed to register.
+    PluginRegistration(PluginError),
+}
+
+impl std::fmt::Display for RunError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EventLoop(error) => write!(formatter, "native event loop failed: {error}"),
+            Self::PluginRegistration(error) => {
+                write!(formatter, "Rust plugin registration failed: {error:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RunError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::EventLoop(error) => Some(error),
+            Self::PluginRegistration(_) => None,
+        }
+    }
+}
+
+impl From<winit::error::EventLoopError> for RunError {
+    fn from(error: winit::error::EventLoopError) -> Self {
+        Self::EventLoop(error)
+    }
 }
 
 impl Default for ShellConfig {
@@ -2716,7 +2750,35 @@ pub unsafe extern "C" fn FlutterRustShellRun(
             ..ShellConfig::default()
         }
     };
-    i32::from(run(config).is_ok())
+    let result = if std::env::var_os("FLUTTER_RUST_TEXTURE_DEMO").is_some() {
+        run_texture_fixture(config)
+    } else {
+        run(config)
+    };
+    if let Err(error) = &result {
+        log::error!("{error}");
+    }
+    i32::from(result.is_ok())
+}
+
+fn run_texture_fixture(config: ShellConfig) -> Result<(), RunError> {
+    let texture = Arc::new(Mutex::new(None));
+    let plugin_texture = Arc::clone(&texture);
+    let pixel_buffer = std::env::var_os("FLUTTER_RUST_PIXEL_BUFFER_TEXTURE_DEMO").is_some();
+    run_application_with_fixture(
+        config,
+        Box::new(move |registrar| {
+            DemoTexturePlugin {
+                texture: plugin_texture,
+                pixel_buffer,
+            }
+            .register(registrar)
+        }),
+        Some(DemoTextureFixture {
+            texture,
+            pixel_buffer,
+        }),
+    )
 }
 
 /// Backs the `log` crate with a plain stderr sink so first-party code and
@@ -2754,8 +2816,42 @@ fn init_logging() {
     let _ = log::set_logger(&LOGGER);
 }
 
-/// Runs the winit main loop for the Rust shell.
-pub fn run(config: ShellConfig) -> Result<(), winit::error::EventLoopError> {
+/// Runs an application with no source-linked Rust plugins.
+pub fn run(config: ShellConfig) -> Result<(), RunError> {
+    run_application(config, |_| Ok(()))
+}
+
+/// Runs an application and invokes its generated plugin-registration entry
+/// point exactly once after the engine, implicit view, platform dispatcher,
+/// and shell capabilities are ready.
+///
+/// Generated application aggregates pass their
+/// `register_application(&mut PluginRegistrar)` function here. Registration
+/// occurs on the winit owning thread before the event loop begins normal
+/// event delivery.
+pub fn run_application<F>(config: ShellConfig, register_application: F) -> Result<(), RunError>
+where
+    F: FnOnce(&mut PluginRegistrar) -> PluginResult<()> + 'static,
+{
+    run_application_with_fixture(config, Box::new(register_application), None)
+}
+
+type ApplicationRegistration = Box<dyn FnOnce(&mut PluginRegistrar) -> PluginResult<()> + 'static>;
+
+fn register_application_once(
+    registration: &mut Option<ApplicationRegistration>,
+    registrar: &mut PluginRegistrar,
+) -> PluginResult<()> {
+    registration
+        .take()
+        .expect("application plugins registered more than once")(registrar)
+}
+
+fn run_application_with_fixture(
+    config: ShellConfig,
+    register_application: ApplicationRegistration,
+    demo_fixture: Option<DemoTextureFixture>,
+) -> Result<(), RunError> {
     init_logging();
     let event_loop = EventLoop::new()?;
     let event_proxy = HostEventSender::new(event_loop.create_proxy());
@@ -2769,6 +2865,7 @@ pub fn run(config: ShellConfig) -> Result<(), winit::error::EventLoopError> {
         std::thread::current().id(),
     );
     let plugin_registrar = PluginRegistrar::for_shell(main_thread_dispatcher.clone());
+    let registration_error = Arc::new(Mutex::new(None));
     let retained_textures = Arc::new(Mutex::new(Vec::new()));
     let task_runner_host = Box::new(TaskRunnerHost::with_wake_proxy(Some(event_proxy.clone())));
     task_runner_host.install_cpp_task_runner();
@@ -2796,10 +2893,17 @@ pub fn run(config: ShellConfig) -> Result<(), winit::error::EventLoopError> {
         lifecycle_state: LifecycleState::new(),
         main_thread_dispatcher,
         plugin_registrar,
+        register_application: Some(register_application),
+        registration_error: Arc::clone(&registration_error),
         retained_textures,
+        demo_fixture,
         demo_texture: None,
     };
-    event_loop.run_app(application)
+    event_loop.run_app(application)?;
+    match registration_error.lock().take() {
+        Some(error) => Err(RunError::PluginRegistration(error)),
+        None => Ok(()),
+    }
 }
 struct ShellApplication {
     config: ShellConfig,
@@ -2813,8 +2917,15 @@ struct ShellApplication {
     lifecycle_state: LifecycleState,
     main_thread_dispatcher: MainThreadDispatcher,
     plugin_registrar: PluginRegistrar,
+    register_application: Option<ApplicationRegistration>,
+    registration_error: Arc<Mutex<Option<PluginError>>>,
     retained_textures: Arc<Mutex<Vec<Arc<RegisteredWgpuTexture>>>>,
+    demo_fixture: Option<DemoTextureFixture>,
     demo_texture: Option<DemoTexture>,
+}
+struct DemoTextureFixture {
+    texture: Arc<Mutex<Option<DemoTextureHandle>>>,
+    pixel_buffer: bool,
 }
 struct DemoTexture {
     gpu: GpuTextures,
@@ -3136,6 +3247,51 @@ enum NativeWindowKind {
     Satellite,
 }
 
+impl ShellApplication {
+    fn start_demo_texture_fixture(&mut self) {
+        let Some(fixture) = self.demo_fixture.take() else {
+            return;
+        };
+        let texture = fixture
+            .texture
+            .lock()
+            .take()
+            .expect("demo application registrar did not create its texture");
+        let texture_id = texture.texture_id();
+        log::info!("Flutter Rust demo texture ID: {texture_id}");
+        if let Some(path) = std::env::var_os("FLUTTER_RUST_TEXTURE_ID_FILE") {
+            std::fs::write(path, format!("{texture_id}\n"))
+                .expect("failed to write demo texture ID");
+        }
+        let lifecycle_remaining = std::env::var("FLUTTER_RUST_TEXTURE_LIFECYCLE_ITERATIONS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        self.demo_texture = Some(DemoTexture {
+            gpu: self
+                .plugin_registrar
+                .gpu()
+                .expect("demo texture GPU capability disappeared")
+                .clone(),
+            texture,
+            next_frame: Instant::now() + Duration::from_millis(16),
+            phase: 0,
+            frames_on_texture: 0,
+            lifecycle_remaining,
+            lifecycle_completed: 0,
+            lifecycle_status_path: std::env::var_os("FLUTTER_RUST_TEXTURE_LIFECYCLE_STATUS")
+                .map(std::path::PathBuf::from),
+            lifecycle_not_before: Instant::now() + Duration::from_secs(1),
+            pixel_buffer: fixture.pixel_buffer,
+            dart_ready: false,
+            pending_replacement: None,
+            context_recreated: Arc::new(AtomicBool::new(false)),
+            context_recreate_requested: false,
+            context_recreate_at: lifecycle_remaining / 2,
+        });
+    }
+}
+
 impl Drop for ShellApplication {
     fn drop(&mut self) {
         self.main_thread_dispatcher.shutdown_for_shell();
@@ -3285,62 +3441,6 @@ impl ApplicationHandler for ShellApplication {
                         .install_gpu_for_shell(GpuTextures::for_shell(gpu_backend)),
                     "GPU capability installed more than once"
                 );
-                if std::env::var_os("FLUTTER_RUST_TEXTURE_DEMO").is_some() {
-                    let texture_slot = Arc::new(Mutex::new(None));
-                    DemoTexturePlugin {
-                        texture: Arc::clone(&texture_slot),
-                        pixel_buffer: std::env::var_os("FLUTTER_RUST_PIXEL_BUFFER_TEXTURE_DEMO")
-                            .is_some(),
-                    }
-                    .register(&mut self.plugin_registrar)
-                    .expect("failed to register demo texture plugin");
-                    let texture = texture_slot
-                        .lock()
-                        .take()
-                        .expect("demo plugin did not create its texture");
-                    let texture_id = texture.texture_id();
-                    log::info!("Flutter Rust demo texture ID: {texture_id}");
-                    if let Some(path) = std::env::var_os("FLUTTER_RUST_TEXTURE_ID_FILE") {
-                        std::fs::write(path, format!("{texture_id}\n"))
-                            .expect("failed to write demo texture ID");
-                    }
-                    self.demo_texture = Some(DemoTexture {
-                        gpu: self
-                            .plugin_registrar
-                            .gpu()
-                            .expect("demo texture GPU capability disappeared")
-                            .clone(),
-                        texture,
-                        next_frame: Instant::now() + Duration::from_millis(16),
-                        phase: 0,
-                        frames_on_texture: 0,
-                        lifecycle_remaining: std::env::var(
-                            "FLUTTER_RUST_TEXTURE_LIFECYCLE_ITERATIONS",
-                        )
-                        .ok()
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(0),
-                        lifecycle_completed: 0,
-                        lifecycle_status_path: std::env::var_os(
-                            "FLUTTER_RUST_TEXTURE_LIFECYCLE_STATUS",
-                        )
-                        .map(std::path::PathBuf::from),
-                        lifecycle_not_before: Instant::now() + Duration::from_secs(1),
-                        pixel_buffer: std::env::var_os("FLUTTER_RUST_PIXEL_BUFFER_TEXTURE_DEMO")
-                            .is_some(),
-                        dart_ready: false,
-                        pending_replacement: None,
-                        context_recreated: Arc::new(AtomicBool::new(false)),
-                        context_recreate_requested: false,
-                        context_recreate_at: std::env::var(
-                            "FLUTTER_RUST_TEXTURE_LIFECYCLE_ITERATIONS",
-                        )
-                        .ok()
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .map(|iterations| iterations / 2)
-                        .unwrap_or(0),
-                    });
-                }
                 self.windows.borrow_mut().shell = Some(shell);
             }
 
@@ -3374,6 +3474,15 @@ impl ApplicationHandler for ShellApplication {
                 self.main_thread_dispatcher.start_for_shell(),
                 "main-thread dispatcher started more than once"
             );
+            if let Err(error) = register_application_once(
+                &mut self.register_application,
+                &mut self.plugin_registrar,
+            ) {
+                *self.registration_error.lock() = Some(error);
+                event_loop.exit();
+                return;
+            }
+            self.start_demo_texture_fixture();
         }
         let (visible, focused) = self.windows.borrow().aggregate_window_state();
         let state = self.lifecycle_state.resumed(visible, focused);
@@ -4493,8 +4602,9 @@ impl ShellApplication {
                     let request = if allowed {
                         let position = LogicalPosition::new(0, 0);
                         let size = LogicalSize::new(0, 0);
-                        let ime_caps =
-                            ImeCapabilities::new().with_hint_and_purpose().with_cursor_area();
+                        let ime_caps = ImeCapabilities::new()
+                            .with_hint_and_purpose()
+                            .with_cursor_area();
                         let request_data = ImeRequestData::default()
                             .with_hint_and_purpose(ImeHint::NONE, ImePurpose::Normal)
                             .with_cursor_area(position.into(), size.into());
@@ -4505,7 +4615,10 @@ impl ShellApplication {
                     let _ = window.request_ime_update(request);
                 }
                 Some(TextInputEffect::SetCursorRect(rect)) => {
-                    if window.ime_capabilities().is_some_and(|caps| caps.cursor_area()) {
+                    if window
+                        .ime_capabilities()
+                        .is_some_and(|caps| caps.cursor_area())
+                    {
                         let _ = window.request_ime_update(ImeRequest::Update(
                             ImeRequestData::default().with_cursor_area(
                                 LogicalPosition::new(rect.x, rect.y).into(),
@@ -4740,6 +4853,27 @@ mod tests {
         assert_eq!(ShellConfig::default().title, "Flutter Rust Shell");
         assert_eq!(TEXT_INPUT_CHANNEL, b"flutter/textinput");
         assert_eq!(KEY_EVENT_CHANNEL, b"flutter/keyevent");
+    }
+
+    #[test]
+    fn application_registration_runs_once_and_propagates_failure() {
+        let dispatcher =
+            MainThreadDispatcher::for_shell_inactive(|_| true, std::thread::current().id());
+        let mut registrar = PluginRegistrar::for_shell(dispatcher);
+        let calls = Rc::new(std::cell::Cell::new(0));
+        let registration_calls = Rc::clone(&calls);
+        let mut registration: Option<ApplicationRegistration> = Some(Box::new(move |registrar| {
+            registration_calls.set(registration_calls.get() + 1);
+            assert!(registrar.main_thread_dispatcher().is_main_thread());
+            Err(PluginError::Unsupported)
+        }));
+
+        assert_eq!(
+            register_application_once(&mut registration, &mut registrar),
+            Err(PluginError::Unsupported)
+        );
+        assert_eq!(calls.get(), 1);
+        assert!(registration.is_none());
     }
 
     #[test]
