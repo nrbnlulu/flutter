@@ -22,7 +22,7 @@ mod linux {
     use std::io::Write;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
     use tokio::sync::mpsc;
 
     /// Application-scoped wgpu/Vulkan ownership shared by every native view.
@@ -72,11 +72,74 @@ mod linux {
         width: u32,
         height: u32,
         state: Mutex<TextureRingState>,
-        available_tx: mpsc::Sender<usize>,
-        available_rx: tokio::sync::Mutex<mpsc::Receiver<usize>>,
+        available: AvailableSlots,
         pending_clear: Mutex<Option<[f64; 4]>>,
         texture_id: AtomicI64,
         mark_frame_available: Mutex<Option<Arc<dyn Fn(i64) -> PluginResult<()> + Send + Sync>>>,
+    }
+
+    struct AvailableSlots {
+        sender: Mutex<Option<mpsc::Sender<usize>>>,
+        receiver: tokio::sync::Mutex<mpsc::Receiver<usize>>,
+        shutdown: AtomicBool,
+    }
+
+    impl AvailableSlots {
+        fn new(count: usize) -> Self {
+            let (sender, receiver) = mpsc::channel(count);
+            for index in 0..count {
+                sender
+                    .try_send(index)
+                    .expect("new slot channel has capacity");
+            }
+            Self {
+                sender: Mutex::new(Some(sender)),
+                receiver: tokio::sync::Mutex::new(receiver),
+                shutdown: AtomicBool::new(false),
+            }
+        }
+
+        fn is_shutdown(&self) -> bool {
+            self.shutdown.load(Ordering::Acquire)
+        }
+
+        fn try_take(&self) -> PluginResult<usize> {
+            if self.is_shutdown() {
+                return Err(PluginError::Shutdown);
+            }
+            let mut receiver = self.receiver.try_lock().map_err(|_| PluginError::Busy)?;
+            match receiver.try_recv() {
+                Ok(index) if !self.is_shutdown() => Ok(index),
+                Ok(_) | Err(mpsc::error::TryRecvError::Disconnected) => Err(PluginError::Shutdown),
+                Err(mpsc::error::TryRecvError::Empty) => Err(PluginError::Busy),
+            }
+        }
+
+        async fn take(&self) -> PluginResult<usize> {
+            let index = self
+                .receiver
+                .lock()
+                .await
+                .recv()
+                .await
+                .ok_or(PluginError::Shutdown)?;
+            if self.is_shutdown() {
+                Err(PluginError::Shutdown)
+            } else {
+                Ok(index)
+            }
+        }
+
+        fn give_back(&self, index: usize) {
+            if let Some(sender) = self.sender.lock().as_ref() {
+                let _ = sender.try_send(index);
+            }
+        }
+
+        fn shutdown(&self) {
+            self.shutdown.store(true, Ordering::Release);
+            self.sender.lock().take();
+        }
     }
 
     struct TextureRingState {
@@ -340,12 +403,6 @@ mod linux {
                 });
                 debug_assert_eq!(slots.len(), index + 1);
             }
-            let (available_tx, available_rx) = mpsc::channel(3);
-            for index in 0..3 {
-                available_tx
-                    .try_send(index)
-                    .expect("new texture-ring channel has capacity");
-            }
             Ok(Box::new(Self {
                 inner: Arc::new(WgpuTextureRingInner {
                     context,
@@ -355,8 +412,7 @@ mod linux {
                         slots,
                         ready: VecDeque::new(),
                     }),
-                    available_tx,
-                    available_rx: tokio::sync::Mutex::new(available_rx),
+                    available: AvailableSlots::new(3),
                     pending_clear: Mutex::new(None),
                     texture_id: AtomicI64::new(-1),
                     mark_frame_available: Mutex::new(None),
@@ -373,6 +429,13 @@ mod linux {
         ) {
             self.inner.texture_id.store(texture_id, Ordering::Release);
             *self.inner.mark_frame_available.lock() = Some(Arc::new(mark_frame_available));
+        }
+
+        /// Stops frame production and wakes tasks waiting for a free slot.
+        /// Existing Flutter frames remain alive until their release callback.
+        pub fn shutdown(&self) {
+            self.inner.mark_frame_available.lock().take();
+            self.inner.available.shutdown();
         }
 
         /// Requests a solid-color frame. Rendering is deliberately deferred to
@@ -425,7 +488,18 @@ mod linux {
     }
 
     impl WgpuTextureRingInner {
+        fn is_shutdown(&self) -> bool {
+            self.available.is_shutdown()
+        }
+
+        fn return_available(&self, index: usize) {
+            self.available.give_back(index);
+        }
+
         fn claim_slot(&self, index: usize) -> PluginResult<usize> {
+            if self.is_shutdown() {
+                return Err(PluginError::Shutdown);
+            }
             let mut state = self.state.lock();
             let Some(slot) = state.slots.get_mut(index) else {
                 return Err(PluginError::Shutdown);
@@ -438,26 +512,14 @@ mod linux {
         }
 
         fn try_reserve_slot(&self) -> PluginResult<usize> {
-            let mut receiver = self
-                .available_rx
-                .try_lock()
-                .map_err(|_| PluginError::Busy)?;
-            match receiver.try_recv() {
-                Ok(index) => self.claim_slot(index),
-                Err(mpsc::error::TryRecvError::Empty) => Err(PluginError::Busy),
-                Err(mpsc::error::TryRecvError::Disconnected) => Err(PluginError::Shutdown),
+            if self.is_shutdown() {
+                return Err(PluginError::Shutdown);
             }
+            self.claim_slot(self.available.try_take()?)
         }
 
         async fn reserve_slot(&self) -> PluginResult<usize> {
-            let index = self
-                .available_rx
-                .lock()
-                .await
-                .recv()
-                .await
-                .ok_or(PluginError::Shutdown)?;
-            self.claim_slot(index)
+            self.claim_slot(self.available.take().await?)
         }
 
         fn record(&self, index: usize, task: WgpuRenderTask) -> PluginResult<()> {
@@ -493,6 +555,9 @@ mod linux {
         }
 
         fn publish(&self, index: usize, notify_flutter: bool) -> PluginResult<()> {
+            if self.is_shutdown() {
+                return Err(PluginError::Shutdown);
+            }
             {
                 let mut state = self.state.lock();
                 let Some(slot) = state.slots.get_mut(index) else {
@@ -538,7 +603,7 @@ mod linux {
                 true
             };
             if should_send {
-                let _ = self.available_tx.try_send(index);
+                self.return_available(index);
             }
         }
 
@@ -557,7 +622,7 @@ mod linux {
                 true
             };
             if should_send {
-                let _ = self.available_tx.try_send(index);
+                self.return_available(index);
             }
         }
     }
@@ -1199,7 +1264,7 @@ mod linux {
         if task.is_none() && !slot.pixels_written {
             slot.state = TextureSlotState::Available;
             drop(state);
-            let _ = ring.inner.available_tx.try_send(index);
+            ring.inner.return_available(index);
             return 0;
         }
         let mut encoder =
@@ -1245,7 +1310,7 @@ mod linux {
         else {
             slot.state = TextureSlotState::Available;
             drop(state);
-            let _ = ring.inner.available_tx.try_send(index);
+            ring.inner.return_available(index);
             return 0;
         };
         if slot.wait_for_flutter {
@@ -1294,7 +1359,7 @@ mod linux {
             slot.state = TextureSlotState::Available;
             slot.wait_for_flutter = true;
             drop(state);
-            let _ = ring.inner.available_tx.try_send(index);
+            ring.inner.return_available(index);
         }
     }
 
@@ -1352,6 +1417,34 @@ mod linux {
             };
             assert_eq!(context.queue_family_index, 6);
             assert_eq!(context.instance_extensions.len(), 1);
+        }
+
+        #[test]
+        fn available_slots_apply_backpressure_and_reuse_returns() {
+            let slots = AvailableSlots::new(3);
+            assert_eq!(slots.try_take(), Ok(0));
+            assert_eq!(slots.try_take(), Ok(1));
+            assert_eq!(slots.try_take(), Ok(2));
+            assert_eq!(slots.try_take(), Err(PluginError::Busy));
+            slots.give_back(1);
+            assert_eq!(slots.try_take(), Ok(1));
+        }
+
+        #[test]
+        fn shutdown_wakes_an_async_slot_waiter() {
+            let slots = Arc::new(AvailableSlots::new(1));
+            assert_eq!(slots.try_take(), Ok(0));
+            let waiter_slots = Arc::clone(&slots);
+            let waiter = std::thread::spawn(move || pollster::block_on(waiter_slots.take()));
+
+            slots.shutdown();
+
+            assert_eq!(
+                waiter.join().expect("slot waiter panicked"),
+                Err(PluginError::Shutdown)
+            );
+            slots.give_back(0);
+            assert_eq!(slots.try_take(), Err(PluginError::Shutdown));
         }
     }
 }

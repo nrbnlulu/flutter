@@ -11,7 +11,7 @@
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 8;
+pub const SHELL_ABI_VERSION: u32 = 10;
 /// Plugin SDK API version expected by this lockstep private runtime.
 pub const PLUGIN_SDK_API_VERSION: u32 = 1;
 

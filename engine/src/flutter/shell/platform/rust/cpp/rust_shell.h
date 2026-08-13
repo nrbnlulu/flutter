@@ -87,7 +87,13 @@ class RustShell final {
   int64_t RegisterExternalTexture(
       FlutterRustExternalTextureCallbacks callbacks);
   void MarkExternalTextureFrameAvailable(int64_t texture_id);
-  void UnregisterExternalTexture(int64_t texture_id);
+  void UnregisterExternalTexture(
+      int64_t texture_id,
+      FlutterRustExternalTextureUnregisteredCallback callback,
+      void* user_data);
+  void TestRecreateTextureContext(
+      FlutterRustExternalTextureUnregisteredCallback callback,
+      void* user_data);
 
   FlutterRustViewId CreateRegularWindow(
       const FlutterRustRegularWindowRequest* request);

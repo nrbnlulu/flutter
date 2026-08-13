@@ -19,7 +19,7 @@ extern "C" {
 
 // This private ABI is lockstep-versioned with the Flutter fork. It is not the
 // Flutter Embedder API and is never exposed to application plugins.
-#define FLUTTER_RUST_SHELL_ABI_VERSION 8u
+#define FLUTTER_RUST_SHELL_ABI_VERSION 10u
 #define FLUTTER_RUST_PLUGIN_SDK_API_VERSION 1u
 
 typedef struct FlutterRustShellAbi {
@@ -272,6 +272,7 @@ typedef int (*FlutterRustAcquireExternalTextureFrameCallback)(
 typedef void (*FlutterRustReleaseExternalTextureFrameCallback)(
     void* user_data,
     FlutterRustExternalTextureFrame frame);
+typedef void (*FlutterRustExternalTextureUnregisteredCallback)(void* user_data);
 
 typedef struct FlutterRustExternalTextureCallbacks {
   void* user_data;
@@ -591,7 +592,15 @@ FlutterRustShellMarkExternalTextureFrameAvailable(void* shell,
                                                   int64_t texture_id);
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellUnregisterExternalTexture(
     void* shell,
-    int64_t texture_id);
+    int64_t texture_id,
+    FlutterRustExternalTextureUnregisteredCallback callback,
+    void* user_data);
+// Test-only lifecycle injection used by the Rust-shell integration fixture.
+// Runs both notifications on the raster runner and then invokes callback.
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellTestRecreateTextureContext(
+    void* shell,
+    FlutterRustExternalTextureUnregisteredCallback callback,
+    void* user_data);
 
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellDestroyShell(void* shell);
 

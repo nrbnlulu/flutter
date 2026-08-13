@@ -1193,11 +1193,40 @@ mod linux {
     }
 
     #[cfg(not(test))]
-    fn unregister_cpp_external_texture(shell: *mut c_void, texture_id: i64) {
+    type ExternalTextureUnregisteredCallback = unsafe extern "C" fn(*mut c_void);
+
+    #[cfg(not(test))]
+    fn unregister_cpp_external_texture(
+        shell: *mut c_void,
+        texture_id: i64,
+        callback: Option<ExternalTextureUnregisteredCallback>,
+        user_data: *mut c_void,
+    ) {
         unsafe extern "C" {
-            fn FlutterRustShellUnregisterExternalTexture(shell: *mut c_void, texture_id: i64);
+            fn FlutterRustShellUnregisterExternalTexture(
+                shell: *mut c_void,
+                texture_id: i64,
+                callback: Option<ExternalTextureUnregisteredCallback>,
+                user_data: *mut c_void,
+            );
         }
-        unsafe { FlutterRustShellUnregisterExternalTexture(shell, texture_id) }
+        unsafe { FlutterRustShellUnregisterExternalTexture(shell, texture_id, callback, user_data) }
+    }
+
+    #[cfg(not(test))]
+    fn test_recreate_cpp_texture_context(
+        shell: *mut c_void,
+        callback: ExternalTextureUnregisteredCallback,
+        user_data: *mut c_void,
+    ) {
+        unsafe extern "C" {
+            fn FlutterRustShellTestRecreateTextureContext(
+                shell: *mut c_void,
+                callback: ExternalTextureUnregisteredCallback,
+                user_data: *mut c_void,
+            );
+        }
+        unsafe { FlutterRustShellTestRecreateTextureContext(shell, callback, user_data) }
     }
 
     /// Winit host configuration, shared across the platforms this crate will
@@ -1442,6 +1471,8 @@ mod linux {
     const REQUEST_APP_EXIT_MESSAGE: &[u8] =
         br#"{"method":"System.requestAppExit","args":{"type":"cancelable"}}"#;
     const KEY_EVENT_CHANNEL: &[u8] = b"flutter/keyevent";
+    #[cfg(not(test))]
+    const TEXTURE_FIXTURE_CHANNEL: &[u8] = b"flutter/rust_texture_fixture";
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(transparent)]
@@ -1726,6 +1757,8 @@ mod linux {
     struct TextInputInbox {
         commands: Mutex<VecDeque<TextInputCommand>>,
         #[cfg(not(test))]
+        texture_fixture_messages: Mutex<VecDeque<String>>,
+        #[cfg(not(test))]
         wake_proxy: HostEventSender,
         #[cfg(not(test))]
         exit: Arc<ApplicationExitCoordinator>,
@@ -1773,6 +1806,8 @@ mod linux {
             Self {
                 commands: Mutex::new(VecDeque::new()),
                 #[cfg(not(test))]
+                texture_fixture_messages: Mutex::new(VecDeque::new()),
+                #[cfg(not(test))]
                 wake_proxy: wake_proxy.clone(),
                 #[cfg(not(test))]
                 exit: Arc::new(ApplicationExitCoordinator {
@@ -1793,6 +1828,11 @@ mod linux {
 
         fn drain(&self) -> VecDeque<TextInputCommand> {
             std::mem::take(&mut *self.commands.lock())
+        }
+
+        #[cfg(not(test))]
+        fn drain_texture_fixture_messages(&self) -> VecDeque<String> {
+            std::mem::take(&mut *self.texture_fixture_messages.lock())
         }
     }
 
@@ -1849,6 +1889,18 @@ mod linux {
                 // deliberately interprets as a canceled exit.
                 ExitRequestStart::AlreadyPending => FlutterRustPlatformMessageDisposition::Success,
             };
+        }
+        if channel == TEXTURE_FIXTURE_CHANNEL {
+            let Ok(message) = std::str::from_utf8(message) else {
+                return FlutterRustPlatformMessageDisposition::Unhandled;
+            };
+            let inbox = unsafe { &*user_data.cast::<TextInputInbox>() };
+            inbox
+                .texture_fixture_messages
+                .lock()
+                .push_back(message.to_owned());
+            let _ = inbox.wake_proxy.send_event(HostEvent::TaskScheduled);
+            return FlutterRustPlatformMessageDisposition::Success;
         }
         if channel != TEXT_INPUT_CHANNEL {
             return FlutterRustPlatformMessageDisposition::Unhandled;
@@ -2946,9 +2998,29 @@ mod linux {
 
     #[cfg(not(test))]
     struct DemoTexture {
+        gpu: GpuTextures,
         texture: DemoTextureHandle,
         next_frame: Instant,
         phase: u64,
+        frames_on_texture: u8,
+        lifecycle_remaining: usize,
+        lifecycle_completed: usize,
+        lifecycle_status_path: Option<std::path::PathBuf>,
+        lifecycle_not_before: Instant,
+        pixel_buffer: bool,
+        dart_ready: bool,
+        pending_replacement: Option<PendingTextureReplacement>,
+        context_recreated: Arc<AtomicBool>,
+        context_recreate_requested: bool,
+        context_recreate_at: usize,
+    }
+
+    #[cfg(not(test))]
+    struct PendingTextureReplacement {
+        texture: DemoTextureHandle,
+        acknowledged: bool,
+        frames: u8,
+        generation: usize,
     }
 
     #[cfg(not(test))]
@@ -2964,6 +3036,27 @@ mod linux {
                 Self::Wgpu(texture) => texture.texture_id(),
                 Self::Pixels(texture) => texture.texture_id(),
             }
+        }
+    }
+
+    #[cfg(not(test))]
+    fn create_demo_texture(
+        gpu: &GpuTextures,
+        pixel_buffer: bool,
+        width: u32,
+        height: u32,
+    ) -> PluginResult<DemoTextureHandle> {
+        let descriptor = TextureDescriptor {
+            width,
+            height,
+            format: TextureFormat::Rgba8Unorm,
+        };
+        if pixel_buffer {
+            Ok(DemoTextureHandle::Pixels(
+                gpu.create_pixel_buffer_texture(descriptor)?,
+            ))
+        } else {
+            Ok(DemoTextureHandle::Wgpu(gpu.create_texture(descriptor)?))
         }
     }
 
@@ -2987,6 +3080,43 @@ mod linux {
         registration: Arc<RegisteredWgpuTexture>,
         dispatcher: MainThreadDispatcher,
         shell_address: usize,
+        retained: Arc<Mutex<Vec<Arc<RegisteredWgpuTexture>>>>,
+    }
+
+    #[cfg(not(test))]
+    struct TextureReclamation {
+        texture_id: i64,
+        retained: Arc<Mutex<Vec<Arc<RegisteredWgpuTexture>>>>,
+    }
+
+    #[cfg(not(test))]
+    unsafe extern "C" fn reclaim_external_texture(user_data: *mut c_void) {
+        if user_data.is_null() {
+            return;
+        }
+        // SAFETY: unregister transfers one Box<TextureReclamation> to C++,
+        // which calls this function exactly once after raster unregister.
+        let reclamation = unsafe { Box::from_raw(user_data.cast::<TextureReclamation>()) };
+        reclamation
+            .retained
+            .lock()
+            .retain(|registration| registration.texture_id != reclamation.texture_id);
+        log::info!(
+            "Flutter Rust external texture {} reclaimed",
+            reclamation.texture_id
+        );
+    }
+
+    #[cfg(not(test))]
+    unsafe extern "C" fn texture_context_recreated(user_data: *mut c_void) {
+        if user_data.is_null() {
+            return;
+        }
+        // SAFETY: the test hook consumes exactly one Arc raw pointer after its
+        // raster-thread destroy/create notification pair completes.
+        let completed = unsafe { Arc::from_raw(user_data.cast::<AtomicBool>()) };
+        completed.store(true, Ordering::Release);
+        log::info!("Flutter Rust texture context recreation completed");
     }
 
     #[cfg(not(test))]
@@ -3002,10 +3132,20 @@ mod linux {
             }
             let shell_address = self.shell_address;
             let texture_id = self.registration.texture_id;
+            let reclamation = Box::new(TextureReclamation {
+                texture_id,
+                retained: Arc::clone(&self.retained),
+            });
             if self
                 .dispatcher
                 .dispatch(move || {
-                    unregister_cpp_external_texture(shell_address as *mut c_void, texture_id);
+                    let reclamation_address = Box::into_raw(reclamation);
+                    unregister_cpp_external_texture(
+                        shell_address as *mut c_void,
+                        texture_id,
+                        Some(reclaim_external_texture),
+                        reclamation_address.cast::<c_void>(),
+                    );
                 })
                 .is_err()
             {
@@ -3035,6 +3175,7 @@ mod linux {
     #[cfg(not(test))]
     impl Drop for ShellWgpuTextureHandle {
         fn drop(&mut self) {
+            self.registration.ring.shutdown();
             self.unregister();
         }
     }
@@ -3098,6 +3239,7 @@ mod linux {
                 registration,
                 dispatcher: self.dispatcher.clone(),
                 shell_address: self.shell_address,
+                retained: Arc::clone(&self.retained),
             }))
         }
 
@@ -3142,6 +3284,7 @@ mod linux {
                 registration,
                 dispatcher: self.dispatcher.clone(),
                 shell_address: self.shell_address,
+                retained: Arc::clone(&self.retained),
             }))
         }
     }
@@ -3155,16 +3298,7 @@ mod linux {
     #[cfg(not(test))]
     impl FlutterRustPlugin for DemoTexturePlugin {
         fn register(&self, registrar: &mut PluginRegistrar) -> PluginResult<()> {
-            let descriptor = TextureDescriptor {
-                width: 256,
-                height: 256,
-                format: TextureFormat::Rgba8Unorm,
-            };
-            let texture = if self.pixel_buffer {
-                DemoTextureHandle::Pixels(registrar.gpu()?.create_pixel_buffer_texture(descriptor)?)
-            } else {
-                DemoTextureHandle::Wgpu(registrar.gpu()?.create_texture(descriptor)?)
-            };
+            let texture = create_demo_texture(registrar.gpu()?, self.pixel_buffer, 256, 256)?;
             *self.texture.lock() = Some(texture);
             Ok(())
         }
@@ -3237,7 +3371,12 @@ mod linux {
                     // The C++ operation is idempotent. Repeat it here even if
                     // handle drop tried to enqueue it, because dispatcher
                     // shutdown suppresses queued callbacks during teardown.
-                    unregister_cpp_external_texture(shell, registration.texture_id);
+                    unregister_cpp_external_texture(
+                        shell,
+                        registration.texture_id,
+                        None,
+                        std::ptr::null_mut(),
+                    );
                 }
                 destroy_cpp_shell(shell);
                 // Unregister posts to the raster runner. Shell destruction
@@ -3390,9 +3529,42 @@ mod linux {
                                 .expect("failed to write demo texture ID");
                         }
                         self.demo_texture = Some(DemoTexture {
+                            gpu: self
+                                .plugin_registrar
+                                .gpu()
+                                .expect("demo texture GPU capability disappeared")
+                                .clone(),
                             texture,
                             next_frame: Instant::now() + Duration::from_millis(16),
                             phase: 0,
+                            frames_on_texture: 0,
+                            lifecycle_remaining: std::env::var(
+                                "FLUTTER_RUST_TEXTURE_LIFECYCLE_ITERATIONS",
+                            )
+                            .ok()
+                            .and_then(|value| value.parse().ok())
+                            .unwrap_or(0),
+                            lifecycle_completed: 0,
+                            lifecycle_status_path: std::env::var_os(
+                                "FLUTTER_RUST_TEXTURE_LIFECYCLE_STATUS",
+                            )
+                            .map(std::path::PathBuf::from),
+                            lifecycle_not_before: Instant::now() + Duration::from_secs(1),
+                            pixel_buffer: std::env::var_os(
+                                "FLUTTER_RUST_PIXEL_BUFFER_TEXTURE_DEMO",
+                            )
+                            .is_some(),
+                            dart_ready: false,
+                            pending_replacement: None,
+                            context_recreated: Arc::new(AtomicBool::new(false)),
+                            context_recreate_requested: false,
+                            context_recreate_at: std::env::var(
+                                "FLUTTER_RUST_TEXTURE_LIFECYCLE_ITERATIONS",
+                            )
+                            .ok()
+                            .and_then(|value| value.parse::<usize>().ok())
+                            .map(|iterations| iterations / 2)
+                            .unwrap_or(0),
                         });
                     }
                     self.windows.borrow_mut().shell = Some(shell);
@@ -3857,6 +4029,25 @@ mod linux {
             self.task_runner_host.dispatch_due_tasks();
             self.apply_text_input_commands();
             #[cfg(not(test))]
+            if let Some(demo) = &mut self.demo_texture {
+                for message in self.text_input_inbox.drain_texture_fixture_messages() {
+                    if message == "ready" {
+                        demo.dart_ready = true;
+                    } else if let Some(id) = message.strip_prefix("ack ")
+                        && id.parse::<i64>().ok()
+                            == demo
+                                .pending_replacement
+                                .as_ref()
+                                .map(|pending| pending.texture.texture_id())
+                    {
+                        demo.pending_replacement
+                            .as_mut()
+                            .expect("checked pending replacement")
+                            .acknowledged = true;
+                    }
+                }
+            }
+            #[cfg(not(test))]
             if let Some(demo) = &mut self.demo_texture
                 && Instant::now() >= demo.next_frame
             {
@@ -3867,7 +4058,7 @@ mod linux {
                     (angle + 4.189).sin() * 0.5 + 0.5,
                     1.0,
                 ];
-                match &demo.texture {
+                let presented = match &demo.texture {
                     DemoTextureHandle::Wgpu(texture) => {
                         if let Ok(mut frame) = texture.try_next_frame() {
                             frame
@@ -3896,6 +4087,9 @@ mod linux {
                                 })
                                 .expect("failed to record demo frame");
                             frame.present().expect("failed to present demo frame");
+                            true
+                        } else {
+                            false
                         }
                     }
                     DemoTextureHandle::Pixels(texture) => {
@@ -3914,8 +4108,134 @@ mod linux {
                                 })
                                 .expect("failed to write demo pixels");
                             frame.present().expect("failed to present demo pixels");
+                            true
+                        } else {
+                            false
                         }
                     }
+                };
+                if presented {
+                    demo.frames_on_texture = demo.frames_on_texture.saturating_add(1);
+                }
+                if let Some(pending) = &mut demo.pending_replacement
+                    && pending.acknowledged
+                {
+                    let replacement_presented = match &pending.texture {
+                        DemoTextureHandle::Wgpu(texture) => {
+                            if let Ok(mut frame) = texture.try_next_frame() {
+                                frame
+                                    .render(move |_, encoder, view| {
+                                        let _pass = encoder.begin_render_pass(
+                                            &wgpu::RenderPassDescriptor {
+                                                label: Some("Flutter Rust replacement clear"),
+                                                color_attachments: &[Some(
+                                                    wgpu::RenderPassColorAttachment {
+                                                        view,
+                                                        depth_slice: None,
+                                                        resolve_target: None,
+                                                        ops: wgpu::Operations {
+                                                            load: wgpu::LoadOp::Clear(
+                                                                wgpu::Color::BLUE,
+                                                            ),
+                                                            store: wgpu::StoreOp::Store,
+                                                        },
+                                                    },
+                                                )],
+                                                ..Default::default()
+                                            },
+                                        );
+                                    })
+                                    .expect("failed to record replacement frame");
+                                frame
+                                    .present()
+                                    .expect("failed to present replacement frame");
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        DemoTextureHandle::Pixels(texture) => {
+                            if let Ok(mut frame) = texture.try_next_frame() {
+                                frame
+                                    .write_pixels(|pixels, _| pixels.fill(0x5f))
+                                    .expect("failed to write replacement pixels");
+                                frame
+                                    .present()
+                                    .expect("failed to present replacement pixels");
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                    };
+                    if replacement_presented {
+                        pending.frames = pending.frames.saturating_add(1);
+                    }
+                }
+                if demo
+                    .pending_replacement
+                    .as_ref()
+                    .is_some_and(|pending| pending.frames >= 4)
+                {
+                    let pending = demo
+                        .pending_replacement
+                        .take()
+                        .expect("checked pending replacement");
+                    let texture_id = pending.texture.texture_id();
+                    drop(std::mem::replace(&mut demo.texture, pending.texture));
+                    demo.lifecycle_remaining -= 1;
+                    demo.lifecycle_completed = pending.generation;
+                    demo.lifecycle_not_before = Instant::now() + Duration::from_millis(100);
+                    if let Some(path) = &demo.lifecycle_status_path {
+                        std::fs::write(path, format!("{} {texture_id}\n", pending.generation))
+                            .expect("failed to update texture replacement status");
+                    }
+                }
+                if !demo.context_recreate_requested
+                    && demo.context_recreate_at > 0
+                    && demo.lifecycle_completed >= demo.context_recreate_at
+                    && demo.pending_replacement.is_none()
+                    && let Some(shell) = self.windows.borrow().shell
+                {
+                    demo.context_recreate_requested = true;
+                    let completed = Arc::into_raw(Arc::clone(&demo.context_recreated));
+                    test_recreate_cpp_texture_context(
+                        shell,
+                        texture_context_recreated,
+                        completed.cast_mut().cast(),
+                    );
+                }
+                if demo.dart_ready
+                    && demo.pending_replacement.is_none()
+                    && demo.lifecycle_remaining > 0
+                    && Instant::now() >= demo.lifecycle_not_before
+                    && (!demo.context_recreate_requested
+                        || demo.context_recreated.load(Ordering::Acquire))
+                {
+                    let generation = demo.lifecycle_completed + 1;
+                    let width = 96 + (generation as u32 * 37) % 321;
+                    let height = 96 + (generation as u32 * 53) % 257;
+                    demo.pixel_buffer = !demo.pixel_buffer;
+                    let next = create_demo_texture(&demo.gpu, demo.pixel_buffer, width, height)
+                        .expect("failed to recreate lifecycle-stress texture");
+                    let texture_id = next.texture_id();
+                    let kind = if demo.pixel_buffer { "pixels" } else { "wgpu" };
+                    log::info!(
+                        "Flutter Rust texture lifecycle generation {generation}: ID {texture_id}, {width}x{height}, {kind}"
+                    );
+                    if let Some(shell) = self.windows.borrow().shell {
+                        send_cpp_platform_message(
+                            shell,
+                            TEXTURE_FIXTURE_CHANNEL,
+                            format!("{texture_id} {width} {height} {kind} {generation}").as_bytes(),
+                        );
+                    }
+                    demo.pending_replacement = Some(PendingTextureReplacement {
+                        texture: next,
+                        acknowledged: false,
+                        frames: 0,
+                        generation,
+                    });
                 }
                 demo.phase += 1;
                 demo.next_frame = Instant::now() + Duration::from_millis(16);

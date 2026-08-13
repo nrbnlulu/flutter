@@ -40,6 +40,13 @@ def presentation_count(path: Path) -> int:
     return 0
 
 
+def lifecycle_count(path: Path) -> int:
+  try:
+    return int(path.read_text().split()[0])
+  except (FileNotFoundError, IndexError, ValueError):
+    return 0
+
+
 def wait_until(predicate, process: subprocess.Popen[bytes], timeout: float = 10.0):
   deadline = time.monotonic() + timeout
   while time.monotonic() < deadline:
@@ -58,12 +65,14 @@ def main() -> None:
   parser.add_argument("--assets", required=True, type=Path)
   parser.add_argument("--icu", required=True, type=Path)
   parser.add_argument("--pixel-buffer", action="store_true")
+  parser.add_argument("--lifecycle-iterations", type=int, default=0)
   args = parser.parse_args()
 
   with tempfile.TemporaryDirectory(prefix="flutter-rust-texture-") as directory:
     work = Path(directory)
     texture_id = work / "texture-id"
     presentations = work / "presentations"
+    lifecycle_status = work / "lifecycle-status"
     log_path = work / "runner.log"
     first_capture = work / "first.png"
     second_capture = work / "second.png"
@@ -78,6 +87,11 @@ def main() -> None:
     })
     if args.pixel_buffer:
       environment["FLUTTER_RUST_PIXEL_BUFFER_TEXTURE_DEMO"] = "1"
+    if args.lifecycle_iterations:
+      environment.update({
+          "FLUTTER_RUST_TEXTURE_LIFECYCLE_ITERATIONS": str(args.lifecycle_iterations),
+          "FLUTTER_RUST_TEXTURE_LIFECYCLE_STATUS": str(lifecycle_status),
+      })
     if shutil.which("vulkaninfo"):
       vulkan = subprocess.run(["vulkaninfo"], capture_output=True, text=True)
       if "VK_LAYER_KHRONOS_validation" in vulkan.stdout + vulkan.stderr:
@@ -105,20 +119,77 @@ def main() -> None:
           raise RuntimeError("fixture did not initialize")
         if texture_id.read_text().strip() != "1":
           raise RuntimeError(f"Dart expects texture ID 1, got {texture_id.read_text().strip()!r}")
-        if not wait_until(lambda: presentation_count(presentations) >= 10, process):
-          raise RuntimeError("animated texture produced fewer than 10 presentations")
 
-        client = next(item for item in clients() if str(item.get("address")) == address)
-        x, y = client["at"]
-        width, height = client["size"]
-        geometry = f"{x},{y} {width}x{height}"
-        subprocess.run(["grim", "-g", geometry, str(first_capture)], check=True)
         baseline = presentation_count(presentations)
-        if not wait_until(lambda: presentation_count(presentations) >= baseline + 10, process):
-          raise RuntimeError("animated texture stopped presenting")
-        subprocess.run(["grim", "-g", geometry, str(second_capture)], check=True)
-        if first_capture.read_bytes() == second_capture.read_bytes():
-          raise RuntimeError("presentations advanced but captured pixels did not change")
+
+        if args.lifecycle_iterations:
+          client = next(item for item in clients() if str(item.get("address")) == address)
+          width, height = client["size"]
+          subprocess.run(
+              ["hyprctl", "dispatch", "togglefloating", f"address:{address}"],
+              check=True,
+              stdout=subprocess.DEVNULL,
+          )
+          resized_generation = 0
+
+          def lifecycle_completed():
+            nonlocal resized_generation
+            count = lifecycle_count(lifecycle_status)
+            milestone = count - count % 5
+            if milestone > resized_generation:
+              resized_generation = milestone
+              subprocess.run(
+                  [
+                      "hyprctl",
+                      "dispatch",
+                      "resizewindowpixel",
+                      f"exact {640 + milestone * 3} {480 + milestone * 2},address:{address}",
+                  ],
+                  check=True,
+                  stdout=subprocess.DEVNULL,
+              )
+            return count >= args.lifecycle_iterations
+
+          if not wait_until(
+              lifecycle_completed,
+              process,
+              timeout=max(10.0, args.lifecycle_iterations * 0.5),
+          ):
+            raise RuntimeError(
+                f"completed only {lifecycle_count(lifecycle_status)} of "
+                f"{args.lifecycle_iterations} texture lifecycle iterations"
+            )
+          expected_reclaims = args.lifecycle_iterations
+
+          def reclaimed():
+            log.flush()
+            return log_path.read_text(errors="replace"
+                                     ).count("Flutter Rust external texture") >= expected_reclaims
+
+          if not wait_until(reclaimed, process):
+            raise RuntimeError(
+                f"fewer than {expected_reclaims} retired texture rings were reclaimed"
+            )
+          log.flush()
+          diagnostics = log_path.read_text(errors="replace")
+          if diagnostics.count("Flutter Rust texture context recreation completed") != 1:
+            raise RuntimeError("texture context recreation did not complete exactly once")
+          if presentation_count(presentations) < baseline + args.lifecycle_iterations:
+            raise RuntimeError("live texture replacement produced too few presentations")
+        else:
+          client = next(item for item in clients() if str(item.get("address")) == address)
+          x, y = client["at"]
+          width, height = client["size"]
+          geometry = f"{x},{y} {width}x{height}"
+          subprocess.run(["grim", "-g", geometry, str(first_capture)], check=True)
+          if not wait_until(
+              lambda: presentation_count(presentations) >= baseline + 10,
+              process,
+          ):
+            raise RuntimeError("animated texture stopped presenting")
+          subprocess.run(["grim", "-g", geometry, str(second_capture)], check=True)
+          if first_capture.read_bytes() == second_capture.read_bytes():
+            raise RuntimeError("presentations advanced but captured pixels did not change")
 
         subprocess.run(["hyprctl", "dispatch", "closewindow", f"address:{address}"],
                        check=True,
@@ -130,9 +201,13 @@ def main() -> None:
         if DIAGNOSTIC.search(diagnostics):
           raise RuntimeError("Vulkan synchronization diagnostics were reported")
         producer = "pixel-buffer" if args.pixel_buffer else "wgpu"
+        lifecycle = (
+            f", {args.lifecycle_iterations} lifecycle rotations"
+            if args.lifecycle_iterations else ""
+        )
         print(
             f"Rust-shell {producer} texture fixture passed "
-            f"({presentation_count(presentations)} presentations)."
+            f"({presentation_count(presentations)} presentations{lifecycle})."
         )
       except Exception as error:
         log.flush()

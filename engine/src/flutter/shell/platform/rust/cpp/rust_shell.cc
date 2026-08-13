@@ -429,14 +429,50 @@ void RustShell::MarkExternalTextureFrameAvailable(int64_t texture_id) {
   }
 }
 
-void RustShell::UnregisterExternalTexture(int64_t texture_id) {
+void RustShell::UnregisterExternalTexture(
+    int64_t texture_id,
+    FlutterRustExternalTextureUnregisteredCallback callback,
+    void* user_data) {
   if (!shell_) {
+    if (callback) {
+      callback(user_data);
+    }
     return;
   }
   auto platform_view = shell_->GetPlatformView();
   if (platform_view && external_texture_ids_.erase(texture_id) == 1u) {
     platform_view->UnregisterTexture(texture_id);
   }
+  if (callback) {
+    // PlatformView unregister posts registry removal to this runner. FIFO task
+    // ordering makes the callback a safe point to release Rust's callback
+    // owner and its Vulkan resources.
+    shell_->GetTaskRunners().GetRasterTaskRunner()->PostTask(
+        [callback, user_data]() { callback(user_data); });
+  }
+}
+
+void RustShell::TestRecreateTextureContext(
+    FlutterRustExternalTextureUnregisteredCallback callback,
+    void* user_data) {
+  if (!shell_) {
+    if (callback) {
+      callback(user_data);
+    }
+    return;
+  }
+  shell_->GetTaskRunners().GetRasterTaskRunner()->PostTask(
+      [rasterizer = shell_->GetRasterizer(), callback, user_data]() {
+        if (rasterizer) {
+          if (auto registry = rasterizer->GetTextureRegistry()) {
+            registry->OnGrContextDestroyed();
+            registry->OnGrContextCreated();
+          }
+        }
+        if (callback) {
+          callback(user_data);
+        }
+      });
 }
 
 FlutterRustViewId RustShell::CreateRegularWindow(
@@ -829,11 +865,28 @@ extern "C" void FlutterRustShellMarkExternalTextureFrameAvailable(
   }
 }
 
-extern "C" void FlutterRustShellUnregisterExternalTexture(void* shell,
-                                                          int64_t texture_id) {
+extern "C" void FlutterRustShellUnregisterExternalTexture(
+    void* shell,
+    int64_t texture_id,
+    FlutterRustExternalTextureUnregisteredCallback callback,
+    void* user_data) {
   if (shell) {
     static_cast<flutter::RustShell*>(shell)->UnregisterExternalTexture(
-        texture_id);
+        texture_id, callback, user_data);
+  } else if (callback) {
+    callback(user_data);
+  }
+}
+
+extern "C" void FlutterRustShellTestRecreateTextureContext(
+    void* shell,
+    FlutterRustExternalTextureUnregisteredCallback callback,
+    void* user_data) {
+  if (shell) {
+    static_cast<flutter::RustShell*>(shell)->TestRecreateTextureContext(
+        callback, user_data);
+  } else if (callback) {
+    callback(user_data);
   }
 }
 
