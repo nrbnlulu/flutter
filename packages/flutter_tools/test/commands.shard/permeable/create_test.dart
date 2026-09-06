@@ -32,6 +32,7 @@ import 'package:flutter_tools/src/features.dart';
 import 'package:flutter_tools/src/flutter_project_metadata.dart' show FlutterTemplateType;
 import 'package:flutter_tools/src/globals.dart' as globals;
 import 'package:flutter_tools/src/project.dart';
+import 'package:flutter_tools/src/rust/rust_plugins.dart';
 import 'package:flutter_tools/src/version.dart';
 import 'package:pub_semver/pub_semver.dart';
 import 'package:pubspec_parse/pubspec_parse.dart';
@@ -5081,6 +5082,31 @@ To keep the default AGP version $templateAndroidGradlePluginVersion, download a 
     final String pubspec = await projectDir.childFile('pubspec.yaml').readAsString();
     expect(pubspec, contains(RegExp(r'^version:\s*0\.1\.0\+1\s*$', multiLine: true)));
   });
+
+  testUsingContext('creates a Rust-shell application without native runner directories', () async {
+    await _createProject(
+      projectDir,
+      <String>['--no-pub', '--shell=rust', '--platforms=linux'],
+      <String>[
+        'runner-rs/Cargo.toml',
+        'runner-rs/build.rs',
+        'runner-rs/rust-toolchain.toml',
+        'runner-rs/src/flutter_plugins.rs',
+        'runner-rs/src/lib.rs',
+        'runner-rs/src/main.rs',
+      ],
+      unexpectedPaths: <String>['linux'],
+      expectedGitignoreLines: <String>['/runner-rs/target/'],
+    );
+
+    expect(projectDir.childFile('pubspec.yaml').readAsStringSync(), contains('  shell: rust'));
+    expect(
+      projectDir.childDirectory('runner-rs').childFile('Cargo.toml').readAsStringSync(),
+      contains(rustPluginDependenciesBegin),
+    );
+    expect(logger.statusText, contains(r'$ flutter build bundle'));
+    expect(logger.statusText, contains(r'$ cargo run --manifest-path runner-rs/Cargo.toml'));
+  }, overrides: {Logger: () => logger});
 }
 
 Future<void> _createProject(

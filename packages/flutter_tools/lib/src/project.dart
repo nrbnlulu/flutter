@@ -33,6 +33,7 @@ import 'migrations/analysis_options_migration.dart';
 import 'package_graph.dart';
 import 'platform_plugins.dart';
 import 'project_validator_result.dart';
+import 'rust/rust_plugins.dart';
 import 'template.dart';
 import 'xcode_project.dart';
 
@@ -589,6 +590,15 @@ class FlutterProject {
       AnalysisOptionsMigration(this, globals.logger, packageConfig: packageConfig),
     ]);
     await migration.run();
+
+    if (!isPlugin && manifest.usesRustShell) {
+      await refreshRustPlugins(
+        this,
+        releaseMode: releaseMode,
+        packageGraph: packageGraph,
+        packageConfig: packageConfig,
+      );
+    }
 
     // When no platforms are enabled, nothing reads the plugin list or the
     // injected per-platform files.

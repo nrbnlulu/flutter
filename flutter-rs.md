@@ -526,34 +526,23 @@ Package authors generate and publish both halves of the FRB glue. Application
 builds do not modify packages in the Pub cache.
 
 After Pub resolves the Dart graph, the Flutter tool scans the resolved package
-roots for `rust/Cargo.toml`, reads their Cargo metadata, and generates one
-aggregation crate:
-
-```text
-.dart_tool/flutter_rs/runner/
-  Cargo.toml
-  src/lib.rs
-```
-
-Its generated dependency graph conceptually contains:
+roots for `rust/Cargo.toml`, reads their Cargo metadata, and updates the marked
+generated dependency block in the application's Cargo manifest:
 
 ```toml
-[lib]
-crate-type = ["staticlib", "cdylib"]
-
 [dependencies]
-app_runner = { path = "../../../runner-rs" }
-rust_video_player_rs = {
-  path = "/resolved/pub-cache/rust_video_player-2.1.0/rust"
-}
+# === BEGIN FLUTTER GENERATED RUST PLUGINS ===
+flutter_rs_plugin_rust_video_player = { package = "rust_video_player_rs", path = "../.dart_tool/flutter_rs/plugins/rust_video_player" }
+# === END FLUTTER GENERATED RUST PLUGINS ===
 ```
 
-Registration is generated explicitly:
+The stable path is a link to the exact package selected by Pub. The tool fully
+generates `runner-rs/src/flutter_plugins.rs`, and the application calls it from
+its own registration entry point:
 
 ```rust
-pub fn register_application(registrar: &mut PluginRegistrar) -> Result<()> {
-    app_runner::register(registrar)?;
-    rust_video_player_rs::register(registrar)?;
+pub(crate) fn register_plugins(registrar: &mut PluginRegistrar) -> Result<()> {
+    flutter_rs_plugin_rust_video_player::register(registrar)?;
     Ok(())
 }
 ```
@@ -562,12 +551,12 @@ Explicit calls behave predictably with iOS static linking, WebAssembly,
 tree-shaking, and dead-code elimination. They are preferred over linker-based
 discovery.
 
-The aggregation crate compiles the application and all Rust-shell plugins into
-one artifact. This ensures they share the shell's wgpu device, queue, plugin SDK
-types, and lifecycle. A conventional FRB package that builds its own Native
-Asset remains usable as an independent library, but it does not receive the
-shell registrar or shared GPU services unless it adopts this source-plugin
-convention.
+The application crate remains the final Cargo artifact and compiles all
+Rust-shell plugins into it. This keeps its FRB exports natural while ensuring
+that every plugin shares the shell's wgpu device, queue, plugin SDK types, and
+lifecycle. A conventional FRB package that builds its own Native Asset remains
+usable as an independent library, but it does not receive the shell registrar
+or shared GPU services unless it adopts this source-plugin convention.
 
 ## flutter_rust_bridge integration
 
@@ -702,7 +691,7 @@ The Flutter tool needs commands or build targets for:
 
 - Cargo dependency resolution.
 - Discovering Rust-shell plugins in the resolved Pub package graph.
-- Generating the application/plugin Cargo aggregation crate.
+- Updating the generated Cargo plugin dependency block and Rust registrant.
 - Pinning the bundled `flutter-plugin-sdk` through a Cargo path patch.
 - Validating with `cargo metadata` that one compatible plugin SDK version was
   resolved.

@@ -1,0 +1,82 @@
+name: Flutter Rust BETA artifacts
+
+on:
+  push:
+    branches: [master, rust/flutter-rs-shell]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flutter-rust-beta
+  cancel-in-progress: true
+
+jobs:
+  build-linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libvulkan-dev libwayland-dev libxkbcommon-dev ninja-build
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+
+      - name: Add Flutter to PATH
+        run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch engine dependencies
+        run: |
+          cp engine.gclient .gclient
+          "$RUNNER_TEMP/depot_tools/gclient" sync --no-history
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.93.1 --profile minimal
+
+      - name: Build Flutter tool
+        run: |
+          bin/flutter --version
+          bin/cache/dart-sdk/bin/dart .agents/skills/rebuilding-flutter-tool/scripts/rebuild.dart
+
+      - name: Configure Flutter engine
+        working-directory: engine/src
+        env:
+          VPYTHON_BYPASS: manually managed python not supported by chrome operations
+        run: flutter/tools/gn --runtime-mode debug --no-goma
+
+      - name: Build Rust shell
+        working-directory: engine/src
+        env:
+          VPYTHON_BYPASS: manually managed python not supported by chrome operations
+        run: ninja -C out/host_debug flutter_rust_shell_runner libflutter_rust_engine.so
+
+      - name: Package BETA assets
+        run: |
+          mkdir -p build/flutter-rust-sdk/crates build/flutter-rust-sdk/third_party build/flutter-rust-sdk/lib
+          cp engine/src/flutter/shell/platform/rust/Cargo.toml build/flutter-rust-sdk/
+          cp engine/src/flutter/shell/platform/rust/Cargo.lock build/flutter-rust-sdk/
+          cp -R engine/src/flutter/shell/platform/rust/crates/. build/flutter-rust-sdk/crates/
+          cp -R engine/src/flutter/shell/platform/rust/third_party/winit-wayland build/flutter-rust-sdk/third_party/
+          cp engine/src/out/host_debug/libflutter_rust_engine.so build/flutter-rust-sdk/lib/
+          cp engine/src/out/host_debug/flutter_rust_shell_runner build/flutter-rust-sdk/lib/
+          cp engine/src/out/host_debug/icudtl.dat build/flutter-rust-sdk/lib/
+          tar -C build/flutter-rust-sdk -czf build/flutter-rust-linux-x64.tar.gz .
+          cp bin/cache/flutter_tools.snapshot build/flutter-tools.snapshot
+          sha256sum build/flutter-rust-linux-x64.tar.gz build/flutter-tools.snapshot > build/SHA256SUMS
+
+      - name: Publish rolling BETA release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view BETA >/dev/null 2>&1 || \
+            gh release create BETA --prerelease --title "Flutter Rust BETA" \
+              --notes "Rolling artifacts built from the latest merged revision on master."
+          gh release upload BETA \
+            build/flutter-rust-linux-x64.tar.gz \
+            build/flutter-tools.snapshot \
+            build/SHA256SUMS \
+            --clobber

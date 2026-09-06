@@ -84,6 +84,31 @@ flutter:
     expect(flutterManifest.usesMaterialDesign, true);
   });
 
+  testWithoutContext('FlutterManifest recognizes the Rust shell', () async {
+    const manifest = '''
+name: test
+flutter:
+  shell: rust
+''';
+    final FlutterManifest flutterManifest = FlutterManifest.createFromString(
+      manifest,
+      logger: logger,
+    )!;
+
+    expect(flutterManifest.usesRustShell, true);
+  });
+
+  testWithoutContext('FlutterManifest rejects an unknown shell', () async {
+    const manifest = '''
+name: test
+flutter:
+  shell: other
+''';
+
+    expect(FlutterManifest.createFromString(manifest, logger: logger), isNull);
+    expect(logger.errorText, contains('Expected "shell" to be "rust"'));
+  });
+
   testWithoutContext('FlutterManifest knows if generate is provided', () async {
     const manifest = '''
 name: test

@@ -88,6 +88,12 @@ class CreateCommand extends FlutterCommand with CreateBase, ExtensionArgParserMi
           'The project name for this new Flutter project. This must be a valid dart package name.',
     );
     parser.addOption(
+      'shell',
+      allowed: const <String>['rust'],
+      help: 'Select an alternative application shell.',
+      valueHelp: 'rust',
+    );
+    parser.addOption(
       'ios-language',
       abbr: 'i',
       defaultsTo: 'swift',
@@ -447,6 +453,11 @@ class CreateCommand extends FlutterCommand with CreateBase, ExtensionArgParserMi
     final generateFfiPlugin = template == FlutterTemplateType.pluginFfi;
     final bool generateFfi = generateFfiPlugin || generateFfiPackage;
     final generatePackage = template == FlutterTemplateType.package;
+    final generateRustShell = stringArg('shell') == 'rust';
+
+    if (generateRustShell && template != FlutterTemplateType.app) {
+      throwToolExit('The "--shell=rust" option is only supported for application projects.');
+    }
 
     final List<String> platforms = stringsArg('platforms');
     // `--platforms` does not support module or package.
@@ -576,19 +587,21 @@ class CreateCommand extends FlutterCommand with CreateBase, ExtensionArgParserMi
       withEmptyMain: emptyArgument,
       androidLanguage: stringArg('android-language'),
       iosDevelopmentTeam: developmentTeam,
-      ios: includeIos,
-      android: includeAndroid,
-      darwin: includeDarwin,
-      web: includeWeb,
-      linux: includeLinux,
-      macos: includeMacos,
-      windows: includeWindows,
+      ios: !generateRustShell && includeIos,
+      android: !generateRustShell && includeAndroid,
+      darwin: !generateRustShell && includeDarwin,
+      web: !generateRustShell && includeWeb,
+      linux: !generateRustShell && includeLinux,
+      macos: !generateRustShell && includeMacos,
+      windows: !generateRustShell && includeWindows,
       dartSdkVersionBounds: '^$dartSdk',
       implementationTests: boolArg('implementation-tests'),
       agpVersion: gradle.templateAndroidGradlePluginVersion,
       kotlinVersion: gradle.templateKotlinGradlePluginVersion,
       gradleVersion: gradle.templateDefaultGradleVersion,
     );
+    templateContext['rustShell'] = generateRustShell;
+    templateContext['rustShellPlatforms'] = generateRustShell ? platforms : const <String>[];
 
     final String relativeDirPath = globals.fs.path.relative(projectDirPath);
     final bool creatingNewProject = !projectDir.existsSync() || projectDir.listSync().isEmpty;
@@ -612,7 +625,11 @@ class CreateCommand extends FlutterCommand with CreateBase, ExtensionArgParserMi
         final bool skipWidgetTestsGeneration = sampleCode != null || emptyArgument;
 
         generatedFileCount += await generateApp(
-          <String>['app', if (!skipWidgetTestsGeneration) 'app_test_widget'],
+          <String>[
+            'app',
+            if (generateRustShell) 'rust_shell',
+            if (!skipWidgetTestsGeneration) 'app_test_widget',
+          ],
           relativeDir,
           templateContext,
           overwrite: overwrite,
@@ -782,12 +799,12 @@ class CreateCommand extends FlutterCommand with CreateBase, ExtensionArgParserMi
         const ignoreReleaseModeSinceItsNotABuildAndHopeItWorks = false;
         await project.ensureReadyForPlatformSpecificTooling(
           releaseMode: ignoreReleaseModeSinceItsNotABuildAndHopeItWorks,
-          androidPlatform: includeAndroid,
-          iosPlatform: includeIos || includeDarwin,
-          linuxPlatform: includeLinux,
-          macOSPlatform: includeMacos || includeDarwin,
-          windowsPlatform: includeWindows,
-          webPlatform: includeWeb,
+          androidPlatform: !generateRustShell && includeAndroid,
+          iosPlatform: !generateRustShell && (includeIos || includeDarwin),
+          linuxPlatform: !generateRustShell && includeLinux,
+          macOSPlatform: !generateRustShell && (includeMacos || includeDarwin),
+          windowsPlatform: !generateRustShell && includeWindows,
+          webPlatform: !generateRustShell && includeWeb,
         );
       }
     }
@@ -841,7 +858,11 @@ class CreateCommand extends FlutterCommand with CreateBase, ExtensionArgParserMi
 
       final String commandsToRun = [
         if (relativeAppPath != '.') '  \$ cd $relativeAppPath',
-        r'  $ flutter run',
+        if (generateRustShell) ...<String>[
+          r'  $ flutter build bundle',
+          r'  $ cargo run --manifest-path runner-rs/Cargo.toml -- build/flutter_assets',
+        ] else
+          r'  $ flutter run',
       ].join('\n');
 
       // Let them know a summary of the state of their tooling.

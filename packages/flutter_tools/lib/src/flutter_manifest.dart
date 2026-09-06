@@ -214,6 +214,9 @@ class FlutterManifest {
     return _flutterDescriptor['uses-material-design'] as bool? ?? false;
   }
 
+  /// Whether this application selects the Rust application shell.
+  bool get usesRustShell => _flutterDescriptor['shell'] == 'rust';
+
   /// True if this Flutter module should use AndroidX dependencies.
   ///
   /// If false the deprecated Android Support library will be used.
@@ -547,6 +550,10 @@ void _validateFlutter(YamlMap? yaml, List<String> errors) {
           errors.add(
             'Expected "$yamlKey" to be a bool, but got $yamlValue (${yamlValue.runtimeType}).',
           );
+        }
+      case 'shell':
+        if (yamlValue != 'rust') {
+          errors.add('Expected "$yamlKey" to be "rust", but got $yamlValue.');
         }
       case 'assets':
         errors.addAll(_validateAssets(yamlValue));

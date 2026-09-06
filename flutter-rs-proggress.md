@@ -67,7 +67,7 @@ the current Linux implementation isolated under `platform/linux.rs`.
 | Multi-window | All five controller kinds implemented | View `0` remains the implicit engine view. Positive-ID winit windows share one engine, root isolate, plugin registry, task runner, and wgpu device while owning independent surfaces, metrics, input, and presentation state. Flutter's experimental window controllers select the Rust owner automatically in the Rust runner. Dialogs and satellites use native transient relationships. On Wayland, tooltip and popup views use real compositor-positioned `xdg_popup` roles; popup grabs are serial-bound and compositor dismissal enters the normal asynchronous Flutter view-removal path. Satellites support creation, shrink-wrap, reparenting, parent-driven teardown, and parent maximize/fullscreen visibility. Standard Wayland does not permit clients to choose absolute toplevel positions, so the initial satellite positioner is honored on X11 but compositor-selected on Wayland. |
 | Main-thread dispatch | SDK, host, and Dart/FRB path complete | `flutter-plugin-sdk` exposes a cloneable worker-safe dispatcher through `PluginRegistrar`. Work is always queued rather than invoked inline, executes through winit's owning thread, is limited to 64 callbacks per event-loop turn, and is rejected after shell shutdown. Unit coverage verifies worker posting, thread identity, nested non-reentrant dispatch, starvation bounds, and shutdown. A real application-level FRB fixture verifies root and background Dart isolates through the Cargo-owned runner while displaying SDK wgpu and pixel-buffer textures. |
 | Startup and shutdown ownership | Complete for merged runner | The dispatcher rejects work during bootstrap, starts only after the C++ shell and implicit view are installed, stops before shell/window teardown, and suppresses already queued callbacks after shutdown. A native lifecycle task requires 20 consecutive mapped-window startup, compositor-close, and status-zero shutdown cycles. |
-| Application plugin registration | Runtime entry point complete | `flutter-shell-winit::run_application` accepts a generated `register_application(&mut PluginRegistrar)` function, invokes it once on the owning thread only after startup capabilities are installed, and returns registration failures as a typed startup error. The texture fixture now uses this path. Generating the Cargo aggregation crate remains Flutter-tool work. |
+| Application plugin registration | Runtime and Flutter-tool generation complete | `flutter-shell-winit::run_application` accepts `register_application(&mut PluginRegistrar)` and invokes it once after startup capabilities are installed. For `flutter.shell: rust` projects, the Flutter tool discovers source-linked Rust plugins from the resolved Pub graph, updates the marked dependency block in `runner-rs/Cargo.toml`, generates `flutter_plugins.rs`, and validates a single resolved plugin SDK. |
 | Rust external texture | Engine seam complete | `RustExternalTexture` uses Flutter's existing texture registry and dirty-frame scheduling path. It retains the last good image, honors freeze, retries failed acquisition, imports borrowed wgpu Vulkan image/view handles without taking ownership, and brackets Impeller sampling with producer/consumer semaphores. Context loss, unregister, and repeated teardown are covered by focused tests. |
 | Engine-owned wgpu texture | SDK runtime path complete | `WgpuTextureRing` owns three RGBA8 textures, views, and reusable semaphore pairs on the application's shared device. A bounded Tokio channel carries available slot IDs: `try_next_frame` applies immediate backpressure, `next_frame().await` sleeps until Flutter releases a slot, an unpresented reservation returns its slot on drop, and shutdown wakes waiters with `Shutdown`. Ready frames remain queue-serialized through Flutter's acquire callback. The opt-in animated proof now runs through normal `FlutterRustPlugin` registration and public SDK operations. |
 | `WgpuTexture` plugin API | Public contract and Linux runtime adapter complete | `flutter-plugin-sdk` exposes validated texture descriptors, `GpuTextures::create_texture`, stable Flutter texture IDs, nonblocking `try_next_frame`, asynchronous `next_frame().await`, single-record frame reservations, consuming `present(self)`, and its pinned API crate at `gpu::wgpu` so plugins do not duplicate the Git dependency. The hidden backend uses `async-trait`; no manual `Future` or `Poll` API leaks into the SDK. The winit factory registers the callback-owning ring, routes dirty notifications and handle-drop unregister through the main thread, and releases each retained ring after C++ confirms raster-thread registry removal. The recording closure receives a device, encoder, and view—but no queue—so plugins cannot violate shared-queue external synchronization. |
@@ -554,6 +554,10 @@ the current Linux implementation isolated under `platform/linux.rs`.
 ## Validation
 
 - `git diff --check` passes.
+- Added focused Flutter-tool coverage for `flutter.shell: rust`, strict generated
+  Cargo section replacement, and `flutter create --shell=rust`. A real generated
+  application with a source-linked Pub/Cargo plugin resolved one shared SDK and
+  completed `cargo +1.93.1 build`; the template-manifest check also passes.
 - After adding the application registration entry point, ran
   `cargo +1.93.1 test --workspace --locked`: all 34 Rust unit tests and all
   documentation tests pass. Rebuilt the GN runner, shared engine, and native
@@ -743,10 +747,7 @@ the current Linux implementation isolated under `platform/linux.rs`.
 
 ## Next implementation steps
 
-1. Add Flutter-tool generation for the Cargo aggregation crate that explicitly
-   calls each resolved package registrar. This is delivery/tooling work rather
-   than another shell registry mechanism.
-2. Begin Phase 3 with a Windows platform adapter and the existing Vulkan GPU
+1. Begin Phase 3 with a Windows platform adapter and the existing Vulkan GPU
    path once the generated application workflow is usable without hand-written
    Cargo glue.
 

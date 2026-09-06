@@ -510,6 +510,9 @@ mixin CreateBase on FlutterCommand {
     final bool windowsPlatform = templateContext['windows'] as bool? ?? false;
     final bool webPlatform = templateContext['web'] as bool? ?? false;
     final bool darwinPlatform = templateContext['darwin'] as bool? ?? false;
+    final List<String> rustShellPlatforms =
+        (templateContext['rustShellPlatforms'] as List<Object?>? ?? const <Object?>[])
+            .cast<String>();
 
     final platformsForMigrateConfig = <SupportedPlatform>[SupportedPlatform.root];
     if (androidPlatform) {
@@ -538,6 +541,20 @@ mixin CreateBase on FlutterCommand {
     }
     if (windowsPlatform) {
       platformsForMigrateConfig.add(SupportedPlatform.windows);
+    }
+    for (final platform in rustShellPlatforms) {
+      final SupportedPlatform? supportedPlatform = switch (platform) {
+        'android' => SupportedPlatform.android,
+        'ios' => SupportedPlatform.ios,
+        'linux' => SupportedPlatform.linux,
+        'macos' => SupportedPlatform.macos,
+        'web' => SupportedPlatform.web,
+        'windows' => SupportedPlatform.windows,
+        _ => null,
+      };
+      if (supportedPlatform != null && !platformsForMigrateConfig.contains(supportedPlatform)) {
+        platformsForMigrateConfig.add(supportedPlatform);
+      }
     }
     if (templateContext['fuchsia'] == true) {
       platformsForMigrateConfig.add(SupportedPlatform.fuchsia);
