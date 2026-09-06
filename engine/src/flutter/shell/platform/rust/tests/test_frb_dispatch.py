@@ -15,7 +15,6 @@ import subprocess
 import tempfile
 import time
 
-
 DIAGNOSTIC = re.compile(
     r"VUID-|validation error|failed waiting on fences|semaphore.*error|"
     r"invalid (?:Vk)?image|device lost",
@@ -105,7 +104,9 @@ def main() -> None:
         if status is None:
           raise RuntimeError("FRB fixture status was not readable")
         if "error" in status:
-          raise RuntimeError(f"Dart fixture failed: {status['error']}\n{status.get('stackTrace', '')}")
+          raise RuntimeError(
+              f"Dart fixture failed: {status['error']}\n{status.get('stackTrace', '')}"
+          )
         background = status["background"]
         expected = {
             "synchronousCallerWasMainThread": True,
@@ -138,10 +139,8 @@ def main() -> None:
           if current is None:
             return None
           return (
-              current
-              if int(current.get("gpuFrames", 0)) >= minimum_gpu
-              and int(current.get("pixelFrames", 0)) >= minimum_pixels
-              else None
+              current if int(current.get("gpuFrames", 0)) >= minimum_gpu and
+              int(current.get("pixelFrames", 0)) >= minimum_pixels else None
           )
 
         baseline = wait_until(lambda: frames_ready(2, 2), process)
@@ -154,7 +153,8 @@ def main() -> None:
         left_width = width // 2
         right_width = width - left_width
         subprocess.run(
-            ["grim", "-g", f"{x},{y} {left_width}x{height}", str(gpu_first)],
+            ["grim", "-g", f"{x},{y} {left_width}x{height}",
+             str(gpu_first)],
             check=True,
         )
         subprocess.run(
@@ -180,7 +180,8 @@ def main() -> None:
           )
 
         subprocess.run(
-            ["grim", "-g", f"{x},{y} {left_width}x{height}", str(gpu_second)],
+            ["grim", "-g", f"{x},{y} {left_width}x{height}",
+             str(gpu_second)],
             check=True,
         )
         subprocess.run(
