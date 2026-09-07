@@ -97,6 +97,7 @@ def check_package_config(package):
 EXCLUDED_DIRS = [
     os.path.join(ENGINE_DIR, 'lib'),
     os.path.join(ENGINE_DIR, 'prebuilts'),
+    os.path.join(ENGINE_DIR, 'shell', 'platform', 'rust', 'tests', 'frb_fixture'),
     os.path.join(ENGINE_DIR, 'shell', 'platform', 'fuchsia'),
     os.path.join(ENGINE_DIR, 'shell', 'vmservice'),
     os.path.join(ENGINE_DIR, 'sky', 'packages'),
