@@ -1,4 +1,4 @@
-# Flutter Rust Shell Progress
+# Flutter Rust Shell Progress (WIP)
 
 This file records implementation progress for the architecture in
 [`flutter-rs.md`](flutter-rs.md). It is an implementation log, not a replacement
