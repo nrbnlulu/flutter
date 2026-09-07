@@ -72,9 +72,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view BETA >/dev/null 2>&1 || \
+          if gh release view BETA >/dev/null 2>&1; then
+            gh api --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/git/refs/tags/BETA" \
+              -f sha="${GITHUB_SHA}" \
+              -F force=true
+          else
             gh release create BETA --prerelease --title "Flutter Rust BETA" \
+              --target "${GITHUB_SHA}" \
               --notes "Rolling artifacts built from the latest merged revision on master."
+          fi
           gh release upload BETA \
             build/flutter-rust-linux-x64.tar.gz \
             build/flutter-tools.snapshot \
