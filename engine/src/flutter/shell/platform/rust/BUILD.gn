@@ -126,6 +126,8 @@ source_set("flutter_rust_shell") {
     "//flutter/fml",
     "//flutter/impeller",
     "//flutter/impeller/renderer/backend/vulkan",
+    "//flutter/lib/ui:ui",
+    "//flutter/runtime:runtime",
     "//flutter/shell/platform/common:common_cpp_switches",
   ]
 }
