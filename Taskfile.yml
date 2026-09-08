@@ -33,7 +33,8 @@ tasks:
         PATH="{{.BUNDLED_DEPOT_TOOLS}}:$PATH" \
         VPYTHON_BYPASS="manually managed python not supported by chrome operations" \
           /usr/bin/ninja -C {{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}} \
-            flutter_rust_shell_runner libflutter_rust_engine.so
+            flutter_rust_shell_runner libflutter_rust_engine.so \
+            dart_sdk frontend_server_aot
 
   run-rust-multiple-windows:
     desc: Build and run Flutter's multiple_windows example on the Rust shell.
@@ -155,9 +156,13 @@ tasks:
         msg: Hyprland's hyprctl is required for the native lifecycle test.
       - sh: command -v jq >/dev/null
         msg: jq is required to locate the runner window.
-      - sh: test -f {{.RUST_SHELL_SAMPLE}}/build/flutter_assets/kernel_blob.bin
-        msg: Build the sample Flutter bundle first or override RUST_SHELL_SAMPLE.
     cmds:
+      - |
+        cd {{.RUST_SHELL_SAMPLE}}
+        {{.TASKFILE_DIR}}/bin/flutter build bundle --debug \
+          --local-engine={{.LOCAL_ENGINE}} \
+          --local-engine-host={{.LOCAL_ENGINE}} \
+          --local-engine-src-path={{.ENGINE_SRC}}
       - |
         runner={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/flutter_rust_shell_runner
         assets={{.RUST_SHELL_SAMPLE}}/build/flutter_assets

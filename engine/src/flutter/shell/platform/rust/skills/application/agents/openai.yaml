@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flutter Rust Application"
+  short_description: "Create and run Rust-shell Flutter apps"
+  default_prompt: "Use $application to create, build, or run a Flutter application with the Rust shell."
