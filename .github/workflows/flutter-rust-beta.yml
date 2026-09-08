@@ -19,6 +19,26 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Import Flutter version tags
+        env:
+          FLUTTER_UPSTREAM_URL: https://github.com/flutter/flutter.git
+        run: |
+          git fetch --force "$FLUTTER_UPSTREAM_URL" 'refs/tags/*:refs/tags/*'
+          FLUTTER_VERSION_TAG=$(git for-each-ref \
+            --sort=-v:refname \
+            --count=1 \
+            --format='%(refname:short)' \
+            'refs/tags/[0-9]*.*.*')
+          if [[ -z "$FLUTTER_VERSION_TAG" ]]; then
+            echo 'No numeric Flutter version tag was fetched.' >&2
+            exit 1
+          fi
+          if ! git merge-base "$GITHUB_SHA" "$FLUTTER_VERSION_TAG" >/dev/null; then
+            echo "Flutter version tag $FLUTTER_VERSION_TAG has no common ancestor with $GITHUB_SHA." >&2
+            exit 1
+          fi
+          echo "FLUTTER_VERSION_TAG=$FLUTTER_VERSION_TAG" >> "$GITHUB_ENV"
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -40,6 +60,10 @@ jobs:
       - name: Build Flutter tool
         run: |
           bin/flutter --version
+          if grep -q '"frameworkVersion": "0.0.0-unknown"' bin/cache/flutter.version.json; then
+            echo 'Flutter could not derive a version from the imported tag.' >&2
+            exit 1
+          fi
           bin/cache/dart-sdk/bin/dart .agents/skills/rebuilding-flutter-tool/scripts/rebuild.dart
 
       - name: Configure Flutter engine
@@ -72,6 +96,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          git push origin \
+            "refs/tags/${FLUTTER_VERSION_TAG}:refs/tags/${FLUTTER_VERSION_TAG}"
           if gh release view BETA >/dev/null 2>&1; then
             gh api --method PATCH \
               "repos/${GITHUB_REPOSITORY}/git/refs/tags/BETA" \
