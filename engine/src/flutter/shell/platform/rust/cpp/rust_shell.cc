@@ -4,6 +4,7 @@
 
 #include "flutter/shell/platform/rust/cpp/rust_shell.h"
 
+#include <cstdio>
 #include <vector>
 
 #include "flutter/common/constants.h"
@@ -192,9 +193,19 @@ RustShell::RustShell(std::unique_ptr<ThreadHost> thread_host,
       presentation_(std::move(presentation)),
       shell_(std::move(shell)),
       windowing_callbacks_(windowing_callbacks),
-      settings_(std::move(settings)) {}
+      settings_(std::move(settings)),
+      vm_service_uri_callback_(DartServiceIsolate::AddServerStatusCallback(
+          [](const std::string& uri) {
+            std::fprintf(stderr, "The Dart VM service is listening on %s\n",
+                         uri.c_str());
+            std::fflush(stderr);
+          })) {}
 
-RustShell::~RustShell() = default;
+RustShell::~RustShell() {
+  if (vm_service_uri_callback_ != 0) {
+    DartServiceIsolate::RemoveServerStatusCallback(vm_service_uri_callback_);
+  }
+}
 
 bool RustShell::IsValid() const {
   return shell_ && shell_->IsSetup() && presentation_->IsValid();

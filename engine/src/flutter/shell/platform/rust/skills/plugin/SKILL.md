@@ -284,9 +284,8 @@ effect:
 
 ```sh
 fvm flutter pub get
-cargo check --locked --manifest-path runner-rs/Cargo.toml
-fvm flutter build bundle
-cargo run --locked --manifest-path runner-rs/Cargo.toml -- build/flutter_assets
+cargo check --manifest-path runner-rs/Cargo.toml
+fvm flutter run -d rust
 ```
 
 Confirm the generated registrar includes the plugin, the Dart API reaches

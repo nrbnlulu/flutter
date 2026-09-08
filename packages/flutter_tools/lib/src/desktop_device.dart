@@ -122,7 +122,7 @@ abstract class DesktopDevice extends Device {
     }
 
     Process process;
-    final command = <String>[executable, ...debuggingOptions.dartEntrypointArgs];
+    final command = <String>[executable, ...launchArgumentsForDevice(package, debuggingOptions)];
     try {
       process = await _processManager.start(
         command,
@@ -224,6 +224,16 @@ abstract class DesktopDevice extends Device {
   /// Returns the path to the executable to run for [package] on this device for
   /// the given [BuildInfo.mode].
   String? executablePathForDevice(ApplicationPackage package, BuildInfo buildInfo);
+
+  /// Arguments passed to the executable when launching it.
+  ///
+  /// Desktop embedders normally forward only Dart entrypoint arguments. An
+  /// alternative desktop shell may prepend arguments required by its native
+  /// runner.
+  List<String> launchArgumentsForDevice(
+    ApplicationPackage package,
+    DebuggingOptions debuggingOptions,
+  ) => debuggingOptions.dartEntrypointArgs;
 
   /// Called after a process is attached, allowing any device-specific extra
   /// steps to be run.

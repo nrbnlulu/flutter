@@ -25,6 +25,7 @@ import 'macos/macos_ipad_device.dart';
 import 'macos/macos_workflow.dart';
 import 'macos/xcdevice.dart';
 import 'native_assets.dart';
+import 'rust/rust_device.dart';
 import 'tester/flutter_tester.dart';
 import 'version.dart';
 import 'web/web_device.dart';
@@ -100,6 +101,13 @@ class FlutterDeviceManager extends DeviceManager {
            logger: logger,
            fileSystem: fileSystem,
            operatingSystemUtils: operatingSystemUtils,
+         ),
+         RustShellDevices(
+           platform: platform,
+           operatingSystemUtils: operatingSystemUtils,
+           processManager: processManager,
+           logger: logger,
+           fileSystem: fileSystem,
          ),
          WindowsDevices(
            processManager: processManager,
