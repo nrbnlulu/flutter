@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flutter Rust Fork with FVM"
+  short_description: "Install and update the Rust-shell fork"
+  default_prompt: "Use $fvm to set up this Flutter Rust-shell fork for my project."
