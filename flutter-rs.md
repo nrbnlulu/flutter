@@ -1,4 +1,4 @@
-# Flutter Rust Shell Plan
+# Flutter Rust Shell
 
 ## Status
 
