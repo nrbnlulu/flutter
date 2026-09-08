@@ -33,11 +33,12 @@ jobs:
             echo 'No numeric Flutter version tag was fetched.' >&2
             exit 1
           fi
-          if ! git merge-base "$GITHUB_SHA" "$FLUTTER_VERSION_TAG" >/dev/null; then
+          if ! FLUTTER_VERSION_BASE=$(git merge-base "$GITHUB_SHA" "$FLUTTER_VERSION_TAG"); then
             echo "Flutter version tag $FLUTTER_VERSION_TAG has no common ancestor with $GITHUB_SHA." >&2
             exit 1
           fi
           echo "FLUTTER_VERSION_TAG=$FLUTTER_VERSION_TAG" >> "$GITHUB_ENV"
+          echo "FLUTTER_VERSION_BASE=$FLUTTER_VERSION_BASE" >> "$GITHUB_ENV"
 
       - name: Install build dependencies
         run: |
@@ -96,8 +97,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          git push --no-verify origin \
-            "refs/tags/${FLUTTER_VERSION_TAG}:refs/tags/${FLUTTER_VERSION_TAG}"
+          if ! gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/tags/${FLUTTER_VERSION_TAG}" \
+            >/dev/null 2>&1; then
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${FLUTTER_VERSION_TAG}" \
+              -f sha="${FLUTTER_VERSION_BASE}" \
+              >/dev/null
+          fi
           if gh release view BETA >/dev/null 2>&1; then
             gh api --method PATCH \
               "repos/${GITHUB_REPOSITORY}/git/refs/tags/BETA" \
