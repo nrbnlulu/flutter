@@ -96,7 +96,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          git push origin \
+          git push --no-verify origin \
             "refs/tags/${FLUTTER_VERSION_TAG}:refs/tags/${FLUTTER_VERSION_TAG}"
           if gh release view BETA >/dev/null 2>&1; then
             gh api --method PATCH \
