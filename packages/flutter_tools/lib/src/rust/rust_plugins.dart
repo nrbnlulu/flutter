@@ -253,10 +253,11 @@ Future<void> _ensureRustShellSdk(FlutterProject project) async {
       .childDirectory('lib')
       .childDirectory('debug')
       .childFile('libflutter_rust_engine.so');
-  if (sdkWorkspaceManifest.existsSync() && sdkManifest.existsSync() && engineLibrary.existsSync()) {
-    return;
-  }
 
+  // A local engine checkout's per-profile builds can appear (e.g. a release
+  // engine built after this SDK was first linked) independently of whether
+  // the rest of the SDK is already set up, so always re-check both rather
+  // than only doing this the first time the SDK directory is created.
   final Directory localShell = globals.fs.directory(
     globals.fs.path.join(
       Cache.flutterRoot!,
@@ -269,11 +270,13 @@ Future<void> _ensureRustShellSdk(FlutterProject project) async {
     ),
   );
   if (localShell.childDirectory('crates').existsSync()) {
-    sdk.createSync(recursive: true);
-    localShell.childFile('Cargo.toml').copySync(sdkWorkspaceManifest.path);
-    localShell.childFile('Cargo.lock').copySync(sdk.childFile('Cargo.lock').path);
-    _replaceLink(sdk.childLink('crates'), localShell.childDirectory('crates').path);
-    _replaceLink(sdk.childLink('third_party'), localShell.childDirectory('third_party').path);
+    if (!sdkWorkspaceManifest.existsSync() || !sdkManifest.existsSync()) {
+      sdk.createSync(recursive: true);
+      localShell.childFile('Cargo.toml').copySync(sdkWorkspaceManifest.path);
+      localShell.childFile('Cargo.lock').copySync(sdk.childFile('Cargo.lock').path);
+      _replaceLink(sdk.childLink('crates'), localShell.childDirectory('crates').path);
+      _replaceLink(sdk.childLink('third_party'), localShell.childDirectory('third_party').path);
+    }
     final Directory outDir = globals.fs.directory(
       globals.fs.path.join(Cache.flutterRoot!, 'engine', 'src', 'out'),
     );
@@ -282,6 +285,10 @@ Future<void> _ensureRustShellSdk(FlutterProject project) async {
     if (engineLibrary.existsSync()) {
       return;
     }
+  }
+
+  if (sdkWorkspaceManifest.existsSync() && sdkManifest.existsSync() && engineLibrary.existsSync()) {
+    return;
   }
 
   if (!globals.platform.isLinux) {

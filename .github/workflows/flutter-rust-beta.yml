@@ -12,8 +12,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-linux-x64:
+  build-tool:
     runs-on: ubuntu-latest
+    outputs:
+      flutter_version_tag: ${{ steps.import-tags.outputs.flutter_version_tag }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -21,6 +23,7 @@ jobs:
           persist-credentials: false
 
       - name: Import Flutter version tags
+        id: import-tags
         env:
           FLUTTER_UPSTREAM_URL: https://github.com/flutter/flutter.git
         run: |
@@ -39,24 +42,10 @@ jobs:
             exit 1
           fi
           echo "FLUTTER_VERSION_TAG=$FLUTTER_VERSION_TAG" >> "$GITHUB_ENV"
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes libvulkan-dev libwayland-dev libxkbcommon-dev ninja-build
-          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
-          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+          echo "flutter_version_tag=$FLUTTER_VERSION_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Add Flutter to PATH
         run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
-
-      - name: Fetch engine dependencies
-        run: |
-          cp engine.gclient .gclient
-          "$RUNNER_TEMP/depot_tools/gclient" sync --no-history
-
-      - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.93.1 --profile minimal
 
       - name: Build Flutter tool
         run: |
@@ -67,46 +56,107 @@ jobs:
           fi
           bin/cache/dart-sdk/bin/dart .agents/skills/rebuilding-flutter-tool/scripts/rebuild.dart
 
-      - name: Configure Flutter engine (debug)
-        working-directory: engine/src
-        env:
-          VPYTHON_BYPASS: manually managed python not supported by chrome operations
-        run: flutter/tools/gn --runtime-mode debug --no-goma
+      - name: Upload Flutter tool snapshot
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: flutter-tools-snapshot
+          path: bin/cache/flutter_tools.snapshot
+          retention-days: 1
 
-      - name: Build Rust shell (debug)
-        working-directory: engine/src
-        env:
-          VPYTHON_BYPASS: manually managed python not supported by chrome operations
-        run: ninja -C out/host_debug flutter_rust_shell_runner libflutter_rust_engine.so
+  build-engine:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime_mode: [debug, release]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
-      - name: Configure Flutter engine (release)
-        working-directory: engine/src
-        env:
-          VPYTHON_BYPASS: manually managed python not supported by chrome operations
-        run: flutter/tools/gn --runtime-mode release --no-goma
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libvulkan-dev libwayland-dev libxkbcommon-dev ninja-build
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
 
-      - name: Build Rust shell (release)
+      - name: Fetch engine dependencies
+        run: |
+          cp engine.gclient .gclient
+          "$RUNNER_TEMP/depot_tools/gclient" sync --no-history
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.93.1 --profile minimal
+
+      - name: Configure Flutter engine (${{ matrix.runtime_mode }})
         working-directory: engine/src
         env:
           VPYTHON_BYPASS: manually managed python not supported by chrome operations
-        run: ninja -C out/host_release flutter_rust_shell_runner libflutter_rust_engine.so
+        run: flutter/tools/gn --runtime-mode ${{ matrix.runtime_mode }} --no-goma
+
+      - name: Build Rust shell (${{ matrix.runtime_mode }})
+        working-directory: engine/src
+        env:
+          VPYTHON_BYPASS: manually managed python not supported by chrome operations
+        run: ninja -C out/host_${{ matrix.runtime_mode }} flutter_rust_shell_runner libflutter_rust_engine.so
+
+      - name: Upload engine build (${{ matrix.runtime_mode }})
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: rust-engine-${{ matrix.runtime_mode }}
+          path: |
+            engine/src/out/host_${{ matrix.runtime_mode }}/libflutter_rust_engine.so
+            engine/src/out/host_${{ matrix.runtime_mode }}/flutter_rust_shell_runner
+            engine/src/out/host_${{ matrix.runtime_mode }}/icudtl.dat
+          retention-days: 1
+
+  publish:
+    needs: [build-tool, build-engine]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Re-fetch the resolved Flutter version tag
+        env:
+          FLUTTER_UPSTREAM_URL: https://github.com/flutter/flutter.git
+          FLUTTER_VERSION_TAG: ${{ needs.build-tool.outputs.flutter_version_tag }}
+        run: |
+          git fetch --force "$FLUTTER_UPSTREAM_URL" "refs/tags/$FLUTTER_VERSION_TAG:refs/tags/$FLUTTER_VERSION_TAG"
+          echo "FLUTTER_VERSION_TAG=$FLUTTER_VERSION_TAG" >> "$GITHUB_ENV"
+
+      - name: Download Flutter tool snapshot
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: flutter-tools-snapshot
+          path: build
+
+      - name: Download debug engine build
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: rust-engine-debug
+          path: build/flutter-rust-sdk/lib/debug
+
+      - name: Download release engine build
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: rust-engine-release
+          path: build/flutter-rust-sdk/lib/release
 
       - name: Package BETA assets
         run: |
-          mkdir -p build/flutter-rust-sdk/crates build/flutter-rust-sdk/third_party \
-            build/flutter-rust-sdk/lib/debug build/flutter-rust-sdk/lib/release
+          mkdir -p build/flutter-rust-sdk/crates build/flutter-rust-sdk/third_party
           cp engine/src/flutter/shell/platform/rust/Cargo.toml build/flutter-rust-sdk/
           cp engine/src/flutter/shell/platform/rust/Cargo.lock build/flutter-rust-sdk/
           cp -R engine/src/flutter/shell/platform/rust/crates/. build/flutter-rust-sdk/crates/
           cp -R engine/src/flutter/shell/platform/rust/third_party/winit-wayland build/flutter-rust-sdk/third_party/
-          cp engine/src/out/host_debug/libflutter_rust_engine.so build/flutter-rust-sdk/lib/debug/
-          cp engine/src/out/host_debug/flutter_rust_shell_runner build/flutter-rust-sdk/lib/debug/
-          cp engine/src/out/host_debug/icudtl.dat build/flutter-rust-sdk/lib/debug/
-          cp engine/src/out/host_release/libflutter_rust_engine.so build/flutter-rust-sdk/lib/release/
-          cp engine/src/out/host_release/flutter_rust_shell_runner build/flutter-rust-sdk/lib/release/
-          cp engine/src/out/host_release/icudtl.dat build/flutter-rust-sdk/lib/release/
+          chmod +x build/flutter-rust-sdk/lib/debug/flutter_rust_shell_runner \
+            build/flutter-rust-sdk/lib/release/flutter_rust_shell_runner
           tar -C build/flutter-rust-sdk -czf build/flutter-rust-linux-x64.tar.gz .
-          cp bin/cache/flutter_tools.snapshot build/flutter-tools.snapshot
+          mv build/flutter_tools.snapshot build/flutter-tools.snapshot
           sha256sum build/flutter-rust-linux-x64.tar.gz build/flutter-tools.snapshot > build/SHA256SUMS
 
       - name: Publish rolling BETA release
