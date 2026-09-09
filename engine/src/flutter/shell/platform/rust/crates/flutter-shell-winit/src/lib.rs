@@ -3876,6 +3876,15 @@ impl ApplicationHandler for ShellApplication {
                         if let Some(callback) = _callback {
                             callback(view_id, FlutterRustWindowEvent::Destroyed);
                         }
+                        // The implicit window has its own close/destroy exit
+                        // path; a non-implicit view being the last one closed
+                        // must also terminate the run loop, or the process
+                        // never exits once all windows are gone.
+                        if self.windows.borrow().views.is_empty() {
+                            let state = self.lifecycle_state.detached();
+                            self.send_lifecycle_event(state);
+                            event_loop.exit();
+                        }
                     }
                     (ViewOperation::Remove, false) => {
                         log::error!("Flutter failed to remove view {}", view_id.0);
