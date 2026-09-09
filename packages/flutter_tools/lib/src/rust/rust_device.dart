@@ -21,7 +21,10 @@ import '../project.dart';
 
 /// Copies the AOT-compiled application library into the asset build
 /// directory as `app.so`, matching what the Rust runner is told to load in
-/// release mode.
+/// release mode. Also depends on the normal release asset-copy target so
+/// fonts, the asset manifest, and icon tree-shaking stay in sync with the
+/// kernel that `app.so` was compiled from; without it the assets directory
+/// would keep whatever a previous (e.g. debug) build left behind.
 class _RustAotBundle extends CopyFlutterAotBundle {
   const _RustAotBundle(this.targetPlatform);
 
@@ -31,7 +34,10 @@ class _RustAotBundle extends CopyFlutterAotBundle {
   String get name => 'rust_shell_aot_bundle';
 
   @override
-  List<Target> get dependencies => <Target>[AotElfRelease(targetPlatform)];
+  List<Target> get dependencies => <Target>[
+    const ReleaseCopyFlutterBundle(),
+    AotElfRelease(targetPlatform),
+  ];
 }
 
 /// The local Linux host running an application through the Rust shell.
@@ -129,23 +135,7 @@ class RustShellDevice extends DesktopDevice {
   List<String> launchArgumentsForDevice(
     ApplicationPackage package,
     DebuggingOptions debuggingOptions,
-  ) {
-    final releaseMode = debuggingOptions.buildInfo.mode == BuildMode.release;
-    final FlutterProject project = FlutterProject.current();
-    final File icuData = project.directory
-        .childDirectory('.dart_tool')
-        .childDirectory('flutter_rs')
-        .childDirectory('sdk')
-        .childDirectory('lib')
-        .childDirectory(releaseMode ? 'release' : 'debug')
-        .childFile('icudtl.dat');
-    final String assetsDir = getAssetBuildDirectory();
-    return <String>[
-      assetsDir,
-      icuData.path,
-      if (releaseMode) _fileSystem.path.join(assetsDir, 'app.so'),
-    ];
-  }
+  ) => <String>[getAssetBuildDirectory()];
 }
 
 /// Discovers the built-in Rust shell pseudo-device on supported hosts.

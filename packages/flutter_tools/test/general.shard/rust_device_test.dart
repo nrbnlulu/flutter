@@ -17,7 +17,6 @@ import 'package:test/fake.dart';
 
 import '../src/common.dart';
 import '../src/context.dart';
-import '../src/fake_process_manager.dart';
 
 void main() {
   testWithoutContext('discovers rust as a well-known device on Linux x64', () async {
@@ -120,20 +119,21 @@ flutter:
         ),
       );
 
+      // The generated app (runner-rs/src/main.rs.tmpl) only reads argv[1]; it
+      // self-derives the ICU and AOT-library paths from `cfg!(debug_assertions)`
+      // and the assets directory, so launch arguments are the same for both
+      // modes.
       final List<String> debugArgs = device.launchArgumentsForDevice(
         FakeApplicationPackage(),
         DebuggingOptions.enabled(BuildInfo.debug),
       );
-      expect(debugArgs, hasLength(2));
-      expect(debugArgs[1], endsWith(globals.fs.path.join('debug', 'icudtl.dat')));
+      expect(debugArgs, <String>[getAssetBuildDirectory()]);
 
       final List<String> releaseArgs = device.launchArgumentsForDevice(
         FakeApplicationPackage(),
         DebuggingOptions.enabled(BuildInfo.release),
       );
-      expect(releaseArgs, hasLength(3));
-      expect(releaseArgs[1], endsWith(globals.fs.path.join('release', 'icudtl.dat')));
-      expect(releaseArgs[2], endsWith('app.so'));
+      expect(releaseArgs, <String>[getAssetBuildDirectory()]);
     },
     overrides: <Type, Generator>{FileSystem: () => MemoryFileSystem.test(), ProcessManager: () => FakeProcessManager.any()},
   );
