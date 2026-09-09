@@ -64,7 +64,6 @@ jobs:
           retention-days: 1
 
   build-engine:
-    needs: build-tool
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
