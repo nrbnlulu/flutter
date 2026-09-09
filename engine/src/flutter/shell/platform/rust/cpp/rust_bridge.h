@@ -312,6 +312,11 @@ typedef struct FlutterRustVulkanContextData {
 typedef struct FlutterRustShellSettings {
   const char* assets_path;
   const char* icu_data_path;
+  // Path to the AOT-compiled application library (`libapp.so`). Null or
+  // empty when running from a JIT kernel snapshot. Ignored unless the
+  // linked engine was itself built to run precompiled code; see
+  // DartVM::IsRunningPrecompiledCode in rust_shell.cc.
+  const char* aot_library_path;
 } FlutterRustShellSettings;
 
 typedef struct FlutterRustPlatformMessageResponseHandle

@@ -284,9 +284,13 @@ effect:
 
 ```sh
 fvm flutter pub get
-cargo check --manifest-path runner-rs/Cargo.toml
 fvm flutter run -d rust
+cargo check --manifest-path runner-rs/Cargo.toml
 ```
+
+The first `flutter run -d rust` generates `runner-rs/Cargo.lock` (see the
+application skill); running `cargo check` before that lockfile exists will
+fail.
 
 Confirm the generated registrar includes the plugin, the Dart API reaches
 Rust, textures visibly update after mounting, and the application exits after

@@ -270,6 +270,9 @@ pub struct FlutterRustExternalTextureCallbacks {
 pub struct FlutterRustShellSettings {
     pub assets_path: *const std::ffi::c_char,
     pub icu_data_path: *const std::ffi::c_char,
+    /// Path to the AOT-compiled application library (`libapp.so`). Null or
+    /// empty when running from a JIT kernel snapshot.
+    pub aot_library_path: *const std::ffi::c_char,
 }
 
 /// Opaque, one-shot response retained by the host when message handling is

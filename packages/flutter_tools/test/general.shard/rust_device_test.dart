@@ -3,17 +3,20 @@
 // found in the LICENSE file.
 
 import 'package:file/memory.dart';
+import 'package:flutter_tools/src/application_package.dart';
 import 'package:flutter_tools/src/base/file_system.dart';
 import 'package:flutter_tools/src/base/logger.dart';
 import 'package:flutter_tools/src/base/os.dart';
 import 'package:flutter_tools/src/base/platform.dart';
 import 'package:flutter_tools/src/build_info.dart';
 import 'package:flutter_tools/src/device.dart';
+import 'package:flutter_tools/src/globals.dart' as globals;
 import 'package:flutter_tools/src/project.dart';
 import 'package:flutter_tools/src/rust/rust_device.dart';
 import 'package:test/fake.dart';
 
 import '../src/common.dart';
+import '../src/context.dart';
 import '../src/fake_process_manager.dart';
 
 void main() {
@@ -53,7 +56,7 @@ void main() {
     expect(await discovery.devices(), isEmpty);
   });
 
-  testWithoutContext('supports generated Rust-shell applications in debug mode', () async {
+  testWithoutContext('supports generated Rust-shell applications in debug and release modes', () async {
     final FileSystem fileSystem = MemoryFileSystem.test();
     fileSystem.file('pubspec.yaml')
       ..createSync()
@@ -79,9 +82,64 @@ flutter:
     expect(device.isSupportedForProject(project), true);
     expect(device.supportsRuntimeMode(BuildMode.debug), true);
     expect(device.supportsRuntimeMode(BuildMode.profile), false);
-    expect(device.supportsRuntimeMode(BuildMode.release), false);
+    expect(device.supportsRuntimeMode(BuildMode.release), true);
   });
+
+  testUsingContext(
+    'release mode launches the release runner with the AOT app library',
+    () async {
+      globals.fs.file('pubspec.yaml')
+        ..createSync()
+        ..writeAsStringSync('''
+name: rust_app
+environment:
+  sdk: ^3.9.0
+flutter:
+  shell: rust
+''');
+      globals.fs.file('runner-rs/Cargo.toml').createSync(recursive: true);
+      final device = RustShellDevice(
+        processManager: FakeProcessManager.any(),
+        logger: BufferLogger.test(),
+        fileSystem: globals.fs,
+        operatingSystemUtils: FakeOperatingSystemUtils(),
+      );
+
+      expect(
+        device.executablePathForDevice(FakeApplicationPackage(), BuildInfo.debug),
+        globals.fs.path.join(globals.fs.currentDirectory.path, 'runner-rs', 'target', 'debug', 'rust_app'),
+      );
+      expect(
+        device.executablePathForDevice(FakeApplicationPackage(), BuildInfo.release),
+        globals.fs.path.join(
+          globals.fs.currentDirectory.path,
+          'runner-rs',
+          'target',
+          'release',
+          'rust_app',
+        ),
+      );
+
+      final List<String> debugArgs = device.launchArgumentsForDevice(
+        FakeApplicationPackage(),
+        DebuggingOptions.enabled(BuildInfo.debug),
+      );
+      expect(debugArgs, hasLength(2));
+      expect(debugArgs[1], endsWith(globals.fs.path.join('debug', 'icudtl.dat')));
+
+      final List<String> releaseArgs = device.launchArgumentsForDevice(
+        FakeApplicationPackage(),
+        DebuggingOptions.enabled(BuildInfo.release),
+      );
+      expect(releaseArgs, hasLength(3));
+      expect(releaseArgs[1], endsWith(globals.fs.path.join('release', 'icudtl.dat')));
+      expect(releaseArgs[2], endsWith('app.so'));
+    },
+    overrides: <Type, Generator>{FileSystem: () => MemoryFileSystem.test(), ProcessManager: () => FakeProcessManager.any()},
+  );
 }
+
+class FakeApplicationPackage extends Fake implements ApplicationPackage {}
 
 class FakeOperatingSystemUtils extends Fake implements OperatingSystemUtils {
   FakeOperatingSystemUtils({this.hostPlatform = HostPlatform.linux_x64});

@@ -12,10 +12,27 @@ import '../base/os.dart';
 import '../base/platform.dart';
 import '../base/process.dart';
 import '../build_info.dart';
+import '../build_system/build_system.dart';
+import '../build_system/targets/common.dart';
 import '../bundle_builder.dart';
 import '../desktop_device.dart';
 import '../device.dart';
 import '../project.dart';
+
+/// Copies the AOT-compiled application library into the asset build
+/// directory as `app.so`, matching what the Rust runner is told to load in
+/// release mode.
+class _RustAotBundle extends CopyFlutterAotBundle {
+  const _RustAotBundle(this.targetPlatform);
+
+  final TargetPlatform targetPlatform;
+
+  @override
+  String get name => 'rust_shell_aot_bundle';
+
+  @override
+  List<Target> get dependencies => <Target>[AotElfRelease(targetPlatform)];
+}
 
 /// The local Linux host running an application through the Rust shell.
 class RustShellDevice extends DesktopDevice {
@@ -55,7 +72,8 @@ class RustShellDevice extends DesktopDevice {
   }
 
   @override
-  bool supportsRuntimeMode(BuildMode buildMode) => buildMode == BuildMode.debug;
+  bool supportsRuntimeMode(BuildMode buildMode) =>
+      buildMode == BuildMode.debug || buildMode == BuildMode.release;
 
   @override
   Future<void> buildForDevice({
@@ -64,7 +82,7 @@ class RustShellDevice extends DesktopDevice {
     bool usingCISystem = false,
   }) async {
     if (!supportsRuntimeMode(buildInfo.mode)) {
-      throwToolExit('The Flutter Rust shell currently supports debug mode only.');
+      throwToolExit('The Flutter Rust shell currently supports debug and release modes only.');
     }
     final FlutterProject project = FlutterProject.current();
     final Directory runner = project.directory.childDirectory('runner-rs');
@@ -76,14 +94,16 @@ class RustShellDevice extends DesktopDevice {
       );
     }
 
+    final releaseMode = buildInfo.mode == BuildMode.release;
     await _bundleBuilder.build(
       platform: TargetPlatform.linux_x64,
       buildInfo: buildInfo,
       project: project,
       mainPath: mainPath,
+      target: releaseMode ? const _RustAotBundle(TargetPlatform.linux_x64) : null,
     );
     _logger.printStatus('Building Rust shell runner...');
-    final arguments = <String>['cargo', 'build'];
+    final arguments = <String>['cargo', 'build', if (releaseMode) '--release'];
     if (runner.childFile('Cargo.lock').existsSync()) {
       arguments.add('--locked');
     }
@@ -100,7 +120,7 @@ class RustShellDevice extends DesktopDevice {
       project.directory.path,
       'runner-rs',
       'target',
-      'debug',
+      buildInfo.mode == BuildMode.release ? 'release' : 'debug',
       project.manifest.appName,
     );
   }
@@ -109,7 +129,23 @@ class RustShellDevice extends DesktopDevice {
   List<String> launchArgumentsForDevice(
     ApplicationPackage package,
     DebuggingOptions debuggingOptions,
-  ) => <String>[getAssetBuildDirectory(), ...debuggingOptions.dartEntrypointArgs];
+  ) {
+    final releaseMode = debuggingOptions.buildInfo.mode == BuildMode.release;
+    final FlutterProject project = FlutterProject.current();
+    final File icuData = project.directory
+        .childDirectory('.dart_tool')
+        .childDirectory('flutter_rs')
+        .childDirectory('sdk')
+        .childDirectory('lib')
+        .childDirectory(releaseMode ? 'release' : 'debug')
+        .childFile('icudtl.dat');
+    final String assetsDir = getAssetBuildDirectory();
+    return <String>[
+      assetsDir,
+      icuData.path,
+      if (releaseMode) _fileSystem.path.join(assetsDir, 'app.so'),
+    ];
+  }
 }
 
 /// Discovers the built-in Rust shell pseudo-device on supported hosts.

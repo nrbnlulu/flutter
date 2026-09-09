@@ -681,8 +681,14 @@ flutter::Settings ToSettings(const FlutterRustShellSettings& settings) {
   if (settings.icu_data_path) {
     result.icu_data_path = settings.icu_data_path;
   }
-  // Phase 0 only runs a JIT kernel snapshot; there is no AOT path yet.
-  if (!flutter::DartVM::IsRunningPrecompiledCode()) {
+  // Precompiled (release/profile) engine builds run the AOT app library the
+  // Flutter tool built next to the runner; debug-runtime-mode builds only
+  // ever run a JIT kernel snapshot.
+  if (flutter::DartVM::IsRunningPrecompiledCode()) {
+    if (settings.aot_library_path && *settings.aot_library_path) {
+      result.application_library_paths.emplace_back(settings.aot_library_path);
+    }
+  } else {
     result.application_kernel_asset = "kernel_blob.bin";
   }
   // Settings::enable_impeller only defaults to true on Android/iOS; every
