@@ -10,6 +10,7 @@
 
 #include "flutter/common/settings.h"
 #include "flutter/fml/task_runner.h"
+#include "flutter/runtime/dart_service_isolate.h"
 #include "flutter/shell/platform/rust/cpp/rust_bridge.h"
 #include "flutter/shell/platform/rust/cpp/vulkan_context_rust.h"
 
@@ -135,6 +136,7 @@ class RustShell final {
   std::unique_ptr<Shell> shell_;
   FlutterRustWindowingCallbacks windowing_callbacks_;
   Settings settings_;
+  DartServiceIsolate::CallbackHandle vm_service_uri_callback_ = 0;
   bool running_ = false;
   int64_t next_texture_id_ = 1;
   std::unordered_set<int64_t> external_texture_ids_;

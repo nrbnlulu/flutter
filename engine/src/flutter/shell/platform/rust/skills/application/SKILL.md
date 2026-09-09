@@ -31,9 +31,10 @@ flutter:
   shell: rust
 ```
 
-The command creates `runner-rs/`, including its Cargo manifest, lockfile,
-pinned Rust toolchain, launcher, and generated plugin registrant. Commit this
-directory and its lockfile. Do not edit
+The command creates `runner-rs/`, including its Cargo manifest, pinned Rust
+toolchain, launcher, and generated plugin registrant. The first `flutter run -d
+rust` generates `runner-rs/Cargo.lock`; commit this directory and its lockfile.
+Do not edit
 `runner-rs/src/flutter_plugins.rs` or the marked generated dependency block in
 `runner-rs/Cargo.toml`.
 
@@ -61,13 +62,13 @@ dependencies. Use the sibling `plugin` skill to create a compatible package.
 ## Build and run
 
 ```sh
-fvm flutter build bundle
-cargo run --locked --manifest-path runner-rs/Cargo.toml -- build/flutter_assets
+fvm flutter run -d rust
 ```
 
-Run both commands from the application root. The first creates the Dart asset
-bundle; the second builds and launches the Rust runner against that bundle.
-`fvm flutter run` is not currently the Rust-shell launch command.
+Run the command from the application root. The Flutter tool builds the Dart
+asset bundle and generated Cargo runner, then launches it through the Rust
+shell. Debug-mode VM-service attachment and hot reload use Flutter's normal
+resident-runner path.
 
 For normal development checks, use:
 

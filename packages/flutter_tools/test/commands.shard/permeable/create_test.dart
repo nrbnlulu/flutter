@@ -5104,8 +5104,7 @@ To keep the default AGP version $templateAndroidGradlePluginVersion, download a 
       projectDir.childDirectory('runner-rs').childFile('Cargo.toml').readAsStringSync(),
       contains(rustPluginDependenciesBegin),
     );
-    expect(logger.statusText, contains(r'$ flutter build bundle'));
-    expect(logger.statusText, contains(r'$ cargo run --manifest-path runner-rs/Cargo.toml'));
+    expect(logger.statusText, contains(r'$ flutter run -d rust'));
   }, overrides: {Logger: () => logger});
 }
 

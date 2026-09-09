@@ -4,6 +4,7 @@
 
 #include "flutter/shell/platform/rust/cpp/rust_shell.h"
 
+#include <cstdio>
 #include <vector>
 
 #include "flutter/common/constants.h"
@@ -192,9 +193,19 @@ RustShell::RustShell(std::unique_ptr<ThreadHost> thread_host,
       presentation_(std::move(presentation)),
       shell_(std::move(shell)),
       windowing_callbacks_(windowing_callbacks),
-      settings_(std::move(settings)) {}
+      settings_(std::move(settings)),
+      vm_service_uri_callback_(DartServiceIsolate::AddServerStatusCallback(
+          [](const std::string& uri) {
+            std::fprintf(stderr, "The Dart VM service is listening on %s\n",
+                         uri.c_str());
+            std::fflush(stderr);
+          })) {}
 
-RustShell::~RustShell() = default;
+RustShell::~RustShell() {
+  if (vm_service_uri_callback_ != 0) {
+    DartServiceIsolate::RemoveServerStatusCallback(vm_service_uri_callback_);
+  }
+}
 
 bool RustShell::IsValid() const {
   return shell_ && shell_->IsSetup() && presentation_->IsValid();
@@ -670,8 +681,14 @@ flutter::Settings ToSettings(const FlutterRustShellSettings& settings) {
   if (settings.icu_data_path) {
     result.icu_data_path = settings.icu_data_path;
   }
-  // Phase 0 only runs a JIT kernel snapshot; there is no AOT path yet.
-  if (!flutter::DartVM::IsRunningPrecompiledCode()) {
+  // Precompiled (release/profile) engine builds run the AOT app library the
+  // Flutter tool built next to the runner; debug-runtime-mode builds only
+  // ever run a JIT kernel snapshot.
+  if (flutter::DartVM::IsRunningPrecompiledCode()) {
+    if (settings.aot_library_path && *settings.aot_library_path) {
+      result.application_library_paths.emplace_back(settings.aot_library_path);
+    }
+  } else {
     result.application_kernel_asset = "kernel_blob.bin";
   }
   // Settings::enable_impeller only defaults to true on Android/iOS; every

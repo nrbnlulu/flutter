@@ -858,11 +858,7 @@ class CreateCommand extends FlutterCommand with CreateBase, ExtensionArgParserMi
 
       final String commandsToRun = [
         if (relativeAppPath != '.') '  \$ cd $relativeAppPath',
-        if (generateRustShell) ...<String>[
-          r'  $ flutter build bundle',
-          r'  $ cargo run --manifest-path runner-rs/Cargo.toml -- build/flutter_assets',
-        ] else
-          r'  $ flutter run',
+        if (generateRustShell) ...<String>[r'  $ flutter run -d rust'] else r'  $ flutter run',
       ].join('\n');
 
       // Let them know a summary of the state of their tooling.

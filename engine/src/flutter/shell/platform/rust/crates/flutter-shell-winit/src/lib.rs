@@ -1108,6 +1108,9 @@ pub struct ShellConfig {
     pub title: String,
     pub assets_path: String,
     pub icu_data_path: String,
+    /// Path to the AOT-compiled application library (`libapp.so`). Empty
+    /// when running from a JIT kernel snapshot.
+    pub aot_library_path: String,
     /// Optional append-only stream of `frame width height` records used by
     /// integration tests to verify that presentation remains live.
     pub presentation_stats_path: Option<PathBuf>,
@@ -1154,6 +1157,7 @@ impl Default for ShellConfig {
             title: "Flutter Rust Shell".to_owned(),
             assets_path: String::new(),
             icu_data_path: String::new(),
+            aot_library_path: String::new(),
             presentation_stats_path: None,
         }
     }
@@ -2724,19 +2728,25 @@ extern "C" fn request_vsync(user_data: *mut c_void) {
 
 /// C entry point for the private C++ runner executable. `assets_path` and
 /// `icu_data_path` are borrowed only for the duration of this call.
+/// `aot_library_path` may be null when running from a JIT kernel snapshot;
+/// otherwise it is borrowed for the same duration and points at the
+/// AOT-compiled application library (`libapp.so`).
 /// Returns non-zero once the winit event loop exits normally.
 ///
 /// # Safety
 ///
 /// `assets_path` and `icu_data_path` must be valid, NUL-terminated C
-/// strings for the duration of this call.
+/// strings for the duration of this call. `aot_library_path` must be either
+/// null or a valid, NUL-terminated C string for the duration of this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn FlutterRustShellRun(
     assets_path: *const std::ffi::c_char,
     icu_data_path: *const std::ffi::c_char,
+    aot_library_path: *const std::ffi::c_char,
 ) -> i32 {
     // SAFETY: the caller guarantees both pointers are valid, NUL-terminated
-    // C strings for the duration of this call.
+    // C strings for the duration of this call, and that aot_library_path is
+    // either null or a valid, NUL-terminated C string.
     let config = unsafe {
         ShellConfig {
             assets_path: std::ffi::CStr::from_ptr(assets_path)
@@ -2745,6 +2755,13 @@ pub unsafe extern "C" fn FlutterRustShellRun(
             icu_data_path: std::ffi::CStr::from_ptr(icu_data_path)
                 .to_string_lossy()
                 .into_owned(),
+            aot_library_path: if aot_library_path.is_null() {
+                String::new()
+            } else {
+                std::ffi::CStr::from_ptr(aot_library_path)
+                    .to_string_lossy()
+                    .into_owned()
+            },
             presentation_stats_path: std::env::var_os("FLUTTER_RUST_PRESENTATION_STATS")
                 .map(PathBuf::from),
             ..ShellConfig::default()
@@ -3356,9 +3373,20 @@ impl ApplicationHandler for ShellApplication {
                     .expect("assets path contains a NUL byte");
                 let icu_data_path = CString::new(self.config.icu_data_path.as_str())
                     .expect("icu data path contains a NUL byte");
+                let aot_library_path = if self.config.aot_library_path.is_empty() {
+                    None
+                } else {
+                    Some(
+                        CString::new(self.config.aot_library_path.as_str())
+                            .expect("aot library path contains a NUL byte"),
+                    )
+                };
                 let settings = FlutterRustShellSettings {
                     assets_path: assets_path.as_ptr(),
                     icu_data_path: icu_data_path.as_ptr(),
+                    aot_library_path: aot_library_path
+                        .as_ref()
+                        .map_or(std::ptr::null(), |path| path.as_ptr()),
                 };
                 let presentation_callbacks = gpu_broker.presentation_callbacks();
                 let platform_message_callbacks = self.text_input_inbox.callbacks();

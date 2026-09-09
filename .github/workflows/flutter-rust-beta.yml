@@ -67,28 +67,44 @@ jobs:
           fi
           bin/cache/dart-sdk/bin/dart .agents/skills/rebuilding-flutter-tool/scripts/rebuild.dart
 
-      - name: Configure Flutter engine
+      - name: Configure Flutter engine (debug)
         working-directory: engine/src
         env:
           VPYTHON_BYPASS: manually managed python not supported by chrome operations
         run: flutter/tools/gn --runtime-mode debug --no-goma
 
-      - name: Build Rust shell
+      - name: Build Rust shell (debug)
         working-directory: engine/src
         env:
           VPYTHON_BYPASS: manually managed python not supported by chrome operations
         run: ninja -C out/host_debug flutter_rust_shell_runner libflutter_rust_engine.so
 
+      - name: Configure Flutter engine (release)
+        working-directory: engine/src
+        env:
+          VPYTHON_BYPASS: manually managed python not supported by chrome operations
+        run: flutter/tools/gn --runtime-mode release --no-goma
+
+      - name: Build Rust shell (release)
+        working-directory: engine/src
+        env:
+          VPYTHON_BYPASS: manually managed python not supported by chrome operations
+        run: ninja -C out/host_release flutter_rust_shell_runner libflutter_rust_engine.so
+
       - name: Package BETA assets
         run: |
-          mkdir -p build/flutter-rust-sdk/crates build/flutter-rust-sdk/third_party build/flutter-rust-sdk/lib
+          mkdir -p build/flutter-rust-sdk/crates build/flutter-rust-sdk/third_party \
+            build/flutter-rust-sdk/lib/debug build/flutter-rust-sdk/lib/release
           cp engine/src/flutter/shell/platform/rust/Cargo.toml build/flutter-rust-sdk/
           cp engine/src/flutter/shell/platform/rust/Cargo.lock build/flutter-rust-sdk/
           cp -R engine/src/flutter/shell/platform/rust/crates/. build/flutter-rust-sdk/crates/
           cp -R engine/src/flutter/shell/platform/rust/third_party/winit-wayland build/flutter-rust-sdk/third_party/
-          cp engine/src/out/host_debug/libflutter_rust_engine.so build/flutter-rust-sdk/lib/
-          cp engine/src/out/host_debug/flutter_rust_shell_runner build/flutter-rust-sdk/lib/
-          cp engine/src/out/host_debug/icudtl.dat build/flutter-rust-sdk/lib/
+          cp engine/src/out/host_debug/libflutter_rust_engine.so build/flutter-rust-sdk/lib/debug/
+          cp engine/src/out/host_debug/flutter_rust_shell_runner build/flutter-rust-sdk/lib/debug/
+          cp engine/src/out/host_debug/icudtl.dat build/flutter-rust-sdk/lib/debug/
+          cp engine/src/out/host_release/libflutter_rust_engine.so build/flutter-rust-sdk/lib/release/
+          cp engine/src/out/host_release/flutter_rust_shell_runner build/flutter-rust-sdk/lib/release/
+          cp engine/src/out/host_release/icudtl.dat build/flutter-rust-sdk/lib/release/
           tar -C build/flutter-rust-sdk -czf build/flutter-rust-linux-x64.tar.gz .
           cp bin/cache/flutter_tools.snapshot build/flutter-tools.snapshot
           sha256sum build/flutter-rust-linux-x64.tar.gz build/flutter-tools.snapshot > build/SHA256SUMS

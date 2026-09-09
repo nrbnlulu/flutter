@@ -246,7 +246,13 @@ Future<void> _ensureRustShellSdk(FlutterProject project) async {
       .childDirectory('flutter-plugin-sdk')
       .childFile('Cargo.toml');
   final File sdkWorkspaceManifest = sdk.childFile('Cargo.toml');
-  final File engineLibrary = sdk.childDirectory('lib').childFile('libflutter_rust_engine.so');
+  // Cargo's build.rs picks the engine under sdk/lib/<profile>/ matching the
+  // profile it was invoked with (debug or release); the debug engine is the
+  // mandatory baseline since debug is always supported.
+  final File engineLibrary = sdk
+      .childDirectory('lib')
+      .childDirectory('debug')
+      .childFile('libflutter_rust_engine.so');
   if (sdkWorkspaceManifest.existsSync() && sdkManifest.existsSync() && engineLibrary.existsSync()) {
     return;
   }
@@ -268,19 +274,12 @@ Future<void> _ensureRustShellSdk(FlutterProject project) async {
     localShell.childFile('Cargo.lock').copySync(sdk.childFile('Cargo.lock').path);
     _replaceLink(sdk.childLink('crates'), localShell.childDirectory('crates').path);
     _replaceLink(sdk.childLink('third_party'), localShell.childDirectory('third_party').path);
-    final Directory localEngine = globals.fs.directory(
-      globals.fs.path.join(Cache.flutterRoot!, 'engine', 'src', 'out', 'host_debug'),
+    final Directory outDir = globals.fs.directory(
+      globals.fs.path.join(Cache.flutterRoot!, 'engine', 'src', 'out'),
     );
-    if (localEngine.childFile('libflutter_rust_engine.so').existsSync()) {
-      sdk.childDirectory('lib').createSync(recursive: true);
-      _replaceLink(
-        sdk.childDirectory('lib').childLink('libflutter_rust_engine.so'),
-        localEngine.childFile('libflutter_rust_engine.so').path,
-      );
-      _replaceLink(
-        sdk.childDirectory('lib').childLink('icudtl.dat'),
-        localEngine.childFile('icudtl.dat').path,
-      );
+    _linkLocalEngine(sdk, outDir.childDirectory('host_debug'), 'debug');
+    _linkLocalEngine(sdk, outDir.childDirectory('host_release'), 'release');
+    if (engineLibrary.existsSync()) {
       return;
     }
   }
@@ -318,6 +317,25 @@ Future<void> _ensureRustShellSdk(FlutterProject project) async {
       !engineLibrary.existsSync()) {
     throwToolExit('The Flutter Rust shell BETA SDK archive is incomplete.');
   }
+}
+
+/// Symlinks a local `out/host_<profile>` engine build's library and ICU data
+/// into `sdk/lib/<profile>/`, if that engine build exists. Does nothing
+/// otherwise (e.g. a checkout that has only built the debug engine).
+void _linkLocalEngine(Directory sdk, Directory localEngine, String profile) {
+  if (!localEngine.childFile('libflutter_rust_engine.so').existsSync()) {
+    return;
+  }
+  final Directory libDir = sdk.childDirectory('lib').childDirectory(profile);
+  libDir.createSync(recursive: true);
+  _replaceLink(
+    libDir.childLink('libflutter_rust_engine.so'),
+    localEngine.childFile('libflutter_rust_engine.so').path,
+  );
+  _replaceLink(
+    libDir.childLink('icudtl.dat'),
+    localEngine.childFile('icudtl.dat').path,
+  );
 }
 
 void _replaceLink(Link link, String target) {
