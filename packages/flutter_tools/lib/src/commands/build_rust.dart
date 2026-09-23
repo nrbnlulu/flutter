@@ -44,6 +44,7 @@ class BuildRustCommand extends BuildSubCommand {
   @override
   Future<Set<DevelopmentArtifact>> get requiredArtifacts async => <DevelopmentArtifact>{
     DevelopmentArtifact.universal,
+    DevelopmentArtifact.linux,
   };
 
   @override
