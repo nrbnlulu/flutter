@@ -15,4 +15,7 @@ done
 cp -RL "$src/flutter_patched_sdk" "$dst/"
 cp -L "$src"/gen/flutter/lib/snapshot/*.bin "$dst/gen/flutter/lib/snapshot/"
 cp -L "$src/dart-sdk/bin/dart" "$src/dart-sdk/bin/dartaotruntime" "$dst/dart-sdk/bin/"
-cp -L "$src/dart-sdk/bin/snapshots/frontend_server_aot.dart.snapshot" "$dst/dart-sdk/bin/snapshots/"
+# `dart development-service` (DDS, hot reload) needs the dartdev/dds snapshots.
+for snap in frontend_server_aot dartdev_aot dds_aot dart_runtime_service_vm_aot; do
+  cp -L "$src/dart-sdk/bin/snapshots/$snap.dart.snapshot" "$dst/dart-sdk/bin/snapshots/"
+done
