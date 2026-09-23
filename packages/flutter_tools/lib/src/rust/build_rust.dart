@@ -12,6 +12,7 @@ import '../build_info.dart';
 import '../build_system/build_system.dart';
 import '../build_system/targets/common.dart';
 import '../bundle_builder.dart';
+import '../globals.dart' as globals;
 import '../project.dart';
 
 /// Copies the AOT-compiled application library into the asset build
@@ -78,10 +79,13 @@ Future<File> buildRust(
       .childDirectory('sdk')
       .childDirectory('lib')
       .childDirectory(releaseMode ? 'release' : 'debug');
+  // Explicit --local-engine flags already select a complete engine build.
+  final bool userLocalEngine = globals.artifacts?.usesLocalArtifacts ?? false;
   final bool hasMatchingCompiler =
+      !userLocalEngine &&
       sdkLibDir.childDirectory('flutter_patched_sdk').existsSync() &&
       sdkLibDir.childDirectory('dart-sdk').existsSync();
-  if (!hasMatchingCompiler) {
+  if (!hasMatchingCompiler && !userLocalEngine) {
     logger.printWarning(
       'No matching kernel compiler was found alongside the Rust-shell '
       'engine at ${sdkLibDir.path}. Falling back to the default Flutter SDK '

@@ -146,30 +146,28 @@ jobs:
         env:
           VPYTHON_BYPASS: manually managed python not supported by chrome operations
         run: |
-          # flutter_patched_sdk and dart-sdk (which bundles frontend_server)
-          # must be built in this exact ninja invocation, alongside
-          # libflutter_rust_engine.so, from this exact commit. The engine's
-          # embedded Dart VM only accepts kernels compiled by a
-          # frontend_server built from the identical source tree; pairing it
-          # with any other SDK (even a very recent upstream build) fails at
-          # launch with "Invalid SDK hash". See build_rust.dart, which wires
-          # flutter_tools to compile kernels with this bundled pair via
-          # Artifacts.getLocalEngine instead of the ambient bin/cache SDK.
+          # The engine's embedded Dart VM only accepts kernels compiled by a
+          # frontend_server built from the identical source tree (anything
+          # else fails at launch with "Invalid SDK hash"), so build the
+          # kernel compiler pieces in the same ninja invocation as the
+          # engine, and ship them with it.
           ninja -C out/host_${{ matrix.runtime_mode }} \
             flutter_rust_shell_runner libflutter_rust_engine.so \
-            flutter_patched_sdk dart-sdk \
+            flutter_patched_sdk dart-sdk gen_snapshot font-subset \
             flutter/flutter_frontend_server:frontend_server
+
+      - name: Package engine artifacts (${{ matrix.runtime_mode }})
+        working-directory: engine/src
+        run: |
+          flutter/shell/platform/rust/tools/package_engine_artifacts.sh \
+            out/host_${{ matrix.runtime_mode }} \
+            "$RUNNER_TEMP/engine-package"
 
       - name: Upload engine build (${{ matrix.runtime_mode }})
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: rust-engine-${{ matrix.runtime_mode }}
-          path: |
-            engine/src/out/host_${{ matrix.runtime_mode }}/libflutter_rust_engine.so
-            engine/src/out/host_${{ matrix.runtime_mode }}/flutter_rust_shell_runner
-            engine/src/out/host_${{ matrix.runtime_mode }}/icudtl.dat
-            engine/src/out/host_${{ matrix.runtime_mode }}/flutter_patched_sdk/**
-            engine/src/out/host_${{ matrix.runtime_mode }}/dart-sdk/**
+          path: ${{ runner.temp }}/engine-package
           retention-days: 1
 
   publish:
@@ -214,8 +212,11 @@ jobs:
           cp engine/src/flutter/shell/platform/rust/Cargo.lock build/flutter-rust-sdk/
           cp -R engine/src/flutter/shell/platform/rust/crates/. build/flutter-rust-sdk/crates/
           cp -R engine/src/flutter/shell/platform/rust/third_party/winit-wayland build/flutter-rust-sdk/third_party/
-          chmod +x build/flutter-rust-sdk/lib/debug/flutter_rust_shell_runner \
-            build/flutter-rust-sdk/lib/release/flutter_rust_shell_runner
+          for mode in debug release; do
+            lib="build/flutter-rust-sdk/lib/$mode"
+            chmod +x "$lib/flutter_rust_shell_runner" "$lib/gen_snapshot" "$lib/font-subset" \
+              "$lib/dart-sdk/bin/dart" "$lib/dart-sdk/bin/dartaotruntime"
+          done
           tar -C build/flutter-rust-sdk -czf build/flutter-rust-linux-x64.tar.gz .
           mv build/flutter_tools.snapshot build/flutter-tools.snapshot
           sha256sum build/flutter-rust-linux-x64.tar.gz build/flutter-tools.snapshot > build/SHA256SUMS
