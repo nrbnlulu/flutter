@@ -2,7 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import '../artifacts.dart';
 import '../base/common.dart';
+import '../base/context.dart';
 import '../base/file_system.dart';
 import '../base/logger.dart';
 import '../base/process.dart';
@@ -61,13 +63,52 @@ Future<File> buildRust(
   }
 
   final releaseMode = buildInfo.mode == BuildMode.release;
-  await bundleBuilder.build(
+
+  // The Dart SDK embedded in the Rust-shell engine (libflutter_rust_engine.so)
+  // only loads kernels compiled by a frontend_server built from the exact
+  // same source tree; anything else, even a very recent upstream SDK, fails
+  // at startup with "Invalid SDK hash". `sdk/lib/<profile>/` (populated by
+  // `_ensureRustShellSdk`, either from a local engine checkout or the BETA
+  // download) ships a `flutter_patched_sdk`/`dart-sdk` pair built alongside
+  // that exact engine, so kernel compilation must use those instead of the
+  // ambient `bin/cache` SDK that a plain `bundleBuilder.build` would pick up.
+  final Directory sdkLibDir = project.directory
+      .childDirectory('.dart_tool')
+      .childDirectory('flutter_rs')
+      .childDirectory('sdk')
+      .childDirectory('lib')
+      .childDirectory(releaseMode ? 'release' : 'debug');
+  final bool hasMatchingCompiler =
+      sdkLibDir.childDirectory('flutter_patched_sdk').existsSync() &&
+      sdkLibDir.childDirectory('dart-sdk').existsSync();
+  if (!hasMatchingCompiler) {
+    logger.printWarning(
+      'No matching kernel compiler was found alongside the Rust-shell '
+      'engine at ${sdkLibDir.path}. Falling back to the default Flutter SDK '
+      'to compile the kernel, which may not match the engine and can fail '
+      'with "Invalid SDK hash" at launch.',
+    );
+  }
+
+  Future<void> buildBundle() => bundleBuilder.build(
     platform: TargetPlatform.linux_x64,
     buildInfo: buildInfo,
     project: project,
     mainPath: mainPath,
     target: releaseMode ? const RustAotBundle(TargetPlatform.linux_x64) : null,
   );
+
+  if (hasMatchingCompiler) {
+    final Artifacts localArtifacts = Artifacts.getLocalEngine(
+      EngineBuildPaths(targetEngine: sdkLibDir.path, hostEngine: sdkLibDir.path, webSdk: null),
+    );
+    await context.run<void>(
+      overrides: <Type, Generator>{Artifacts: () => localArtifacts},
+      body: buildBundle,
+    );
+  } else {
+    await buildBundle();
+  }
   logger.printStatus('Building Rust shell runner...');
   final arguments = <String>['cargo', 'build', if (releaseMode) '--release'];
   if (runner.childFile('Cargo.lock').existsSync()) {

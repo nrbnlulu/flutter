@@ -326,9 +326,18 @@ Future<void> _ensureRustShellSdk(FlutterProject project) async {
   }
 }
 
-/// Symlinks a local `out/host_<profile>` engine build's library and ICU data
-/// into `sdk/lib/<profile>/`, if that engine build exists. Does nothing
-/// otherwise (e.g. a checkout that has only built the debug engine).
+/// Symlinks a local `out/host_<profile>` engine build's library, ICU data,
+/// and matching kernel-compiler artifacts into `sdk/lib/<profile>/`, if that
+/// engine build exists. Does nothing otherwise (e.g. a checkout that has only
+/// built the debug engine).
+///
+/// `flutter_patched_sdk` and `dart-sdk` must come from this exact same
+/// engine build: the Dart SDK embedded in `libflutter_rust_engine.so` only
+/// accepts kernels compiled by a `frontend_server` built from the identical
+/// source tree, and rejects anything else (even a very recent upstream
+/// build) with "Invalid SDK hash". See `Artifacts.getLocalEngine` usage in
+/// `build_rust.dart`, which points kernel compilation at these directories
+/// instead of the ambient `bin/cache` SDK.
 void _linkLocalEngine(Directory sdk, Directory localEngine, String profile) {
   if (!localEngine.childFile('libflutter_rust_engine.so').existsSync()) {
     return;
@@ -343,6 +352,15 @@ void _linkLocalEngine(Directory sdk, Directory localEngine, String profile) {
     libDir.childLink('icudtl.dat'),
     localEngine.childFile('icudtl.dat').path,
   );
+  if (localEngine.childDirectory('flutter_patched_sdk').existsSync()) {
+    _replaceLink(
+      libDir.childLink('flutter_patched_sdk'),
+      localEngine.childDirectory('flutter_patched_sdk').path,
+    );
+  }
+  if (localEngine.childDirectory('dart-sdk').existsSync()) {
+    _replaceLink(libDir.childLink('dart-sdk'), localEngine.childDirectory('dart-sdk').path);
+  }
 }
 
 void _replaceLink(Link link, String target) {
