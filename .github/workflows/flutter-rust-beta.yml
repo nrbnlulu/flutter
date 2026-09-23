@@ -44,6 +44,52 @@ jobs:
           echo "FLUTTER_VERSION_TAG=$FLUTTER_VERSION_TAG" >> "$GITHUB_ENV"
           echo "flutter_version_tag=$FLUTTER_VERSION_TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Refresh the pinned engine.version
+        env:
+          GH_TOKEN: ${{ secrets.FLUTTER_RUST_RELEASE_TOKEN }}
+        run: |
+          # bin/internal/engine.version is checked into this branch (see
+          # "Make the BETA SDK installable through FVM") so that
+          # update_engine_version.sh always resolves a pinned, downloadable
+          # Dart SDK/engine instead of a content-aware hash unique to this
+          # fork's engine/ changes, which has no published artifacts.
+          #
+          # The value is NOT a git commit SHA: it is the content-addressed
+          # hash (content_aware_hash.sh's output, hashing DEPS + engine/)
+          # that Google's build infra keys published artifacts under. Only
+          # upstream flutter/flutter's own release branches (stable/beta)
+          # are guaranteed to have that hash actually published, so pull it
+          # from there rather than computing/guessing one, and take
+          # upstream's beta channel to minimize drift against this fork's
+          # frequent merges. A stale pin here means the Dart SDK used to
+          # compile a kernel locally drifts from the SDK baked into the
+          # freshly built libflutter_rust_engine.so, and the app fails to
+          # launch with "Invalid SDK hash".
+          NEW_ENGINE_VERSION="$(curl -fsSL \
+            https://raw.githubusercontent.com/flutter/flutter/beta/bin/internal/engine.version)"
+          if [[ -z "$NEW_ENGINE_VERSION" ]]; then
+            echo 'Could not fetch upstream beta engine.version.' >&2
+            exit 1
+          fi
+          STATUS="$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://storage.googleapis.com/flutter_infra_release/flutter/${NEW_ENGINE_VERSION}/engine_stamp.json")"
+          if [[ "$STATUS" != "200" ]]; then
+            echo "Upstream beta engine.version ($NEW_ENGINE_VERSION) has no published artifacts (HTTP $STATUS)." >&2
+            exit 1
+          fi
+          CURRENT_ENGINE_VERSION="$(cat bin/internal/engine.version 2>/dev/null || true)"
+          if [[ "$NEW_ENGINE_VERSION" == "$CURRENT_ENGINE_VERSION" ]]; then
+            echo "engine.version already up to date ($NEW_ENGINE_VERSION)."
+          else
+            echo "$NEW_ENGINE_VERSION" > bin/internal/engine.version
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add bin/internal/engine.version
+            git commit -m "Roll pinned engine.version to $NEW_ENGINE_VERSION"
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+              "HEAD:${GITHUB_REF_NAME}"
+          fi
+
       - name: Add Flutter to PATH
         run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
