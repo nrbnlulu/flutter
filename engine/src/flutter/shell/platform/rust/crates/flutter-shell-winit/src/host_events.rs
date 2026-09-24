@@ -15,7 +15,7 @@ pub(crate) enum HostEvent {
     ExitRequested,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PendingPlatformResponse(pub(crate) usize);
 
 #[derive(Clone)]

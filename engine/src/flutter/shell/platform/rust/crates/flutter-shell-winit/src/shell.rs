@@ -60,6 +60,7 @@ use std::{
 use winit::monitor::Fullscreen;
 use winit::{
     application::ApplicationHandler,
+    cursor::CursorIcon,
     dpi::{LogicalPosition, LogicalSize, PhysicalPosition},
     event::{
         ButtonSource, ElementState, Ime, KeyEvent as WinitKeyEvent, MouseButton, MouseScrollDelta,
@@ -1284,6 +1285,8 @@ impl LifecycleState {
 
 const TEXT_INPUT_CHANNEL: &[u8] = b"flutter/textinput";
 const PLATFORM_CHANNEL: &[u8] = b"flutter/platform";
+const MOUSE_CURSOR_CHANNEL: &[u8] = b"flutter/mousecursor";
+const STANDARD_METHOD_SUCCESS: &[u8] = &[0, 0];
 const REQUEST_APP_EXIT_MESSAGE: &[u8] =
     br#"{"method":"System.requestAppExit","args":{"type":"cancelable"}}"#;
 const KEY_EVENT_CHANNEL: &[u8] = b"flutter/keyevent";
@@ -1451,6 +1454,177 @@ struct RawMethodCall {
     args: Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MouseCursorCommand {
+    icon: Option<CursorIcon>,
+    response: Option<PendingPlatformResponse>,
+}
+
+impl MouseCursorCommand {
+    fn decode(message: &[u8], response: Option<PendingPlatformResponse>) -> Option<Self> {
+        let mut decoder = StandardCodecDecoder::new(message);
+        if decoder.read_string()? != "activateSystemCursor" || decoder.read_byte()? != 13 {
+            return None;
+        }
+        let entries = decoder.read_size()?;
+        let mut kind = None;
+        for _ in 0..entries {
+            let key = decoder.read_string()?;
+            if key == "kind" {
+                kind = Some(decoder.read_string()?);
+            } else {
+                decoder.skip_value()?;
+            }
+        }
+        if !decoder.is_done() {
+            return None;
+        }
+        Some(Self {
+            icon: cursor_icon_for_flutter_kind(kind?),
+            response,
+        })
+    }
+}
+
+fn cursor_icon_for_flutter_kind(kind: &str) -> Option<CursorIcon> {
+    Some(match kind {
+        "none" => return None,
+        "alias" => CursorIcon::Alias,
+        "allScroll" => CursorIcon::AllScroll,
+        "cell" => CursorIcon::Cell,
+        "click" => CursorIcon::Pointer,
+        "contextMenu" => CursorIcon::ContextMenu,
+        "copy" => CursorIcon::Copy,
+        "forbidden" => CursorIcon::NotAllowed,
+        "grab" => CursorIcon::Grab,
+        "grabbing" => CursorIcon::Grabbing,
+        "help" => CursorIcon::Help,
+        "move" => CursorIcon::Move,
+        "noDrop" => CursorIcon::NoDrop,
+        "precise" => CursorIcon::Crosshair,
+        "progress" => CursorIcon::Progress,
+        "text" => CursorIcon::Text,
+        "resizeColumn" => CursorIcon::ColResize,
+        "resizeDown" => CursorIcon::SResize,
+        "resizeDownLeft" => CursorIcon::SwResize,
+        "resizeDownRight" => CursorIcon::SeResize,
+        "resizeLeft" => CursorIcon::WResize,
+        "resizeLeftRight" => CursorIcon::EwResize,
+        "resizeRight" => CursorIcon::EResize,
+        "resizeRow" => CursorIcon::RowResize,
+        "resizeUp" => CursorIcon::NResize,
+        "resizeUpDown" => CursorIcon::NsResize,
+        "resizeUpLeft" => CursorIcon::NwResize,
+        "resizeUpRight" => CursorIcon::NeResize,
+        "resizeUpLeftDownRight" => CursorIcon::NwseResize,
+        "resizeUpRightDownLeft" => CursorIcon::NeswResize,
+        "verticalText" => CursorIcon::VerticalText,
+        "wait" => CursorIcon::Wait,
+        "zoomIn" => CursorIcon::ZoomIn,
+        "zoomOut" => CursorIcon::ZoomOut,
+        _ => CursorIcon::Default,
+    })
+}
+
+struct StandardCodecDecoder<'a> {
+    message: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> StandardCodecDecoder<'a> {
+    fn new(message: &'a [u8]) -> Self {
+        Self { message, offset: 0 }
+    }
+
+    fn read_byte(&mut self) -> Option<u8> {
+        let byte = *self.message.get(self.offset)?;
+        self.offset += 1;
+        Some(byte)
+    }
+
+    fn read_size(&mut self) -> Option<usize> {
+        match self.read_byte()? {
+            254 => self
+                .read_raw(2)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(u16::from_ne_bytes)
+                .map(usize::from),
+            255 => self
+                .read_raw(4)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(u32::from_ne_bytes)
+                .and_then(|size| usize::try_from(size).ok()),
+            size => Some(size as usize),
+        }
+    }
+
+    fn read_raw(&mut self, length: usize) -> Option<&'a [u8]> {
+        let end = self.offset.checked_add(length)?;
+        let bytes = self.message.get(self.offset..end)?;
+        self.offset = end;
+        Some(bytes)
+    }
+
+    fn read_string(&mut self) -> Option<&'a str> {
+        if self.read_byte()? != 7 {
+            return None;
+        }
+        let length = self.read_size()?;
+        std::str::from_utf8(self.read_raw(length)?).ok()
+    }
+
+    fn align(&mut self, alignment: usize) -> Option<()> {
+        let padding = (alignment - self.offset % alignment) % alignment;
+        self.read_raw(padding).map(|_| ())
+    }
+
+    fn skip_value(&mut self) -> Option<()> {
+        match self.read_byte()? {
+            0..=2 => Some(()),
+            3 => {
+                self.align(4)?;
+                self.read_raw(4).map(|_| ())
+            }
+            4 | 6 => {
+                self.align(8)?;
+                self.read_raw(8).map(|_| ())
+            }
+            5 | 7 | 8 => {
+                let length = self.read_size()?;
+                self.read_raw(length).map(|_| ())
+            }
+            9 | 14 => self.skip_typed_list(4),
+            10 | 11 => self.skip_typed_list(8),
+            12 => {
+                let length = self.read_size()?;
+                for _ in 0..length {
+                    self.skip_value()?;
+                }
+                Some(())
+            }
+            13 => {
+                let length = self.read_size()?;
+                for _ in 0..length {
+                    self.skip_value()?;
+                    self.skip_value()?;
+                }
+                Some(())
+            }
+            _ => None,
+        }
+    }
+
+    fn skip_typed_list(&mut self, element_size: usize) -> Option<()> {
+        let length = self.read_size()?;
+        self.align(element_size)?;
+        self.read_raw(length.checked_mul(element_size)?).map(|_| ())
+    }
+
+    fn is_done(&self) -> bool {
+        self.offset == self.message.len()
+    }
+}
+
 #[derive(Deserialize)]
 struct SetClientArguments(TextInputClientId, IgnoredAny);
 
@@ -1565,6 +1739,7 @@ impl TextInputCommand {
 
 struct TextInputInbox {
     commands: Mutex<VecDeque<TextInputCommand>>,
+    cursor_commands: Mutex<VecDeque<MouseCursorCommand>>,
     texture_fixture_messages: Mutex<VecDeque<String>>,
     wake_proxy: HostEventSender,
     exit: Arc<ApplicationExitCoordinator>,
@@ -1603,6 +1778,7 @@ impl TextInputInbox {
     fn new(wake_proxy: HostEventSender) -> Self {
         Self {
             commands: Mutex::new(VecDeque::new()),
+            cursor_commands: Mutex::new(VecDeque::new()),
             texture_fixture_messages: Mutex::new(VecDeque::new()),
             wake_proxy: wake_proxy.clone(),
             exit: Arc::new(ApplicationExitCoordinator {
@@ -1621,6 +1797,9 @@ impl TextInputInbox {
 
     fn drain(&self) -> VecDeque<TextInputCommand> {
         std::mem::take(&mut *self.commands.lock())
+    }
+    fn drain_cursor_commands(&self) -> VecDeque<MouseCursorCommand> {
+        std::mem::take(&mut *self.cursor_commands.lock())
     }
     fn drain_texture_fixture_messages(&self) -> VecDeque<String> {
         std::mem::take(&mut *self.texture_fixture_messages.lock())
@@ -1703,6 +1882,21 @@ extern "C" fn handle_platform_message(
             .push_back(message.to_owned());
         let _ = inbox.wake_proxy.send_event(HostEvent::TaskScheduled);
         return FlutterRustPlatformMessageDisposition::Success;
+    }
+    if channel == MOUSE_CURSOR_CHANNEL {
+        let response = (!response_handle.0.is_null())
+            .then_some(PendingPlatformResponse(response_handle.0 as usize));
+        let Some(command) = MouseCursorCommand::decode(message, response) else {
+            return FlutterRustPlatformMessageDisposition::Unhandled;
+        };
+        let inbox = unsafe { &*user_data.cast::<TextInputInbox>() };
+        inbox.cursor_commands.lock().push_back(command);
+        let _ = inbox.wake_proxy.send_event(HostEvent::TaskScheduled);
+        return if response.is_some() {
+            FlutterRustPlatformMessageDisposition::Pending
+        } else {
+            FlutterRustPlatformMessageDisposition::Success
+        };
     }
     if channel != TEXT_INPUT_CHANNEL {
         return FlutterRustPlatformMessageDisposition::Unhandled;
@@ -4388,6 +4582,7 @@ impl ApplicationHandler for ShellApplication {
             self.task_runner_host.dispatch_due_tasks();
         });
         self.apply_text_input_commands();
+        self.apply_mouse_cursor_commands();
         #[cfg(target_os = "android")]
         self.poll_android_text_input();
         if let Some(demo) = &mut self.demo_texture {
@@ -5062,6 +5257,29 @@ fn child_origin_offset(size: winit::dpi::LogicalSize<f64>, gravity: PopupAnchor)
 }
 
 impl ShellApplication {
+    fn apply_mouse_cursor_commands(&mut self) {
+        for command in self.text_input_inbox.drain_cursor_commands() {
+            let windows = self
+                .windows
+                .borrow()
+                .views
+                .values()
+                .map(|view| Arc::clone(&view.window))
+                .collect::<Vec<_>>();
+            for window in windows {
+                if let Some(icon) = command.icon {
+                    window.set_cursor(icon.into());
+                    window.set_cursor_visible(true);
+                } else {
+                    window.set_cursor_visible(false);
+                }
+            }
+            if let Some(response) = command.response {
+                complete_cpp_platform_message(response, STANDARD_METHOD_SUCCESS);
+            }
+        }
+    }
+
     fn send_pointer_events(&self, events: impl IntoIterator<Item = FlutterRustPointerEvent>) {
         if let Some(shell) = { self.windows.borrow().shell } {
             for event in events {

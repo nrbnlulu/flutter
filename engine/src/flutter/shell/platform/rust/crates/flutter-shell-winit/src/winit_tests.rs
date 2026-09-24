@@ -209,7 +209,115 @@ fn satellite_callback_decodes_through_an_injected_host() {
 fn has_a_stable_default_window_title() {
     assert_eq!(ShellConfig::default().title, "Flutter Rust Shell");
     assert_eq!(TEXT_INPUT_CHANNEL, b"flutter/textinput");
+    assert_eq!(MOUSE_CURSOR_CHANNEL, b"flutter/mousecursor");
     assert_eq!(KEY_EVENT_CHANNEL, b"flutter/keyevent");
+}
+
+fn encode_standard_string(buffer: &mut Vec<u8>, value: &str) {
+    assert!(value.len() < 254);
+    buffer.push(7);
+    buffer.push(value.len() as u8);
+    buffer.extend_from_slice(value.as_bytes());
+}
+
+fn encode_cursor_method_call(kind: &str) -> Vec<u8> {
+    let mut message = Vec::new();
+    encode_standard_string(&mut message, "activateSystemCursor");
+    message.extend_from_slice(&[13, 2]);
+    encode_standard_string(&mut message, "device");
+    message.push(3);
+    while message.len() % 4 != 0 {
+        message.push(0);
+    }
+    message.extend_from_slice(&1_i32.to_ne_bytes());
+    encode_standard_string(&mut message, "kind");
+    encode_standard_string(&mut message, kind);
+    message
+}
+
+#[test]
+fn decodes_standard_mouse_cursor_method_calls() {
+    let response = PendingPlatformResponse(42);
+    assert_eq!(
+        MouseCursorCommand::decode(&encode_cursor_method_call("click"), Some(response)),
+        Some(MouseCursorCommand {
+            icon: Some(CursorIcon::Pointer),
+            response: Some(response),
+        })
+    );
+    assert_eq!(
+        MouseCursorCommand::decode(&encode_cursor_method_call("text"), None),
+        Some(MouseCursorCommand {
+            icon: Some(CursorIcon::Text),
+            response: None,
+        })
+    );
+    assert_eq!(
+        MouseCursorCommand::decode(&encode_cursor_method_call("none"), None),
+        Some(MouseCursorCommand {
+            icon: None,
+            response: None,
+        })
+    );
+    assert_eq!(
+        MouseCursorCommand::decode(&encode_cursor_method_call("futureCursor"), None),
+        Some(MouseCursorCommand {
+            icon: Some(CursorIcon::Default),
+            response: None,
+        })
+    );
+}
+
+#[test]
+fn maps_every_flutter_system_cursor_kind() {
+    let mappings = [
+        ("alias", CursorIcon::Alias),
+        ("allScroll", CursorIcon::AllScroll),
+        ("basic", CursorIcon::Default),
+        ("cell", CursorIcon::Cell),
+        ("click", CursorIcon::Pointer),
+        ("contextMenu", CursorIcon::ContextMenu),
+        ("copy", CursorIcon::Copy),
+        ("forbidden", CursorIcon::NotAllowed),
+        ("grab", CursorIcon::Grab),
+        ("grabbing", CursorIcon::Grabbing),
+        ("help", CursorIcon::Help),
+        ("move", CursorIcon::Move),
+        ("noDrop", CursorIcon::NoDrop),
+        ("precise", CursorIcon::Crosshair),
+        ("progress", CursorIcon::Progress),
+        ("text", CursorIcon::Text),
+        ("resizeColumn", CursorIcon::ColResize),
+        ("resizeDown", CursorIcon::SResize),
+        ("resizeDownLeft", CursorIcon::SwResize),
+        ("resizeDownRight", CursorIcon::SeResize),
+        ("resizeLeft", CursorIcon::WResize),
+        ("resizeLeftRight", CursorIcon::EwResize),
+        ("resizeRight", CursorIcon::EResize),
+        ("resizeRow", CursorIcon::RowResize),
+        ("resizeUp", CursorIcon::NResize),
+        ("resizeUpDown", CursorIcon::NsResize),
+        ("resizeUpLeft", CursorIcon::NwResize),
+        ("resizeUpRight", CursorIcon::NeResize),
+        ("resizeUpLeftDownRight", CursorIcon::NwseResize),
+        ("resizeUpRightDownLeft", CursorIcon::NeswResize),
+        ("verticalText", CursorIcon::VerticalText),
+        ("wait", CursorIcon::Wait),
+        ("zoomIn", CursorIcon::ZoomIn),
+        ("zoomOut", CursorIcon::ZoomOut),
+    ];
+    for (kind, expected) in mappings {
+        assert_eq!(cursor_icon_for_flutter_kind(kind), Some(expected), "{kind}");
+    }
+    assert_eq!(cursor_icon_for_flutter_kind("none"), None);
+}
+
+#[test]
+fn rejects_malformed_mouse_cursor_method_calls() {
+    assert!(MouseCursorCommand::decode(b"not a method call", None).is_none());
+    let mut truncated = encode_cursor_method_call("click");
+    truncated.pop();
+    assert!(MouseCursorCommand::decode(&truncated, None).is_none());
 }
 
 #[test]
