@@ -15,6 +15,7 @@ import '../dart/package_map.dart';
 import '../globals.dart' as globals;
 import '../package_graph.dart';
 import '../project.dart';
+import 'native_libraries.dart';
 
 const rustPluginDependenciesBegin = '# === BEGIN FLUTTER GENERATED RUST PLUGINS ===';
 const rustPluginDependenciesEnd = '# === END FLUTTER GENERATED RUST PLUGINS ===';
@@ -89,6 +90,7 @@ Future<void> refreshRustPlugins(
     packageGraph: useSharedResources ? packageGraph : null,
   );
   final plugins = <RustPlugin>[];
+  final nativeLibraries = <RustNativeLibrary>[];
   for (final dependency in dependencies) {
     if (dependency.name == project.manifest.appName ||
         (releaseMode && dependency.isExclusiveDevDependency)) {
@@ -99,11 +101,18 @@ Future<void> refreshRustPlugins(
     if (!manifest.existsSync()) {
       continue;
     }
-    final RustPlugin? plugin = await _readRustPlugin(dependency.name, rustDirectory, manifest);
+    final (RustPlugin? plugin, RustNativeLibrary? nativeLibrary) = await _readRustPackage(
+      dependency.name,
+      rustDirectory,
+      manifest,
+    );
     if (plugin != null) {
       plugins.add(plugin);
+    } else if (nativeLibrary != null) {
+      nativeLibraries.add(nativeLibrary);
     }
   }
+  writeNativeLibraries(project, nativeLibraries);
   plugins.sort(
     (RustPlugin left, RustPlugin right) => left.dartPackageName.compareTo(right.dartPackageName),
   );
@@ -187,7 +196,7 @@ Future<void> _validatePluginSdkResolution(File manifest, Directory runner) async
   }
 }
 
-Future<RustPlugin?> _readRustPlugin(
+Future<(RustPlugin?, RustNativeLibrary?)> _readRustPackage(
   String dartPackageName,
   Directory rustDirectory,
   File manifest,
@@ -219,7 +228,7 @@ Future<RustPlugin?> _readRustPlugin(
   final flutterMetadata =
       (package['metadata'] as Map<String, Object?>?)?['flutter'] as Map<String, Object?>?;
   if (flutterMetadata?['plugin'] != true) {
-    return null;
+    return (null, _readNativeLibrary(dartPackageName, package, manifest, flutterMetadata));
   }
   final Object? registrarValue = flutterMetadata?['registrar'];
   if (registrarValue is! String || !_rustPath.hasMatch(registrarValue)) {
@@ -228,12 +237,50 @@ Future<RustPlugin?> _readRustPlugin(
       '[package.metadata.flutter] registrar.',
     );
   }
-  return RustPlugin(
-    dartPackageName: dartPackageName,
-    cargoPackageName: package['name']! as String,
-    registrar: registrarValue,
-    rustDirectory: rustDirectory,
+  return (
+    RustPlugin(
+      dartPackageName: dartPackageName,
+      cargoPackageName: package['name']! as String,
+      registrar: registrarValue,
+      rustDirectory: rustDirectory,
+    ),
+    null,
   );
+}
+
+/// A package with a Rust `cdylib` but no Rust-shell plugin metadata, such as a
+/// flutter_rust_bridge package. It keeps its own shared library (statically
+/// linking several flutter_rust_bridge crates into one executable fails with
+/// duplicate `frb_*` symbols), loaded by name at runtime.
+RustNativeLibrary? _readNativeLibrary(
+  String dartPackageName,
+  Map<String, Object?> package,
+  File manifest,
+  Map<String, Object?>? flutterMetadata,
+) {
+  for (final Object? target in package['targets'] as List<Object?>? ?? const <Object?>[]) {
+    final targetMap = target! as Map<String, Object?>;
+    final List<Object?> crateTypes =
+        (targetMap['crate_types'] as List<Object?>?) ?? const <Object?>[];
+    if (!crateTypes.contains('cdylib')) {
+      continue;
+    }
+    final Object? rustflags = flutterMetadata?['rustflags'];
+    if (rustflags != null &&
+        (rustflags is! List<Object?> || rustflags.any((Object? f) => f is! String))) {
+      throwToolExit(
+        'Rust package $dartPackageName must provide [package.metadata.flutter] '
+        'rustflags as a list of strings.',
+      );
+    }
+    return RustNativeLibrary(
+      dartPackageName: dartPackageName,
+      manifestPath: manifest.path,
+      libraryName: (targetMap['name']! as String).replaceAll('-', '_'),
+      rustflags: rustflags == null ? const <String>[] : (rustflags as List<Object?>).cast<String>(),
+    );
+  }
+  return null;
 }
 
 Future<void> _ensureRustShellSdk(FlutterProject project) async {
@@ -347,10 +394,7 @@ void _linkLocalEngine(Directory sdk, Directory localEngine, String profile) {
     libDir.childLink('libflutter_rust_engine.so'),
     localEngine.childFile('libflutter_rust_engine.so').path,
   );
-  _replaceLink(
-    libDir.childLink('icudtl.dat'),
-    localEngine.childFile('icudtl.dat').path,
-  );
+  _replaceLink(libDir.childLink('icudtl.dat'), localEngine.childFile('icudtl.dat').path);
 }
 
 void _replaceLink(Link link, String target) {

@@ -14,8 +14,10 @@ import '../build_info.dart';
 import '../bundle_builder.dart';
 import '../desktop_device.dart';
 import '../device.dart';
+import '../globals.dart' as globals;
 import '../project.dart';
 import 'build_rust.dart';
+import 'native_libraries.dart';
 
 /// The local Linux host running an application through the Rust shell.
 class RustShellDevice extends DesktopDevice {
@@ -85,6 +87,23 @@ class RustShellDevice extends DesktopDevice {
       buildInfo.mode == BuildMode.release ? 'release' : 'debug',
       project.manifest.appName,
     );
+  }
+
+  @override
+  Map<String, String> additionalEnvironmentForDevice(BuildInfo buildInfo) {
+    final Directory libraries = nativeLibraryDirectory(
+      FlutterProject.current(),
+      releaseMode: buildInfo.mode == BuildMode.release,
+    );
+    if (!libraries.existsSync()) {
+      return const <String, String>{};
+    }
+    final String? existing = globals.platform.environment['LD_LIBRARY_PATH'];
+    return <String, String>{
+      'LD_LIBRARY_PATH': existing == null || existing.isEmpty
+          ? libraries.path
+          : '${libraries.path}:$existing',
+    };
   }
 
   @override

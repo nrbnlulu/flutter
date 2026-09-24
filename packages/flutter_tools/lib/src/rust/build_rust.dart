@@ -14,6 +14,7 @@ import '../build_system/targets/common.dart';
 import '../bundle_builder.dart';
 import '../globals.dart' as globals;
 import '../project.dart';
+import 'native_libraries.dart';
 
 /// Copies the AOT-compiled application library into the asset build
 /// directory as `app.so`, matching what the Rust runner is told to load in
@@ -122,6 +123,14 @@ Future<File> buildRust(
   if (result != 0) {
     throwToolExit('Unable to build the Rust shell runner.');
   }
+
+  await buildNativeLibraries(
+    project,
+    releaseMode: releaseMode,
+    processUtils: processUtils,
+    logger: logger,
+    fileSystem: fileSystem,
+  );
 
   return fileSystem.file(
     fileSystem.path.join(
