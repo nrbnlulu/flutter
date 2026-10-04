@@ -1653,7 +1653,11 @@ void main() {
     // `flutter create -t plugin` output passes `dart format` out of the box.
     // Regression test for https://github.com/flutter/flutter/issues/175960.
     for (final FileSystemEntity file in projectDir.listSync(recursive: true)) {
-      if (file is File && file.path.endsWith('.dart')) {
+      if (file is File &&
+          file.path.endsWith('.dart') &&
+          // Skip Pigeon-generated files, as they are intentionally not autoformatted
+          // to minimize diffs when developers re-run Pigeon generation.
+          !file.path.endsWith('.g.dart')) {
         final String original = file.readAsStringSync();
 
         final Process process = await Process.start(
@@ -2759,10 +2763,7 @@ void main() {
 
     await runner.run(<String>['create', '--no-pub', '--template=plugin', projectDir.path]);
 
-    expect(
-      projectDir.childDirectory('lib').childFile('flutter_project_method_channel.dart'),
-      exists,
-    );
+    expect(projectDir.childDirectory('lib').childFile('flutter_project_pigeon.dart'), exists);
     expect(
       projectDir.childDirectory('lib').childFile('flutter_project_platform_interface.dart'),
       exists,
@@ -4216,7 +4217,8 @@ void main() {
     expect(
       logger.statusText,
       contains(
-        'To add platforms, run `flutter create -t plugin --platforms <platforms> .` under ${globals.fs.path.normalize(globals.fs.path.relative(projectDir.path))}.',
+        'To add platforms, run `flutter create -t plugin --platforms <platforms> .` under ${globals.fs.path.normalize(globals.fs.path.relative(projectDir.path))},\n'
+        'then update pigeon/messages.dart and pubspec.yaml to include the new platforms.',
       ),
     );
     expect(
@@ -4234,7 +4236,8 @@ void main() {
     expect(
       logger.statusText,
       contains(
-        'To add platforms, run `flutter create -t plugin_ffi --platforms <platforms> .` under ${globals.fs.path.normalize(globals.fs.path.relative(projectDir.path))}.',
+        'To add platforms, run `flutter create -t plugin_ffi --platforms <platforms> .` under ${globals.fs.path.normalize(globals.fs.path.relative(projectDir.path))},\n'
+        'then update pubspec.yaml to include the new platforms.',
       ),
     );
     expect(
