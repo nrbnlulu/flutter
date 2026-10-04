@@ -348,6 +348,18 @@ The interop contract must explicitly define:
 GPU synchronization is the highest-risk part of the project and should be
 validated before broad platform work.
 
+The raster task runner owns all host access to the shared Vulkan queue,
+including wgpu/Impeller submission, presentation, swapchain configuration,
+surface release, and waits for GPU resource reclamation. Winit creates and
+retains native windows and records requested sizes; even initial swapchain
+configuration is deferred to raster acquisition. Engine view removal releases
+the swapchain on raster before sending completion through the winit host-event
+queue. Android surface replacement uses the same raster task runner, retaining
+the old native window until release completes. Texture unregister explicitly
+reclaims GPU storage on raster so SDK handles retained by workers can be
+destroyed without touching the shared queue. Shutdown drains these raster tasks
+before joining the GPU owner and destroying native windows.
+
 ## Rust plugin and texture model
 
 Use Flutter's existing internal

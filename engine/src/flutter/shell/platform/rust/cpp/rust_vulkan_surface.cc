@@ -4,6 +4,8 @@
 
 #include "flutter/shell/platform/rust/cpp/rust_vulkan_surface.h"
 
+#include <vector>
+
 #include "flutter/shell/gpu/gpu_surface_vulkan_impeller.h"
 #include "impeller/renderer/backend/vulkan/command_buffer_vk.h"
 #include "impeller/renderer/backend/vulkan/context_vk.h"
@@ -63,13 +65,40 @@ bool RustVulkanPresentation::UnregisterView(FlutterRustViewId view_id) {
   if (view_id <= FLUTTER_RUST_IMPLICIT_VIEW_ID) {
     return false;
   }
-  std::scoped_lock lock(views_mutex_);
-  return views_.erase(view_id) == 1u;
+  std::shared_ptr<ViewPresentation> view;
+  {
+    std::scoped_lock lock(views_mutex_);
+    const auto found = views_.find(view_id);
+    if (found == views_.end()) {
+      return false;
+    }
+    view = std::move(found->second);
+    views_.erase(found);
+  }
+  if (view->callbacks.release_surface) {
+    view->callbacks.release_surface(view->callbacks.user_data);
+  }
+  return true;
 }
 
 void RustVulkanPresentation::SetActiveViewId(int64_t view_id) {
   std::scoped_lock lock(views_mutex_);
   active_view_id_ = view_id;
+}
+
+void RustVulkanPresentation::ReleaseSurfaces() {
+  std::vector<std::shared_ptr<ViewPresentation>> views;
+  {
+    std::scoped_lock lock(views_mutex_);
+    for (const auto& [view_id, view] : views_) {
+      views.push_back(view);
+    }
+  }
+  for (const auto& view : views) {
+    if (view->callbacks.release_surface) {
+      view->callbacks.release_surface(view->callbacks.user_data);
+    }
+  }
 }
 
 FlutterVulkanImage RustVulkanPresentation::AcquireImage(const DlISize& size) {

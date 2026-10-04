@@ -1,0 +1,10 @@
+name: flutter_rust_shell_windowing_fixture
+description: Native multi-view GPU lifecycle regression fixture.
+publish_to: none
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter

@@ -32,7 +32,11 @@ class RustVulkanPresentation final : public GPUSurfaceVulkanDelegate {
   std::unique_ptr<Surface> CreateSurface();
   bool RegisterView(FlutterRustViewId view_id,
                     FlutterRustVulkanPresentationCallbacks callbacks);
+  // Runs on raster after CollectView; releases the Rust swapchain before
+  // the caller acknowledges removal to the native-window owner.
   bool UnregisterView(FlutterRustViewId view_id);
+  // Runs on raster after rendering has stopped during whole-shell teardown.
+  void ReleaseSurfaces();
 
  private:
   // |GPUSurfaceVulkanDelegate|

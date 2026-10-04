@@ -205,6 +205,19 @@ RustShell::~RustShell() {
   if (vm_service_uri_callback_ != 0) {
     DartServiceIsolate::RemoveServerStatusCallback(vm_service_uri_callback_);
   }
+  if (shell_) {
+    // Stop the rasterizer through the engine's standard surface lifecycle
+    // before releasing swapchains. Pending draws may otherwise still acquire
+    // an image while the Rust host is exiting its event loop.
+    if (running_) {
+      if (auto platform_view = shell_->GetPlatformView()) {
+        platform_view->NotifyDestroyed();
+      }
+    }
+    shell_->GetTaskRunners().GetRasterTaskRunner()->PostTask(
+        [presentation = presentation_]() { presentation->ReleaseSurfaces(); });
+    // Shell destruction drains raster work before ThreadHost joins it.
+  }
 }
 
 bool RustShell::IsValid() const {
@@ -266,15 +279,24 @@ void RustShell::AddView(
   }
   auto platform_view = shell_->GetPlatformView();
   if (!platform_view) {
-    presentation_->UnregisterView(view_id);
-    CompleteViewOperation(callbacks, view_id, false);
+    shell_->GetTaskRunners().GetRasterTaskRunner()->PostTask(
+        [presentation = presentation_, callbacks, view_id]() {
+          presentation->UnregisterView(view_id);
+          CompleteViewOperation(callbacks, view_id, false);
+        });
     return;
   }
   platform_view->AddView(
       view_id, ToViewportMetrics(metrics),
-      [presentation = presentation_, callbacks, view_id](bool added) {
+      [presentation = presentation_, callbacks, view_id,
+       raster_runner =
+           shell_->GetTaskRunners().GetRasterTaskRunner()](bool added) {
         if (!added) {
-          presentation->UnregisterView(view_id);
+          raster_runner->PostTask([presentation, callbacks, view_id]() {
+            presentation->UnregisterView(view_id);
+            CompleteViewOperation(callbacks, view_id, false);
+          });
+          return;
         }
         CompleteViewOperation(callbacks, view_id, added);
       });
@@ -484,6 +506,12 @@ void RustShell::TestRecreateTextureContext(
           callback(user_data);
         }
       });
+}
+
+void RustShell::PostRasterTask(void (*callback)(void*), void* user_data) {
+  FML_CHECK(shell_ && callback);
+  shell_->GetTaskRunners().GetRasterTaskRunner()->PostTask(
+      [callback, user_data]() { callback(user_data); });
 }
 
 FlutterRustViewId RustShell::CreateRegularWindow(
@@ -1054,6 +1082,12 @@ extern "C" int FlutterRustShellWindowSetParent(
              view_id, parent_view_id)
              ? 1
              : 0;
+}
+
+extern "C" void FlutterRustShellPostRasterTask(void* shell,
+                                               void (*callback)(void*),
+                                               void* user_data) {
+  static_cast<flutter::RustShell*>(shell)->PostRasterTask(callback, user_data);
 }
 
 extern "C" void FlutterRustShellDestroyShell(void* shell) {

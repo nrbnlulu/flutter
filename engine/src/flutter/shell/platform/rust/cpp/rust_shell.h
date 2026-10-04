@@ -48,7 +48,7 @@ class RustShell final {
                           const FlutterRustViewMetrics& metrics);
 
   // Adds/removes a non-implicit view in this engine. Completion is delivered
-  // asynchronously on the merged Rust UI/platform runner.
+  // asynchronously (removal and failed-add cleanup run on raster).
   void AddView(FlutterRustViewId view_id,
                const FlutterRustViewMetrics& metrics,
                FlutterRustVulkanPresentationCallbacks presentation_callbacks,
@@ -95,6 +95,7 @@ class RustShell final {
   void TestRecreateTextureContext(
       FlutterRustExternalTextureUnregisteredCallback callback,
       void* user_data);
+  void PostRasterTask(void (*callback)(void*), void* user_data);
 
   FlutterRustViewId CreateRegularWindow(
       const FlutterRustRegularWindowRequest* request);

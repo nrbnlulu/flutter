@@ -34,6 +34,7 @@ mod vulkan {
         adapter: wgpu::Adapter,
         device: wgpu::Device,
         queue: wgpu::Queue,
+        gpu_thread: std::sync::OnceLock<std::thread::ThreadId>,
     }
 
     /// Borrowed Vulkan object values suitable only for an immediate C++ call.
@@ -65,7 +66,7 @@ mod vulkan {
     }
 
     struct Presentable {
-        surface: wgpu::Surface<'static>,
+        surface: Option<wgpu::Surface<'static>>,
         // Retained both for the unsafe surface lifetime and so presentation
         // can notify winit immediately before the Vulkan WSI commit.
         window: std::sync::Arc<dyn winit::window::Window>,
@@ -158,6 +159,7 @@ mod vulkan {
     struct TextureRingState {
         slots: Vec<TextureSlot>,
         ready: VecDeque<usize>,
+        submitted: bool,
     }
 
     struct TextureSlot {
@@ -279,6 +281,15 @@ mod vulkan {
     }
 
     impl GpuContext {
+        fn assert_gpu_thread(&self) {
+            let current = std::thread::current().id();
+            assert_eq!(
+                *self.gpu_thread.get_or_init(|| current),
+                current,
+                "shared Vulkan queue operations must run on raster"
+            );
+        }
+
         fn new_for_window(
             window: &std::sync::Arc<dyn winit::window::Window>,
         ) -> Result<std::sync::Arc<Self>, String> {
@@ -357,6 +368,7 @@ mod vulkan {
                 adapter,
                 device,
                 queue,
+                gpu_thread: std::sync::OnceLock::new(),
             }))
         }
 
@@ -470,6 +482,7 @@ mod vulkan {
                     state: Mutex::new(TextureRingState {
                         slots,
                         ready: VecDeque::new(),
+                        submitted: false,
                     }),
                     available: AvailableSlots::new(3),
                     pending_clear: Mutex::new(None),
@@ -495,6 +508,38 @@ mod vulkan {
         pub fn shutdown(&self) {
             self.inner.mark_frame_available.lock().take();
             self.inner.available.shutdown();
+        }
+
+        /// Called on raster after texture unregister has released Impeller's
+        /// frame. Reclaim GPU storage here even if plugins retain SDK frames;
+        /// those handles subsequently report Shutdown and can drop anywhere.
+        pub fn release_gpu_resources(&self) {
+            self.inner.context.assert_gpu_thread();
+            self.shutdown();
+            let mut state = self.inner.state.lock();
+            if state.slots.is_empty() {
+                return;
+            }
+            if let Some(device) =
+                unsafe { self.inner.context.device.as_hal::<wgpu::hal::vulkan::Api>() }
+            {
+                if state.submitted {
+                    // Both APIs submit on this thread, so no host queue access
+                    // can overlap this wait. Includes Impeller's final release.
+                    let _ = unsafe { device.raw_device().device_wait_idle() };
+                }
+                for slot in state.slots.drain(..) {
+                    unsafe {
+                        device
+                            .raw_device()
+                            .destroy_semaphore(slot.sync.acquire, None);
+                        device
+                            .raw_device()
+                            .destroy_semaphore(slot.sync.render, None);
+                    }
+                }
+            }
+            state.ready.clear();
         }
 
         /// Requests a solid-color frame. Rendering is deliberately deferred to
@@ -832,8 +877,14 @@ mod vulkan {
             else {
                 return;
             };
-            let _ = unsafe { device.raw_device().device_wait_idle() };
             let state = self.state.get_mut();
+            // Submitted rings are explicitly released on raster unregister.
+            // Only never-submitted allocation/registration failures reach this
+            // fallback with storage, and require no device-wide wait.
+            assert!(
+                state.slots.is_empty() || !state.submitted,
+                "submitted texture ring must be released on raster"
+            );
             for slot in &state.slots {
                 unsafe {
                     device
@@ -902,7 +953,10 @@ mod vulkan {
                 .map(Mutex::new);
             Ok(Self {
                 context,
-                presentable: parking_lot::RwLock::new(Presentable { surface, window }),
+                presentable: parking_lot::RwLock::new(Presentable {
+                    surface: Some(surface),
+                    window,
+                }),
                 surface_state: Mutex::new(SurfaceState {
                     configuration: None,
                     pending_frame: None,
@@ -937,6 +991,7 @@ mod vulkan {
             &self,
             window: std::sync::Arc<dyn winit::window::Window>,
         ) -> Result<(), String> {
+            self.context.assert_gpu_thread();
             // SAFETY: the broker retains the window until after this surface
             // has been destroyed.
             let surface = unsafe {
@@ -957,7 +1012,10 @@ mod vulkan {
             self.destroy_all_frames(&mut state);
             state.configuration = None;
             state.deferred_configuration = None;
-            *self.presentable.write() = Presentable { surface, window };
+            *self.presentable.write() = Presentable {
+                surface: Some(surface),
+                window,
+            };
             state.suspended = false;
             Ok(())
         }
@@ -967,6 +1025,9 @@ mod vulkan {
         /// `recreate_surface` (the old surface's in-flight frames can never
         /// be presented once the native window is gone).
         fn destroy_all_frames(&self, state: &mut SurfaceState) {
+            if state.pending_frame.is_none() && state.retired_frames.is_empty() {
+                return;
+            }
             let Some(device) = (unsafe { self.context.device.as_hal::<wgpu::hal::vulkan::Api>() })
             else {
                 return;
@@ -992,6 +1053,19 @@ mod vulkan {
                         .destroy_semaphore(retired.sync.render, None);
                 }
             }
+        }
+
+        /// Releases this view's swapchain on the raster thread, after Flutter
+        /// has detached it. The host keeps the native window alive until this
+        /// returns. Later broker destruction performs no Vulkan queue work.
+        pub fn release_surface(&self) {
+            self.context.assert_gpu_thread();
+            let mut state = self.surface_state.lock();
+            state.suspended = true;
+            self.destroy_all_frames(&mut state);
+            self.presentable.write().surface.take();
+            state.configuration = None;
+            state.deferred_configuration = None;
         }
 
         fn create_frame_sync(&self) -> Option<FrameSync> {
@@ -1084,7 +1158,12 @@ mod vulkan {
             }
             let mut state = self.surface_state.lock();
             let presentable = self.presentable.read();
-            let capabilities = presentable.surface.get_capabilities(&self.context.adapter);
+            // Compositor events may already be queued when raster detaches a
+            // view. Ignore them while winit awaits the release acknowledgment.
+            let Some(surface) = presentable.surface.as_ref() else {
+                return Ok(());
+            };
+            let capabilities = surface.get_capabilities(&self.context.adapter);
             // Impeller's Vulkan backend only recognizes these two swapchain
             // formats (see VkFormatToImpellerFormat); sRGB and other variants
             // the surface may prefer are rejected at frame-acquire time.
@@ -1106,19 +1185,13 @@ mod vulkan {
                 view_formats: vec![],
                 desired_maximum_frame_latency: 2,
             };
-            // Once the surface is initialized, resize is applied at the next
+            // Initial configuration and resize are applied at the next
             // acquire boundary. This coalesces compositor resize bursts and
             // prevents repeated configure calls between presentation and
             // wgpu's retirement of its internal WSI acquire fence.
-            if state.configuration.is_some() {
-                state.deferred_configuration = Some(configuration);
-                return Ok(());
-            }
-            presentable
-                .surface
-                .configure(&self.context.device, &configuration);
-            state.configuration = Some(configuration);
-            state.deferred_configuration = None;
+            // All views share one Vulkan queue with Impeller. Even the first
+            // configure must run on raster, where both APIs submit serially.
+            state.deferred_configuration = Some(configuration);
             Ok(())
         }
 
@@ -1132,11 +1205,13 @@ mod vulkan {
             requested_width: u32,
             requested_height: u32,
         ) -> Option<AcquiredImage> {
+            self.context.assert_gpu_thread();
             let mut state = self.surface_state.lock();
             if state.suspended || state.pending_frame.is_some() {
                 return None;
             }
             let presentable = self.presentable.read();
+            let surface = presentable.surface.as_ref()?;
             // The dimensions Flutter passes here belong to the layer tree that
             // Impeller is about to render. A newer winit resize may already be
             // queued, but applying that newer size would combine a swapchain
@@ -1158,7 +1233,10 @@ mod vulkan {
                 let mut configuration = if deferred_matches_request {
                     state.deferred_configuration.take()?
                 } else {
-                    state.configuration.clone()?
+                    state
+                        .configuration
+                        .clone()
+                        .or_else(|| state.deferred_configuration.clone())?
                 };
                 configuration.width = requested_width;
                 configuration.height = requested_height;
@@ -1167,9 +1245,7 @@ mod vulkan {
                         return None;
                     }
                 }
-                presentable
-                    .surface
-                    .configure(&self.context.device, &configuration);
+                surface.configure(&self.context.device, &configuration);
                 state.configuration = Some(configuration);
             } else if deferred_matches_request {
                 // A matching deferred request has now reached its layer-tree
@@ -1188,14 +1264,12 @@ mod vulkan {
             let configuration = state.configuration.clone()?;
             let format = configuration.format;
             let vk_format = vulkan_format(format)?;
-            let (surface_texture, suboptimal) = match presentable.surface.get_current_texture() {
+            let (surface_texture, suboptimal) = match surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(texture) => (texture, false),
                 wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
                 wgpu::CurrentSurfaceTexture::Outdated => {
-                    presentable
-                        .surface
-                        .configure(&self.context.device, &configuration);
-                    match presentable.surface.get_current_texture() {
+                    surface.configure(&self.context.device, &configuration);
+                    match surface.get_current_texture() {
                         wgpu::CurrentSurfaceTexture::Success(texture) => (texture, false),
                         wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
                         _ => return None,
@@ -1272,6 +1346,7 @@ mod vulkan {
         /// Presents the frame most recently returned by [`Self::acquire_image`].
         ///
         pub fn present_image(&self) -> bool {
+            self.context.assert_gpu_thread();
             let mut state = self.surface_state.lock();
             let Some(pending) = state.pending_frame.take() else {
                 return false;
@@ -1355,16 +1430,30 @@ mod vulkan {
                 user_data: (self as *const Self).cast_mut().cast::<c_void>(),
                 acquire_image: Some(acquire_image_callback),
                 present_image: Some(present_image_callback),
+                release_surface: Some(release_surface_callback),
             }
         }
     }
 
     impl Drop for GpuBroker {
         fn drop(&mut self) {
-            // SAFETY: no callback can enter the broker during `drop`.
-            let mut state = self.surface_state.lock();
-            self.destroy_all_frames(&mut state);
+            // Drop can run on winit. Only an unconfigured startup failure or
+            // a broker already released by raster may reach it; never hide a
+            // missing lifecycle handoff behind an unsynchronized device wait.
+            let state = self.surface_state.get_mut();
+            assert!(
+                state.configuration.is_none()
+                    && state.pending_frame.is_none()
+                    && state.retired_frames.is_empty(),
+                "configured surface must be released on raster before broker destruction"
+            );
         }
+    }
+
+    extern "C" fn release_surface_callback(user_data: *mut c_void) {
+        // SAFETY: the host retains the broker until raster release completes.
+        let broker = unsafe { &*user_data.cast::<GpuBroker>() };
+        broker.release_surface();
     }
 
     extern "C" fn acquire_external_texture_frame(
@@ -1379,6 +1468,7 @@ mod vulkan {
         // SAFETY: callbacks() points at a boxed ring retained by the host, and
         // the C++ bridge supplies a writable output for this call.
         let ring = unsafe { &*user_data.cast::<WgpuTextureRing>() };
+        ring.inner.context.assert_gpu_thread();
         let has_ready = !ring.inner.state.lock().ready.is_empty();
         if !has_ready {
             ring.render_pending_clear();
@@ -1465,6 +1555,7 @@ mod vulkan {
             render_semaphore: slot.sync.render.as_raw(),
         };
         unsafe { *out_frame = frame };
+        state.submitted = true;
         1
     }
 

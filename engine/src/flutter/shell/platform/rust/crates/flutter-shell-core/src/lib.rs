@@ -11,7 +11,7 @@
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 10;
+pub const SHELL_ABI_VERSION: u32 = 11;
 /// Plugin SDK API version expected by this lockstep private runtime.
 pub const PLUGIN_SDK_API_VERSION: u32 = 1;
 
@@ -239,6 +239,9 @@ pub struct FlutterRustVulkanPresentationCallbacks {
     pub acquire_image:
         Option<extern "C" fn(*mut c_void, u32, u32, *mut FlutterRustVulkanImage) -> i32>,
     pub present_image: Option<extern "C" fn(*mut c_void, FlutterRustVulkanImage) -> i32>,
+    /// Runs on the raster thread after the view is detached, before the host
+    /// may destroy the broker and native window.
+    pub release_surface: Option<extern "C" fn(*mut c_void)>,
 }
 
 /// A plugin-produced Vulkan frame borrowed by Impeller, ABI-compatible with

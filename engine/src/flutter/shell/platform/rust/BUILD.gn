@@ -54,6 +54,7 @@ action("flutter_shell_winit_rust") {
     "crates/flutter-shell-core/src/lib.rs",
     "crates/flutter-shell-winit/Cargo.toml",
     "crates/flutter-shell-winit/src/lib.rs",
+    "crates/flutter-shell-winit/src/shell.rs",
     "crates/flutter-shell-wgpu/Cargo.toml",
     "crates/flutter-shell-wgpu/src/lib.rs",
   ]

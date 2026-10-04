@@ -71,6 +71,23 @@ tasks:
           {{.RUST_WINDOWING_EXAMPLE}}/build/flutter_assets \
           {{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/icudtl.dat
 
+  test-rust-shell-windowing:
+    desc: Stress native window creation, resize, and release while another view renders.
+    deps: [build-rust-shell]
+    cmds:
+      - '{{.TASKFILE_DIR}}/bin/flutter config --enable-windowing'
+      - |
+        cd {{.RUST_SHELL_DIR}}/tests/windowing_fixture
+        {{.TASKFILE_DIR}}/bin/flutter build bundle --debug \
+          --local-engine={{.LOCAL_ENGINE}} \
+          --local-engine-host={{.LOCAL_ENGINE}} \
+          --local-engine-src-path={{.ENGINE_SRC}}
+      - |
+        python3 {{.RUST_SHELL_DIR}}/tests/test_windowing.py \
+          --runner={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/flutter_rust_shell_runner \
+          --assets={{.RUST_SHELL_DIR}}/tests/windowing_fixture/build/flutter_assets \
+          --icu={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/icudtl.dat
+
   test-rust-shell-texture:
     desc: Verify animated source-linked wgpu texture frames through a real Dart Texture widget.
     deps: [build-rust-shell]

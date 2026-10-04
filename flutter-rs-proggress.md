@@ -6,6 +6,17 @@ for the architectural plan.
 
 ## Current focus
 
+Multi-view GPU lifecycle hardening now defers initial surface configuration to
+raster acquisition and releases removed views' swapchains on the raster runner
+before notifying winit. ABI v11 adds the surface-release callback and a private
+raster-task posting entry point for Android surface replacement and shutdown.
+External-texture unregister explicitly reclaims GPU resources on raster even
+when SDK handles remain retained by workers. The application-scoped GPU context
+checks that presentation, configuration through acquire, and explicit release
+all use the same thread. `task test-rust-shell-windowing` runs a native fixture
+that creates, resizes, and destroys 60 windows while the primary view animates,
+then exits with additional views alive to exercise whole-shell teardown.
+
 Phase 0, the Phase 1 host, and the Phase 2 shared-GPU/texture proof are complete
 for Linux. The current cross-cutting focus is generated Cargo application and
 plugin aggregation; the next platform phase is Windows. Pointer,
@@ -73,7 +84,7 @@ same way Linux's own flutter_tools integration followed its native runner.
 | Existing shells remain available | Complete | The Rust target is opt-in and is not added to the existing platform-selection group. |
 | In-tree Rust platform target | Complete | `//flutter/shell/platform/rust:flutter_rust_shell` builds. |
 | Internal PlatformView adapter | Complete | `PlatformViewRust` builds and its focused tests pass. |
-| Rust/C++ ABI | External-texture extension complete | ABI v10 retains the multi-view/windowing contract and adds engine-generated external-texture IDs plus acquire, mark-frame-available, release, and unregister operations for borrowed Vulkan image/image-view handles and semaphore pairs. Raster unregister reports completion so Rust can reclaim callback owners safely; a private test-only entry point injects texture-registry context destruction/recreation on the raster runner. |
+| Rust/C++ ABI | Surface-lifecycle hardening complete | ABI v11 retains the external-texture and multi-view contracts and adds explicit raster-thread surface release. Engine-generated external-texture IDs still support acquire, mark-frame-available, release, and unregister operations for borrowed Vulkan image/image-view handles and semaphore pairs. Raster unregister reports completion so Rust can reclaim callback owners safely; a private test-only entry point injects texture-registry context destruction/recreation on the raster runner. |
 | Rust workspace and `flutter-plugin-sdk` | Complete for foundation | Workspace uses Rust edition 2024, concrete toolchain 1.93.1, and passes its tests. |
 | Winit event loop | Complete for phase 0 | Linux host owns the window and event loop, dispatches Flutter task batons, and drives the Rust-owned Vulkan presentation loop end to end. |
 | Cross-platform host boundary | Linux adapter extracted | Shared host code is unconditionally compiled. `PlatformBackend` statically selects native popup creation, transient parenting, window attributes, compositor detection, and legacy key encoding; `LinuxPlatform` contains the Wayland/X11 implementation. `EngineBridge` similarly centralizes the C++ task-runner boundary and its test fake. No shell-owned backend trait uses dynamic dispatch, and test configuration is confined to the engine implementation selector plus `mod tests`. |

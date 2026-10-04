@@ -768,6 +768,26 @@ fn destroy_cpp_shell(shell: *mut c_void) {
     // SAFETY: `shell` was returned by create_cpp_shell.
     unsafe { FlutterRustShellDestroyShell(shell) }
 }
+
+fn post_cpp_raster_task(shell: *mut c_void, task: impl FnOnce() + Send + 'static) {
+    unsafe extern "C" {
+        fn FlutterRustShellPostRasterTask(
+            shell: *mut c_void,
+            callback: extern "C" fn(*mut c_void),
+            user_data: *mut c_void,
+        );
+    }
+    extern "C" fn run(user_data: *mut c_void) {
+        // SAFETY: the bridge invokes this exactly once on raster and shell
+        // teardown drains tasks before releasing Rust callback owners.
+        let task = unsafe { Box::from_raw(user_data.cast::<Box<dyn FnOnce() + Send>>()) };
+        task();
+    }
+    let task: Box<Box<dyn FnOnce() + Send>> = Box::new(Box::new(task));
+    // SAFETY: called only on main with a live shell. C++ owns the callback
+    // allocation until run consumes it on raster.
+    unsafe { FlutterRustShellPostRasterTask(shell, run, Box::into_raw(task).cast()) }
+}
 fn set_cpp_shell_viewport_metrics(
     shell: *mut c_void,
     view_id: FlutterRustViewId,
@@ -3578,10 +3598,15 @@ unsafe extern "C" fn reclaim_external_texture(user_data: *mut c_void) {
     // SAFETY: unregister transfers one Box<TextureReclamation> to C++,
     // which calls this function exactly once after raster unregister.
     let reclamation = unsafe { Box::from_raw(user_data.cast::<TextureReclamation>()) };
-    reclamation
-        .retained
-        .lock()
-        .retain(|registration| registration.texture_id != reclamation.texture_id);
+    let mut retained = reclamation.retained.lock();
+    if let Some(index) = retained
+        .iter()
+        .position(|registration| registration.texture_id == reclamation.texture_id)
+    {
+        let registration = retained.remove(index);
+        drop(retained);
+        registration.ring.release_gpu_resources();
+    }
     log::info!(
         "Flutter Rust external texture {} reclaimed",
         reclamation.texture_id
@@ -3783,9 +3808,9 @@ struct ViewWindow {
     view_id: FlutterRustViewId,
     kind: NativeWindowKind,
     parent_view_id: Option<FlutterRustViewId>,
-    // The broker must be destroyed before its native window. Keeping it
-    // first makes that ordering automatic when a view leaves the map.
-    gpu_broker: Box<GpuBroker>,
+    // Stable callback owner. Raster releases its swapchain before the host
+    // receives removal completion and drops this view's native window.
+    gpu_broker: Arc<GpuBroker>,
     window: Arc<dyn Window>,
     // A transient child's native parent must outlive its relationship.
     _parent_window: Option<Arc<dyn Window>>,
@@ -3844,13 +3869,25 @@ impl ShellApplication {
         let Some(mut view) = windows.views.remove(&old_window_id) else {
             return;
         };
-        if let Err(error) = view.gpu_broker.recreate_surface(Arc::clone(&window)) {
-            log::error!("failed to recreate the Vulkan surface: {error}");
-        }
         let size = window.surface_size();
-        if let Err(error) = view.gpu_broker.configure(size.width, size.height) {
-            log::error!("failed to reconfigure the recreated Vulkan surface: {error}");
-        }
+        let broker = Arc::clone(&view.gpu_broker);
+        let replacement = Arc::clone(&window);
+        let old_window = Arc::clone(&view.window);
+        let proxy = self.host_events.clone();
+        let shell = windows.shell.expect("bootstrapped shell is missing");
+        post_cpp_raster_task(shell, move || {
+            if let Err(error) = broker
+                .recreate_surface(replacement)
+                .and_then(|()| broker.configure(size.width, size.height))
+            {
+                log::error!("failed to recreate the Vulkan surface: {error}");
+            }
+            // Keep native window destruction on winit, after its swapchain
+            // has been released on raster.
+            let _ = proxy.send_event(HostEvent::MainThreadTask(Box::new(move || {
+                drop(old_window)
+            })));
+        });
         view.visible = size.width > 0 && size.height > 0;
         view.focused = window.has_focus();
         let metrics = WindowMetrics::from_window(window.as_ref(), window.scale_factor());
@@ -3926,13 +3963,19 @@ impl Drop for ShellApplication {
                 // The C++ operation is idempotent. Repeat it here even if
                 // handle drop tried to enqueue it, because dispatcher
                 // shutdown suppresses queued callbacks during teardown.
+                let reclamation = Box::new(TextureReclamation {
+                    texture_id: registration.texture_id,
+                    retained: Arc::clone(&self.retained_textures),
+                });
                 unregister_cpp_external_texture(
                     shell,
                     registration.texture_id,
-                    None,
-                    std::ptr::null_mut(),
+                    Some(reclaim_external_texture),
+                    Box::into_raw(reclamation).cast(),
                 );
             }
+            // C++ stops rendering through NotifyDestroyed, then releases all
+            // swapchains on raster before draining and joining that runner.
             destroy_cpp_shell(shell);
             // Unregister posts to the raster runner. Shell destruction
             // drains and joins that runner before the callback owner and
@@ -3974,7 +4017,7 @@ impl ApplicationHandler for ShellApplication {
                     .create_window(attributes)
                     .expect("winit failed to create the Flutter Rust Shell window"),
             );
-            let gpu_broker = Box::new(
+            let gpu_broker = Arc::new(
                 GpuBroker::new(
                     Arc::clone(&window),
                     self.config.presentation_stats_path.clone(),
@@ -4892,7 +4935,7 @@ impl WindowRegistry {
         if let Some(parent_window) = parent_window.as_ref() {
             CurrentPlatform::set_dialog_parent(window.as_ref(), parent_window.as_ref())?;
         }
-        let gpu_broker = Box::new(GpuBroker::from_context(context, Arc::clone(&window), None)?);
+        let gpu_broker = Arc::new(GpuBroker::from_context(context, Arc::clone(&window), None)?);
         let size = window.surface_size();
         gpu_broker.configure(size.width, size.height)?;
         let view_id = FlutterRustViewId(self.next_view_id);
@@ -4982,7 +5025,7 @@ impl WindowRegistry {
             },
             matches!(request.kind, NativeWindowKind::Popup),
         )?);
-        let gpu_broker = Box::new(GpuBroker::from_context(context, Arc::clone(&window), None)?);
+        let gpu_broker = Arc::new(GpuBroker::from_context(context, Arc::clone(&window), None)?);
         let size = window.surface_size();
         gpu_broker.configure(size.width, size.height)?;
         let view_id = FlutterRustViewId(self.next_view_id);

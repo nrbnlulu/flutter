@@ -17,7 +17,7 @@ import time
 
 DIAGNOSTIC = re.compile(
     r"VUID-|validation error|failed waiting on fences|semaphore.*error|"
-    r"invalid (?:Vk)?image|device lost",
+    r"invalid (?:Vk)?image|device lost|UNASSIGNED-Threading|\[ERROR\]|panicked",
     re.IGNORECASE,
 )
 

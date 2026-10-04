@@ -19,7 +19,7 @@ extern "C" {
 
 // This private ABI is lockstep-versioned with the Flutter fork. It is not the
 // Flutter Embedder API and is never exposed to application plugins.
-#define FLUTTER_RUST_SHELL_ABI_VERSION 10u
+#define FLUTTER_RUST_SHELL_ABI_VERSION 11u
 #define FLUTTER_RUST_PLUGIN_SDK_API_VERSION 1u
 
 typedef struct FlutterRustShellAbi {
@@ -248,6 +248,9 @@ typedef struct FlutterRustVulkanPresentationCallbacks {
   void* user_data;
   FlutterRustAcquireVulkanImageCallback acquire_image;
   FlutterRustPresentVulkanImageCallback present_image;
+  // Called on the raster runner after detaching the view. Releases GPU
+  // resources before notifying the host that it may destroy the window.
+  void (*release_surface)(void* user_data);
 } FlutterRustVulkanPresentationCallbacks;
 
 // One plugin-produced Vulkan texture frame. Rust owns the image and both
@@ -605,6 +608,13 @@ FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellUnregisterExternalTexture(
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellTestRecreateTextureContext(
     void* shell,
     FlutterRustExternalTextureUnregisteredCallback callback,
+    void* user_data);
+
+// Called on the merged main runner with a live shell. Invokes callback once
+// on raster; teardown drains pending tasks before destroying the runner.
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellPostRasterTask(
+    void* shell,
+    void (*callback)(void*),
     void* user_data);
 
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellDestroyShell(void* shell);
