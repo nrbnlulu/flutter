@@ -30,7 +30,9 @@ def main():
         "FLUTTER_RUST_WINDOWING_STATUS": str(status),
     })
     result = subprocess.run(
-        [str(args.runner.resolve()), str(args.assets.resolve()), str(args.icu.resolve())],
+        [str(args.runner.resolve()),
+         str(args.assets.resolve()),
+         str(args.icu.resolve())],
         env=environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

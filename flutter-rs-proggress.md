@@ -6,6 +6,29 @@ for the architectural plan.
 
 ## Current focus
 
+Multi-window performance now uses upstream #179874's dirty-view compositing,
+including external-texture repaint notifications and view lifecycle handling.
+The Rust host requests redraw from one pacing window per engine vsync request
+and bounds delivery by that monitor's nominal interval. A timed fallback keeps
+static or hidden surfaces from starving engine frames. Static sibling windows
+no longer trigger redundant surface submissions or a busy native event loop.
+The debug benchmark on this machine sustained about 60 implicit-view submissions
+per second with 1 through 12 static children, with native main-thread CPU around
+4–6% of one core (previously about 97–99% with dirty-view compositing alone).
+With all views animated, five children sustained about 60 submissions per second,
+but eight and twelve still fell to about 32 and 15 respectively. These are debug
+measurements with compositor-assigned window sizes, not release guarantees.
+Per-view acquire/present timing and process/thread accounting now retain evidence
+for that remaining raster-phase bottleneck. Disabling wgpu's debug/validation
+flags alone did not remove it. Do not infer active validation layers solely from
+whether their shared libraries appear in process maps.
+Validation for this change passed 32 Rust unit tests, 19 relevant framework
+tests, five benchmark-accounting tests, and the native 60-removal fixture with
+Vulkan validation forced. The native animated-texture screenshot check remains
+unverified: submissions advanced, but captures showed the desktop lock screen.
+Rerun `task test-rust-shell-texture` in an unlocked session before considering
+the native pixel-change regression covered.
+
 Multi-view GPU lifecycle hardening now defers initial surface configuration to
 raster acquisition and releases removed views' swapchains on the raster runner
 before notifying winit. ABI v11 adds the surface-release callback and a private
@@ -97,7 +120,7 @@ same way Linux's own flutter_tools integration followed its native runner.
 | Lifecycle | Complete for phase 1 plumbing | Focus, minimize/restore, winit suspend/resume, and shutdown are deduplicated in Rust and forwarded through `flutter/lifecycle`; Rust transition and C++ ABI conversion tests pass. |
 | Keyboard input | Complete for phase 1 raw events | Winit physical/logical keys, down/up/repeat, characters, modifier sides, and synthesized state cross the private ABI as Flutter `KeyData` packets. |
 | Text input and IME | Complete for phase 1 plumbing | The Rust host handles the standard `flutter/textinput` protocol with typed commands and validated UTF-16 editing state, controls winit IME activation/cursor geometry, translates preedit/commit events, and sends `TextInputClient.updateEditingState` back to Flutter. Ordinary typing, Backspace, and Ctrl+A were verified interactively; a legacy `flutter/keyevent` terminator keeps Flutter's modern key-data queue moving. |
-| Vsync | Complete for the Linux Wayland host | Flutter's waiter requests a winit redraw through the private ABI. Wayland `RedrawRequested` pulses are throttled by compositor frame callbacks registered immediately before actual wgpu presentation; C++ timestamps each pulse in the FML clock domain and uses the active monitor's nominal interval as its target. Non-Wayland backends retain `VsyncWaiterFallback`. |
+| Vsync | Complete for the Linux Wayland host | Flutter's waiter requests one pacing-window redraw through the private ABI. Delivery is bounded by the monitor's nominal refresh interval, with a timer fallback when a static surface has no new compositor callback. Frame callbacks remain registered before actual wgpu presentation. C++ timestamps pulses in the FML clock domain. Non-Wayland backends retain `VsyncWaiterFallback`. |
 | Multi-window | All five controller kinds implemented | View `0` remains the implicit engine view. Positive-ID winit windows share one engine, root isolate, plugin registry, task runner, and wgpu device while owning independent surfaces, metrics, input, and presentation state. Flutter's experimental window controllers select the Rust owner automatically in the Rust runner. Dialogs and satellites use native transient relationships. On Wayland, tooltip and popup views use real compositor-positioned `xdg_popup` roles; popup grabs are serial-bound and compositor dismissal enters the normal asynchronous Flutter view-removal path. Satellites support creation, shrink-wrap, reparenting, parent-driven teardown, and parent maximize/fullscreen visibility. Standard Wayland does not permit clients to choose absolute toplevel positions, so the initial satellite positioner is honored on X11 but compositor-selected on Wayland. |
 | Main-thread dispatch | SDK, host, and Dart/FRB path complete | `flutter-plugin-sdk` exposes a cloneable worker-safe dispatcher through `PluginRegistrar`. Work is always queued rather than invoked inline, executes through winit's owning thread, is limited to 64 callbacks per event-loop turn, and is rejected after shell shutdown. Unit coverage verifies worker posting, thread identity, nested non-reentrant dispatch, starvation bounds, and shutdown. A real application-level FRB fixture verifies root and background Dart isolates through the Cargo-owned runner while displaying SDK wgpu and pixel-buffer textures. |
 | Startup and shutdown ownership | Complete for merged runner | The dispatcher rejects work during bootstrap, starts only after the C++ shell and implicit view are installed, stops before shell/window teardown, and suppresses already queued callbacks after shutdown. A native lifecycle task requires 20 consecutive mapped-window startup, compositor-close, and status-zero shutdown cycles. |

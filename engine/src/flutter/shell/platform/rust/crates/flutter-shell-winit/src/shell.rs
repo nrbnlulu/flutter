@@ -3460,6 +3460,7 @@ fn run_application_with_fixture(
         event_proxy: event_proxy.clone(),
         shell: None,
         window_event_callback: None,
+        presentation_stats_path: config.presentation_stats_path.clone(),
     }));
     let application = ShellApplication {
         config,
@@ -3468,6 +3469,7 @@ fn run_application_with_fixture(
         task_runner_host,
         vsync_host,
         vsync_armed: false,
+        next_vsync: None,
         text_input_inbox,
         text_input_session: TextInputSession::default(),
         lifecycle_state: LifecycleState::new(),
@@ -3494,6 +3496,7 @@ struct ShellApplication {
     task_runner_host: Box<TaskRunnerHost>,
     vsync_host: Box<VsyncHost>,
     vsync_armed: bool,
+    next_vsync: Option<Instant>,
     text_input_inbox: Box<TextInputInbox>,
     text_input_session: TextInputSession,
     lifecycle_state: LifecycleState,
@@ -3802,6 +3805,18 @@ struct WindowRegistry {
     event_proxy: HostEventSender,
     shell: Option<*mut c_void>,
     window_event_callback: Option<FlutterRustWindowEventCallback>,
+    presentation_stats_path: Option<PathBuf>,
+}
+
+fn presentation_stats_path_for_view(
+    base: Option<&std::path::Path>,
+    view_id: FlutterRustViewId,
+) -> Option<PathBuf> {
+    base.map(|base| {
+        let mut path = base.as_os_str().to_os_string();
+        path.push(format!(".view-{}", view_id.0));
+        PathBuf::from(path)
+    })
 }
 
 struct ViewWindow {
@@ -3842,6 +3857,32 @@ enum NativeWindowKind {
 }
 
 impl ShellApplication {
+    fn pacing_window(&self) -> Option<Arc<dyn Window>> {
+        let windows = self.windows.borrow();
+        windows
+            .views
+            .values()
+            .filter(|view| view.visible && !windows.removing_views.contains(&view.view_id))
+            .min_by_key(|view| view.view_id.0)
+            .map(|view| Arc::clone(&view.window))
+    }
+
+    fn deliver_vsync(&mut self) {
+        let now = Instant::now();
+        if !self.vsync_armed || self.next_vsync.is_some_and(|deadline| now < deadline) {
+            return;
+        }
+        self.vsync_armed = false;
+        let interval = self.pacing_window().map_or(16_666_667, |window| {
+            window_frame_interval_nanos(window.as_ref())
+        });
+        self.next_vsync = Some(now + Duration::from_nanos(interval));
+        let shell = self.windows.borrow().shell;
+        if let Some(shell) = shell {
+            send_cpp_vsync(shell, interval);
+        }
+    }
+
     /// Android destroys the native window on minimize and creates a fresh
     /// one when the activity resumes, while the C++ shell/engine and
     /// Rust-owned Vulkan device stay alive throughout. Create a new winit
@@ -4482,20 +4523,7 @@ impl ApplicationHandler for ShellApplication {
                 self.send_pointer_events(events);
             }
             WindowEvent::RedrawRequested => {
-                if self.vsync_armed {
-                    self.vsync_armed = false;
-                    if let Some(shell) = { self.windows.borrow().shell } {
-                        let interval = {
-                            let windows = self.windows.borrow();
-                            let view = windows
-                                .views
-                                .get(&window_id)
-                                .expect("known window disappeared");
-                            window_frame_interval_nanos(view.window.as_ref())
-                        };
-                        send_cpp_vsync(shell, interval);
-                    }
-                }
+                self.deliver_vsync();
             }
             WindowEvent::CloseRequested => {
                 if view_id == FlutterRustViewId::IMPLICIT {
@@ -4539,8 +4567,12 @@ impl ApplicationHandler for ShellApplication {
                 HostEvent::VsyncRequested => {
                     if self.vsync_host.take_request() && !self.windows.borrow().views.is_empty() {
                         self.vsync_armed = true;
-                        for view in self.windows.borrow().views.values() {
-                            view.window.request_redraw();
+                        // Vsync is engine-wide. Idle views have no pending
+                        // Wayland frame callback and redraw immediately, so
+                        // requesting every view can continuously wake the UI
+                        // thread while raster is still presenting a frame.
+                        if let Some(window) = self.pacing_window() {
+                            window.request_redraw();
                         }
                     }
                 }
@@ -4621,6 +4653,7 @@ impl ApplicationHandler for ShellApplication {
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.deliver_vsync();
         with_active_windowing_context(event_loop, &self.windows, || {
             self.task_runner_host.dispatch_due_tasks();
         });
@@ -4838,13 +4871,19 @@ impl ApplicationHandler for ShellApplication {
             demo.next_frame = Instant::now() + Duration::from_millis(16);
         }
         let task_deadline = self.task_runner_host.next_deadline();
-        #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
         let mut next_deadline = match (task_deadline, self.demo_texture.as_ref()) {
             (Some(task), Some(demo)) => Some(task.min(demo.next_frame)),
             (Some(task), None) => Some(task),
             (None, Some(demo)) => Some(demo.next_frame),
             (None, None) => None,
         };
+        if self.vsync_armed {
+            // A selected view may be static, hidden, or awaiting a compositor
+            // callback without another commit. Bound the wait to the nominal
+            // refresh interval rather than depending on that surface forever.
+            let vsync_deadline = self.next_vsync.unwrap_or_else(Instant::now);
+            next_deadline = Some(next_deadline.map_or(vsync_deadline, |d| d.min(vsync_deadline)));
+        }
         // Android has no event to wake the loop when GameActivity's text
         // buffer changes (see `poll_android_text_input`), so force a short
         // poll cadence while a field is focused instead of only picking up
@@ -4935,10 +4974,16 @@ impl WindowRegistry {
         if let Some(parent_window) = parent_window.as_ref() {
             CurrentPlatform::set_dialog_parent(window.as_ref(), parent_window.as_ref())?;
         }
-        let gpu_broker = Arc::new(GpuBroker::from_context(context, Arc::clone(&window), None)?);
+        let view_id = FlutterRustViewId(self.next_view_id);
+        let stats_path =
+            presentation_stats_path_for_view(self.presentation_stats_path.as_deref(), view_id);
+        let gpu_broker = Arc::new(GpuBroker::from_context(
+            context,
+            Arc::clone(&window),
+            stats_path,
+        )?);
         let size = window.surface_size();
         gpu_broker.configure(size.width, size.height)?;
-        let view_id = FlutterRustViewId(self.next_view_id);
         self.next_view_id = self
             .next_view_id
             .checked_add(1)
@@ -5025,10 +5070,16 @@ impl WindowRegistry {
             },
             matches!(request.kind, NativeWindowKind::Popup),
         )?);
-        let gpu_broker = Arc::new(GpuBroker::from_context(context, Arc::clone(&window), None)?);
+        let view_id = FlutterRustViewId(self.next_view_id);
+        let stats_path =
+            presentation_stats_path_for_view(self.presentation_stats_path.as_deref(), view_id);
+        let gpu_broker = Arc::new(GpuBroker::from_context(
+            context,
+            Arc::clone(&window),
+            stats_path,
+        )?);
         let size = window.surface_size();
         gpu_broker.configure(size.width, size.height)?;
-        let view_id = FlutterRustViewId(self.next_view_id);
         self.next_view_id = self
             .next_view_id
             .checked_add(1)

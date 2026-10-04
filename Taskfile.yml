@@ -17,7 +17,7 @@ vars:
 
 tasks:
   fmt:
-    desc: Run the engine formatting checks (requires depot_tools and Python <=3.12 for yapf) and format the Rust shell.
+    desc: Format changed engine files in place (C++/Java/Python/etc; requires depot_tools and Python <=3.12 for yapf) and format the Rust shell.
     cmds:
       - task: fmt-engine
       - task: fmt-rust
@@ -26,7 +26,7 @@ tasks:
     internal: true
     dir: engine/src/flutter
     cmds:
-      - PATH="{{.PY312_BIN}}:{{.DEPOT_TOOLS}}:$PATH" ./ci/format.sh
+      - PATH="{{.PY312_BIN}}:{{.DEPOT_TOOLS}}:$PATH" ./ci/format.sh --fix
 
   fmt-rust:
     desc: Format all Rust shell crates with cargo fmt.
@@ -87,6 +87,24 @@ tasks:
           --runner={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/flutter_rust_shell_runner \
           --assets={{.RUST_SHELL_DIR}}/tests/windowing_fixture/build/flutter_assets \
           --icu={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/icudtl.dat
+
+  benchmark-rust-shell-windowing:
+    desc: Measure sustained frame rate and CPU/GPU scaling across multiple Rust-shell views.
+    deps: [build-rust-shell]
+    cmds:
+      - '{{.TASKFILE_DIR}}/bin/flutter config --enable-windowing'
+      - |
+        cd {{.RUST_SHELL_DIR}}/tests/windowing_fixture
+        {{.TASKFILE_DIR}}/bin/flutter build bundle --debug \
+          --target=lib/benchmark.dart \
+          --local-engine={{.LOCAL_ENGINE}} \
+          --local-engine-host={{.LOCAL_ENGINE}} \
+          --local-engine-src-path={{.ENGINE_SRC}}
+      - |
+        python3 {{.RUST_SHELL_DIR}}/tests/benchmark_windowing.py \
+          --runner={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/flutter_rust_shell_runner \
+          --assets={{.RUST_SHELL_DIR}}/tests/windowing_fixture/build/flutter_assets \
+          --icu={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/icudtl.dat {{.CLI_ARGS}}
 
   test-rust-shell-texture:
     desc: Verify animated source-linked wgpu texture frames through a real Dart Texture widget.

@@ -26,6 +26,7 @@ mod vulkan {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
+    use std::time::Instant;
     use tokio::sync::mpsc;
 
     /// Application-scoped wgpu/Vulkan ownership shared by every native view.
@@ -215,9 +216,13 @@ mod vulkan {
             Ok(Self { file, count: 0 })
         }
 
-        fn record(&mut self, width: u32, height: u32) {
+        fn record(&mut self, width: u32, height: u32, timings: [u128; 4]) {
             self.count += 1;
-            let _ = writeln!(self.file, "{} {width} {height}", self.count);
+            let _ = writeln!(
+                self.file,
+                "{} {width} {height} {} {} {} {}",
+                self.count, timings[0], timings[1], timings[2], timings[3]
+            );
             let _ = self.file.flush();
         }
     }
@@ -246,6 +251,8 @@ mod vulkan {
     struct PendingFrame {
         texture: wgpu::SurfaceTexture,
         sync: FrameSync,
+        acquire_us: u128,
+        swapchain_us: u128,
     }
 
     struct RetiredFrame {
@@ -295,6 +302,9 @@ mod vulkan {
         ) -> Result<std::sync::Arc<Self>, String> {
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::VULKAN,
+                // Keep debug validation by default, while allowing wgpu's
+                // standard WGPU_VALIDATION/WGPU_DEBUG overrides for profiling.
+                flags: wgpu::InstanceFlags::default().with_env(),
                 ..wgpu::InstanceDescriptor::new_without_display_handle()
             });
             // This temporary surface selects a device that can present to the
@@ -1205,6 +1215,7 @@ mod vulkan {
             requested_width: u32,
             requested_height: u32,
         ) -> Option<AcquiredImage> {
+            let started = self.presentation_stats.as_ref().map(|_| Instant::now());
             self.context.assert_gpu_thread();
             let mut state = self.surface_state.lock();
             if state.suspended || state.pending_frame.is_some() {
@@ -1264,6 +1275,7 @@ mod vulkan {
             let configuration = state.configuration.clone()?;
             let format = configuration.format;
             let vk_format = vulkan_format(format)?;
+            let swapchain_started = started.map(|_| Instant::now());
             let (surface_texture, suboptimal) = match surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(texture) => (texture, false),
                 wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
@@ -1277,6 +1289,7 @@ mod vulkan {
                 }
                 _ => return None,
             };
+            let swapchain_us = swapchain_started.map_or(0, |t| t.elapsed().as_micros());
             if surface_texture.texture.width() != requested_width
                 || surface_texture.texture.height() != requested_height
             {
@@ -1334,6 +1347,8 @@ mod vulkan {
             state.pending_frame = Some(PendingFrame {
                 texture: surface_texture,
                 sync,
+                acquire_us: started.map_or(0, |t| t.elapsed().as_micros()),
+                swapchain_us,
             });
             Some(AcquiredImage {
                 image: image.as_raw(),
@@ -1346,6 +1361,7 @@ mod vulkan {
         /// Presents the frame most recently returned by [`Self::acquire_image`].
         ///
         pub fn present_image(&self) -> bool {
+            let started = self.presentation_stats.as_ref().map(|_| Instant::now());
             self.context.assert_gpu_thread();
             let mut state = self.surface_state.lock();
             let Some(pending) = state.pending_frame.take() else {
@@ -1408,13 +1424,22 @@ mod vulkan {
             // redraw delivery when Flutter requested a secondary vsync that
             // intentionally produced no frame.
             self.presentable.read().window.pre_present_notify();
+            let present_started = started.map(|_| Instant::now());
             self.context.queue.present(pending.texture);
+            let present_us = present_started.map_or(0, |t| t.elapsed().as_micros());
             if let (Some(stats), Some(configuration)) =
                 (&self.presentation_stats, &state.configuration)
             {
-                stats
-                    .lock()
-                    .record(configuration.width, configuration.height);
+                stats.lock().record(
+                    configuration.width,
+                    configuration.height,
+                    [
+                        pending.acquire_us,
+                        pending.swapchain_us,
+                        started.map_or(0, |t| t.elapsed().as_micros()),
+                        present_us,
+                    ],
+                );
             }
             state.retired_frames.push_back(RetiredFrame {
                 submission,
