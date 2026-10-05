@@ -190,6 +190,12 @@ def main():
   if any({stage_key(s) for s in run} != expected for run in base_runs + cand_runs):
     print("REVERT: stage sets differ across runs.")
     sys.exit(1)
+  for children in expected:
+    scenes = [next(s for s in run if s["children"] == children).get("scene")
+              for run in base_runs + cand_runs]
+    if any(scene is None or len(scene) != children + 1 or scene != scenes[0] for scene in scenes):
+      print(f"REVERT: missing or inconsistent monitor/window geometry at {children} children.")
+      sys.exit(1)
 
   all_children = sorted({s["children"] for run in base_runs for s in run})
 

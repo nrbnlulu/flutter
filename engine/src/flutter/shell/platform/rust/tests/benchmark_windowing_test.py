@@ -124,7 +124,7 @@ class AccountingTest(unittest.TestCase):
       for path, raster in ((base, 20), (candidate, 10)):
         path.mkdir()
         (path / "summary.json").write_text(json.dumps([
-            {"children": n, "timings": {"raster_ms": {"p50": raster}}}
+            {"children": n, "scene": list(range(n + 1)), "timings": {"raster_ms": {"p50": raster}}}
             for n in benchmark.STAGES
         ]))
       result = subprocess.run(
@@ -141,7 +141,7 @@ class AccountingTest(unittest.TestCase):
       native = {name: {"p95": 1} for name in ("acquire_ms", "handoff_ms", "present_ms")}
       (path / "summary.json").write_text(json.dumps([
           {
-              "children": n, "cpu_percent": 100,
+              "children": n, "scene": list(range(n + 1)), "cpu_percent": 100,
               "threads": [{"name": name, "cpu_percent": 20}
                           for name in ("FlutterRust.ras", "IplrVkFenceWait")],
               "timings": {
@@ -160,6 +160,22 @@ class AccountingTest(unittest.TestCase):
       self.assertEqual(result.returncode, 1)
       self.assertIn("no primary metric improvement", result.stdout)
       self.assertNotIn("MISSING", result.stdout)
+
+  def test_mixed_monitor_or_wrong_size_is_rejected(self):
+    monitor = {"id": 1, "name": "DP-1", "refreshRate": 75, "scale": 1, "x": 0, "y": 0}
+    snapshot = {"monitors": {"stdout": json.dumps([monitor])}, "clients": [
+        {"title": "Flutter Rust Shell", "monitor": 1, "size": [640, 480],
+         "at": [1000, 36], "floating": True, "hidden": False},
+        {"title": "Rust window benchmark 1/0", "monitor": 0, "size": [320, 240],
+         "at": [10, 36], "floating": True, "hidden": False},
+    ]}
+    with self.assertRaisesRegex(RuntimeError, "geometry/visibility"):
+      benchmark.verify_windows(snapshot, 1, monitor)
+    snapshot["clients"][1]["monitor"] = 1
+    self.assertEqual(len(benchmark.verify_windows(snapshot, 1, monitor)), 2)
+    snapshot["clients"][1]["size"] = [1, -6]
+    with self.assertRaisesRegex(RuntimeError, "geometry/visibility"):
+      benchmark.verify_windows(snapshot, 1, monitor)
 
 
 if __name__ == "__main__":

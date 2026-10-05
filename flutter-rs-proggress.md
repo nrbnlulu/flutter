@@ -158,6 +158,27 @@ same way Linux's own flutter_tools integration followed its native runner.
 
 ## Implementation log
 
+### Phase 3e prerequisite — controlled benchmark geometry
+
+Fresh repetitions exposed a measurement condition the old harness only
+observed: Hyprland placed some children on 60 Hz HDMI-A-1 and others on 75 Hz
+DP-1, and tiling squeezed children down to 1×-6 compositor-reported sizes.
+Evidence at `/tmp/flutter-hal-baseline-runs` is unsuitable as a HAL baseline;
+the fourth run was interrupted and these datasets must not gate an experiment.
+
+The harness now arranges only its own windows on a selected monitor (`--monitor`,
+defaulting to the initially focused output), with a non-overlapping grid of
+320×240 children and a 640×480 implicit view. Dart waits for placement to
+complete, then warms up for two seconds. Start/end checks reject mixed outputs,
+wrong sizes, hidden/tiled windows or changing monitor/geometry, and the
+comparator refuses differing scenes across repetitions or builds. No desktop
+configuration is changed. Historical tiled-run numbers are not directly
+comparable with this controlled workload.
+
+Fourteen accounting tests pass; the controlled five-stage benchmark completes
+under forced Vulkan validation without diagnostics
+(`/tmp/flutter-hal-fixed-validation`). Fresh baseline calibration follows.
+
 ### Phase 3e prerequisite — complete benchmark accounting
 
 The private bridge is ABI v12: C++ reports successful graphics-queue submits,
