@@ -225,7 +225,15 @@ render with the final barrier, and wgpu handoff/present), and fewer later.
   improvement: 8-child raster p50 11.45 -> 11.84 ms (+3.4%, within ±5%),
   12-child 16.31 -> 15.78 ms (-3.2%, within ±8%). 8-child present p95 regressed
   20.5%, beyond its ±15% noise threshold. Reverted.
-- **3d. Remove the wgpu acquire clear pass.** It exists only so that wgpu's tracker
+- **3d. Remove the wgpu acquire clear pass — reverted on correctness gate.**
+  Changed the acquire handoff color attachment from `LoadOp::Clear` to
+  `LoadOp::Load`; the validation lifecycle fixture passed (60 removals, 397
+  presentations), but the required texture screenshot fixture could not
+  complete its shutdown in this environment: the test reached texture ID 1 and
+  its pixel phase, then failed because the window was already gone or the
+  runner did not exit within the harness timeout. Since the correctness suite
+  did not pass, the change was reverted before performance measurement.
+  It exists only so that wgpu's tracker
   waits on the swapchain acquire semaphore and marks the texture as initialized,
   but it also clears the whole image on the GPU, which Impeller then overwrites.
   Try, in order:
@@ -293,3 +301,4 @@ Each needs its own design note before it starts:
 | 3a | Merge redundant layout barrier, fix wrong `oldLayout` | 21.57 ms → 15.23 ms (-29.4%) | 3 vs 3 runs, KEEP, no guard regressions | yes |
 | 3b | Signal render semaphore from tracked barrier submit | 16.31 ms → 16.04 ms (-1.7%) | 3 vs 3 runs, REVERT: no primary win; guard regressions | no |
 | 3c | Fold acquire wait into first Impeller submit | 16.31 ms → 15.78 ms (-3.2%) | 3 vs 3 runs, REVERT: no primary win; 8-child present p95 regressed | no |
+| 3d | Remove wgpu acquire clear pass (`LoadOp::Load`) | n/a | correctness gate failed in texture fixture cleanup/exit; reverted before measurement | no |

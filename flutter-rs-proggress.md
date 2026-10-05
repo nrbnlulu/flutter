@@ -40,6 +40,11 @@ Phase 3c was also correctness-validated then reverted. It moved the wgpu
 acquire wait onto Impeller's first onscreen submit, including the batching
 flush path, but raster p50 remained within noise and 8-child present p95
 regressed by 20.5% beyond its 15% threshold.
+Phase 3d changed the wgpu acquire handoff from a transparent clear to
+`LoadOp::Load`. The Vulkan lifecycle fixture passed, but the required texture
+fixture reached texture initialization and pixel capture before failing its
+window cleanup/runner-exit step. It was reverted without performance
+measurement because the correctness gate did not pass.
 Validation for this change passed 32 Rust unit tests, 19 relevant framework
 tests, five benchmark-accounting tests, and the native 60-removal fixture with
 Vulkan validation forced. The native animated-texture screenshot check remains
