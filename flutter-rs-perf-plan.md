@@ -258,16 +258,22 @@ render with the final barrier, and wgpu handoff/present), and fewer later.
      `wgpu-hal`.
 
   Verify pixels with the texture screenshot test.
-- **3e. Stretch goal: drive acquire and present through `wgpu-hal` directly.**
-  - Investigation and implementation sequence:
-    [HAL presentation design](flutter-rs-hal-presentation-plan.md). Public HAL
-    APIs can remove the two render passes with semaphore bridges, but removing
-    the bridge submissions requires additional swapchain ownership work.
-    Repair the texture harness and complete measurement prerequisites first.
-  This bypasses wgpu-core's tracker for borrowed swapchain images, so the
-  acquire and handoff render passes disappear entirely.
-  - Larger change; only attempt it if 3a–3d leave the target unmet.
-  - Must keep Android surface replacement and suspend semantics intact.
+- **3e. Drive acquire and present through `wgpu-hal` directly — measured and
+  parked on a separate branch.** Implemented the public-HAL semaphore-bridge
+  design from the [HAL presentation design](flutter-rs-hal-presentation-plan.md),
+  removing the acquire clear and handoff load render passes while retaining the
+  Android wgpu-core path. Steady frames still used six queue submissions per
+  view (two Rust and four C++). The comparator reported KEEP: 8-child raster
+  p50 improved 11.74 -> 10.94 ms (-6.9%) and submissions/s/view improved
+  71.66 -> 74.00 (+3.3%); 12-child raster p50 improved 16.71 -> 15.60 ms
+  (-6.7%) and submissions/s/view improved 58.23 -> 60.30 (+3.5%). No guard
+  metric regressed beyond calibrated noise, and the validation lifecycle,
+  texture, pixel-buffer, full validation benchmark, Rust unit, and accounting
+  tests passed. The gain was judged too small for the added ownership and
+  failure-path complexity, so the change was removed from this branch. The
+  complete experiment is preserved as the single commit `7b719c3f3a2` on
+  `rust/imrove-performance-hal-presentation`, including the benchmark evidence
+  in its commit message.
 
 Verify each sub-step with the submits-per-frame counter as well as the gate.
 
@@ -325,3 +331,4 @@ Each needs its own design note before it starts:
 | 3b | Signal render semaphore from tracked barrier submit | 16.31 ms → 16.04 ms (-1.7%) | 3 vs 3 runs, REVERT: no primary win; guard regressions | no |
 | 3c | Fold acquire wait into first Impeller submit | 16.31 ms → 15.78 ms (-3.2%) | 3 vs 3 runs, REVERT: no primary win; 8-child present p95 regressed | no |
 | 3d | Remove wgpu acquire clear pass (`LoadOp::Load`) | n/a | correctness gate failed in texture fixture cleanup/exit; reverted before measurement | no |
+| 3e | Drive Linux acquire/present through public `wgpu-hal` APIs | 16.71 ms / 58.23 → 15.60 ms / 60.30 | 5 vs 3 runs, KEEP; no guard regressions | no (parked on `rust/imrove-performance-hal-presentation`; gain did not justify complexity) |
