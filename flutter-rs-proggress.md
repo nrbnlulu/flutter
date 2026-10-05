@@ -16,12 +16,19 @@ The debug benchmark on this machine sustained about 60 implicit-view submissions
 per second with 1 through 12 static children, with native main-thread CPU around
 4–6% of one core (previously about 97–99% with dirty-view compositing alone).
 With all views animated, five children sustained about 60 submissions per second,
-but eight and twelve still fell to about 32 and 15 respectively. These are debug
-measurements with compositor-assigned window sizes, not release guarantees.
-Per-view acquire/present timing and process/thread accounting now retain evidence
-for that remaining raster-phase bottleneck. Disabling wgpu's debug/validation
-flags alone did not remove it. Do not infer active validation layers solely from
-whether their shared libraries appear in process maps.
+but eight and twelve still fell to about 28 and 12 respectively. Raster-thread stack
+sampling showed that most of this was the Khronos validation layer. Debug builds
+enable it through wgpu's `InstanceFlags::default()`, and because Impeller shares
+the instance, it also intercepts every Impeller call. An earlier note claimed that
+disabling wgpu validation did not help, but that was wrong: wgpu was built without
+its `std` feature, so `WGPU_VALIDATION=0`/`WGPU_DEBUG=0` were silently ignored.
+With `std` enabled and validation disabled, eight and twelve children sustain about
+67 and 45 submissions per second (12-child raster p95 drops from 125 ms to 30 ms).
+`benchmark_windowing.py` now disables wgpu validation unless `--validation` is
+passed. The remaining per-view cost is NVIDIA driver submission work. The phased
+plan in [`flutter-rs-perf-plan.md`](flutter-rs-perf-plan.md) addresses it. These
+are debug measurements with compositor-assigned window sizes, not release
+guarantees.
 Validation for this change passed 32 Rust unit tests, 19 relevant framework
 tests, five benchmark-accounting tests, and the native 60-removal fixture with
 Vulkan validation forced. The native animated-texture screenshot check remains

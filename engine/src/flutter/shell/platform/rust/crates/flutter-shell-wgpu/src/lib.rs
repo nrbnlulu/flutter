@@ -203,6 +203,10 @@ mod vulkan {
     struct PresentationStats {
         file: File,
         count: u64,
+        /// Queue submissions made this frame; incremented on each queue.submit,
+        /// reset to 0 after each record() call. Written as submits=N in the
+        /// stats file to track Phase 3 submit-merging progress.
+        submits_this_frame: u32,
     }
 
     impl PresentationStats {
@@ -213,14 +217,16 @@ mod vulkan {
                     path.display()
                 )
             })?;
-            Ok(Self { file, count: 0 })
+            Ok(Self { file, count: 0, submits_this_frame: 0 })
         }
 
         fn record(&mut self, width: u32, height: u32, timings: [u128; 4]) {
             self.count += 1;
+            let submits = self.submits_this_frame;
+            self.submits_this_frame = 0;
             let _ = writeln!(
                 self.file,
-                "{} {width} {height} {} {} {} {}",
+                "{} {width} {height} {} {} {} {} submits={submits}",
                 self.count, timings[0], timings[1], timings[2], timings[3]
             );
             let _ = self.file.flush();
@@ -1344,6 +1350,9 @@ mod vulkan {
             };
             queue.add_signal_semaphore(sync.acquire, None);
             self.context.queue.submit([encoder.finish()]);
+            if let Some(stats) = &self.presentation_stats {
+                stats.lock().submits_this_frame += 1;
+            }
             state.pending_frame = Some(PendingFrame {
                 texture: surface_texture,
                 sync,
@@ -1419,6 +1428,9 @@ mod vulkan {
                 ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             );
             let submission = self.context.queue.submit([encoder.finish()]);
+            if let Some(stats) = &self.presentation_stats {
+                stats.lock().submits_this_frame += 1;
+            }
             // Wayland frame callbacks must only be armed when a surface commit
             // is guaranteed. Doing this at the earlier vsync pulse can freeze
             // redraw delivery when Flutter requested a secondary vsync that

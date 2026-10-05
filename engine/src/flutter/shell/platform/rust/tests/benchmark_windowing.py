@@ -66,12 +66,26 @@ def native_timings(path: Path, first: int, last: int) -> dict:
   rows = [
       line.split() for line in path.read_text().splitlines(keepends=True) if line.endswith("\n")
   ]
-  rows = [row for row in rows if len(row) == 7 and first < int(row[0]) <= last]
-  return {
+  # Accept both 7-token rows (legacy) and rows with a trailing submits=N token.
+  rows = [row for row in rows if len(row) in (7, 8) and first < int(row[0]) <= last]
+  result = {
       name: distribution([int(row[index]) / 1000 for row in rows])
       for index, name in enumerate(("acquire_ms", "swapchain_ms", "handoff_ms", "present_ms"),
                                    start=3)
   }
+  # Parse submits=N from the optional 8th token.
+  submit_counts = []
+  for row in rows:
+    if len(row) == 8:
+      try:
+        token = row[7]
+        if token.startswith("submits="):
+          submit_counts.append(int(token[len("submits="):]))
+      except (ValueError, IndexError):
+        pass
+  if submit_counts:
+    result["submits_per_frame"] = distribution([float(v) for v in submit_counts])
+  return result
 
 
 def command_output(command: list[str]) -> dict:
@@ -154,7 +168,11 @@ def main() -> None:
   parser.add_argument("--runner", required=True, type=Path)
   parser.add_argument("--assets", required=True, type=Path)
   parser.add_argument("--icu", required=True, type=Path)
-  parser.add_argument("--validation", action="store_true", help="Force the Vulkan validation layer")
+  parser.add_argument(
+      "--validation",
+      action="store_true",
+      help="Measure with Vulkan validation; by default it is disabled for performance",
+  )
   parser.add_argument("--output-dir", type=Path, help="New directory for retained evidence")
   parser.add_argument("--label", default="unspecified", help="Build/experiment description")
   parser.add_argument(
@@ -183,6 +201,10 @@ def main() -> None:
       "FLUTTER_RUST_WINDOWING_BENCHMARK_WORKLOAD": args.workload,
       "RUST_LOG": "wgpu_core=warn,wgpu_hal=warn",
   })
+  # Debug builds enable wgpu validation on the Vulkan instance Impeller shares,
+  # which dominates multi-view raster time. Measure without it unless asked.
+  environment["WGPU_VALIDATION"] = "1" if args.validation else "0"
+  environment["WGPU_DEBUG"] = "1" if args.validation else "0"
   if args.validation:
     environment["VK_INSTANCE_LAYERS"] = "VK_LAYER_KHRONOS_validation"
   metadata = {
@@ -218,7 +240,10 @@ def main() -> None:
               "Only the implicit view is animated; child views are static."
           ), "Window sizes and visibility are compositor-controlled; inspect snapshots.",
           "GPU utilization includes other applications.",
-          "No validation flag means inherited/default layer settings, not forced off."
+          (
+              "Vulkan validation forced on." if args.validation else
+              "wgpu validation/debug disabled; explicit VK_* layers are still inherited."
+          )
       ],
   }
   (work / "metadata.json").write_text(json.dumps(metadata, indent=2))

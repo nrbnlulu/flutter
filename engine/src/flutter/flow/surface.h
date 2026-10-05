@@ -41,6 +41,10 @@ class Surface {
   // surfaces render a single implicit view and intentionally ignore this.
   virtual void SetActiveViewId(int64_t view_id);
 
+  // Releases any per-view resources cached for a removed Flutter view. Called
+  // on the raster thread from Rasterizer::CollectView.
+  virtual void CollectView(int64_t view_id);
+
   virtual std::unique_ptr<SurfaceFrame> AcquireFrame(const DlISize& size) = 0;
 
   virtual DlMatrix GetRootTransformation() const = 0;

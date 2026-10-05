@@ -111,21 +111,42 @@ TEST(GPUSurfaceVulkanImpeller, RecreatesTransientsWhenFrameSizeChanges) {
 
   auto surface = std::make_unique<GPUSurfaceVulkanImpeller>(&delegate, context);
 
+  // Acquire a frame on the implicit view (id 0). Transients are created.
   auto frame = surface->AcquireFrame(DlISize(100, 100));
   ASSERT_NE(frame, nullptr);
-  auto transients = surface->transients_;
+  auto& entry0 = surface->view_transients_[0];
+  auto transients = entry0.transients;
   ASSERT_NE(transients, nullptr);
-  EXPECT_EQ(surface->transients_size_, impeller::ISize(100, 100));
+  EXPECT_EQ(entry0.size, impeller::ISize(100, 100));
 
+  // Same view, same size: transients are reused.
   frame = surface->AcquireFrame(DlISize(100, 100));
   ASSERT_NE(frame, nullptr);
-  EXPECT_EQ(surface->transients_, transients);
-  EXPECT_EQ(surface->transients_size_, impeller::ISize(100, 100));
+  EXPECT_EQ(surface->view_transients_[0].transients, transients);
+  EXPECT_EQ(surface->view_transients_[0].size, impeller::ISize(100, 100));
 
+  // Same view, different size: transients are recreated.
   frame = surface->AcquireFrame(DlISize(200, 100));
   ASSERT_NE(frame, nullptr);
-  EXPECT_NE(surface->transients_, transients);
-  EXPECT_EQ(surface->transients_size_, impeller::ISize(200, 100));
+  EXPECT_NE(surface->view_transients_[0].transients, transients);
+  EXPECT_EQ(surface->view_transients_[0].size, impeller::ISize(200, 100));
+
+  // Switch to a second view: its transients are independent.
+  surface->SetActiveViewId(1);
+  frame = surface->AcquireFrame(DlISize(320, 240));
+  ASSERT_NE(frame, nullptr);
+  ASSERT_TRUE(surface->view_transients_.count(1));
+  auto transients1 = surface->view_transients_[1].transients;
+  EXPECT_NE(transients1, nullptr);
+  EXPECT_EQ(surface->view_transients_[1].size, impeller::ISize(320, 240));
+
+  // First view's transients are unaffected by the second view's acquisition.
+  EXPECT_NE(surface->view_transients_[0].transients, transients1);
+
+  // Collecting a removed view releases only that view's transients.
+  surface->CollectView(1);
+  EXPECT_EQ(surface->view_transients_.count(1), 0u);
+  EXPECT_EQ(surface->view_transients_.count(0), 1u);
 }
 
 }  // namespace testing

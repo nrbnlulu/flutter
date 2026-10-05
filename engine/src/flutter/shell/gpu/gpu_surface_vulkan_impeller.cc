@@ -82,9 +82,15 @@ bool GPUSurfaceVulkanImpeller::IsValid() {
 
 // |Surface|
 void GPUSurfaceVulkanImpeller::SetActiveViewId(int64_t view_id) {
+  active_view_id_ = view_id;
   if (delegate_) {
     delegate_->SetActiveViewId(view_id);
   }
+}
+
+// |Surface|
+void GPUSurfaceVulkanImpeller::CollectView(int64_t view_id) {
+  view_transients_.erase(view_id);
 }
 
 // |Surface|
@@ -201,17 +207,18 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
     }
 
     impeller::ISize frame_size{size.width, size.height};
-    if (transients_ == nullptr || transients_size_ != frame_size) {
-      transients_ = std::make_shared<impeller::SwapchainTransientsVK>(
+    auto& entry = view_transients_[active_view_id_];
+    if (entry.transients == nullptr || entry.size != frame_size) {
+      entry.transients = std::make_shared<impeller::SwapchainTransientsVK>(
           impeller_context_, desc,
           /*enable_msaa=*/true);
-      transients_size_ = frame_size;
+      entry.size = frame_size;
     }
 
     auto wrapped_onscreen = std::make_shared<WrappedTextureSourceVK>(
         vk_image, std::move(image_view), desc);
     auto surface = impeller::SurfaceVK::WrapSwapchainImage(
-        transients_, wrapped_onscreen, [&]() -> bool { return true; });
+        entry.transients, wrapped_onscreen, [&]() -> bool { return true; });
     impeller::RenderTarget render_target = surface->GetRenderTarget();
     auto cull_rect =
         impeller::Rect::MakeSize(render_target.GetRenderTargetSize());
