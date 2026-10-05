@@ -206,11 +206,16 @@ render with the final barrier, and wgpu handoff/present), and fewer later.
   15.33 -> 10.97ms (-28.4%), 12-child raster p50 21.57 -> 15.23ms (-29.4%),
   8-child process CPU% 109.6% -> 90.5% (-17.4%), present p95 dropped from
   ~0.24ms to ~0.10ms across every stage. No guard regressions. Kept.
-- **3b. Signal on a real submit.** Attach the render semaphore to the barrier
-  submit from 3a, which removes the signal-only submit.
-  - This needs a small fork-local Impeller extension: a `CommandQueueVK` submit
-    overload that takes wait/signal semaphores and still registers the fence with
-    `FenceWaiterVK`, so resource lifetimes stay tracked.
+- **3b. Signal on a real submit — measured and reverted.** Added a fork-local
+  `CommandQueueVK` overload that signalled the render semaphore from the 3a
+  barrier submit while retaining `FenceWaiterVK` tracking, eliminating the
+  signal-only submit. The validation-forced 60-window lifecycle fixture passed
+  (60 removals, 399 primary presentations, no VUID diagnostics), but the valid
+  3-run versus 3-run immediate-baseline gate did not show a primary win:
+  8-child raster p50 11.45 -> 11.25 ms (-1.7%, within ±5% noise), 12-child
+  16.31 -> 16.04 ms (-1.7%, within ±8%). It also regressed 4-child raster p50
+  by 5.6% (beyond ±5%), acquire p95 by 319% (beyond ±112%), and 8-child present
+  p95 by 26.8% (beyond ±15%). Reverted under the measured-improvement rule.
 - **3c. Fold the acquire wait into the first submit.** Attach the acquire
   semaphore wait to the first Impeller submission of that view's frame, using the
   same extension, instead of the empty wait-only submit.
@@ -282,3 +287,4 @@ Each needs its own design note before it starts:
 | 2b | Cache swapchain image views | n/a -- measured 0.93 µs/call (~0.06% of frame budget) before implementing | not implemented | no (negligible win, real correctness hazard) |
 | 2c | Semaphore pool | 21.57 ms → 22.10 ms (+2.5%, unchanged) | 3 vs 3 runs | no (no primary-metric improvement) |
 | 3a | Merge redundant layout barrier, fix wrong `oldLayout` | 21.57 ms → 15.23 ms (-29.4%) | 3 vs 3 runs, KEEP, no guard regressions | yes |
+| 3b | Signal render semaphore from tracked barrier submit | 16.31 ms → 16.04 ms (-1.7%) | 3 vs 3 runs, REVERT: no primary win; guard regressions | no |

@@ -29,6 +29,13 @@ passed. The remaining per-view cost is NVIDIA driver submission work. The phased
 plan in [`flutter-rs-perf-plan.md`](flutter-rs-perf-plan.md) addresses it. These
 are debug measurements with compositor-assigned window sizes, not release
 guarantees.
+Phase 3b of that plan was implemented and correctness-validated, but reverted:
+signalling the wgpu render semaphore from the tracked Impeller barrier submit
+removed the signal-only submit while preserving `FenceWaiterVK` lifetime
+tracking. Its 3-run immediate-baseline comparison showed only a 1.7% raster-p50
+improvement at both 8 and 12 children, within noise, plus guard regressions.
+The extra submit therefore remains until a different synchronization design
+measures better.
 Validation for this change passed 32 Rust unit tests, 19 relevant framework
 tests, five benchmark-accounting tests, and the native 60-removal fixture with
 Vulkan validation forced. The native animated-texture screenshot check remains
