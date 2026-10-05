@@ -15,9 +15,12 @@
 # --output FILE    Write raw stack samples to FILE (default: /tmp/raster_stacks.txt)
 # --samples N      Number of stack snapshots to collect (default: 200)
 # --interval-ms N  Milliseconds between snapshots (default: 20)
+# --pid N          Sample this exact runner process (otherwise discover it)
+# --status FILE    Benchmark status file, required with --wait-stage
 #
 # ptrace_scope=1 on this machine; the runner must be launched through
-# /tmp/rprof/runner (the PR_SET_PTRACER exec wrapper) for eu-stack to attach.
+# benchmark_windowing.py --allow-stack-sampling, or tools/exec_ptracer.py,
+# for eu-stack to attach. Run profiling separately from acceptance measurements.
 
 set -euo pipefail
 
@@ -25,6 +28,8 @@ WAIT_STAGE=""
 OUTPUT="/tmp/raster_stacks.txt"
 SAMPLES=200
 INTERVAL_MS=20
+STATUS=""
+pid=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -32,18 +37,24 @@ while [[ $# -gt 0 ]]; do
     --output) OUTPUT="$2"; shift 2 ;;
     --samples) SAMPLES="$2"; shift 2 ;;
     --interval-ms) INTERVAL_MS="$2"; shift 2 ;;
+    --status) STATUS="$2"; shift 2 ;;
+    --pid) pid="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
+
+[[ -z "$WAIT_STAGE" || -n "$STATUS" ]] || { echo "--wait-stage requires --status FILE" >&2; exit 1; }
 
 : > "$OUTPUT"
 
 # Wait for the runner process. The binary name is truncated to 15 chars by
 # the kernel (comm); use "flutter_rust_sh" instead of the full path.
 echo "[sampler] waiting for flutter_rust_sh process..." | tee -a "$OUTPUT"
-until pid=$(pgrep -x flutter_rust_sh 2>/dev/null | head -1) && [[ -n "$pid" ]]; do
-  sleep 0.1
-done
+if [[ -z "$pid" ]]; then
+  until pid=$(pgrep -x flutter_rust_sh 2>/dev/null | head -1) && [[ -n "$pid" ]]; do
+    sleep 0.1
+  done
+fi
 echo "pid=$pid" >> "$OUTPUT"
 
 # Locate the raster thread by comm name.
@@ -59,14 +70,7 @@ echo "tid=$tid" | tee -a "$OUTPUT"
 # If a benchmark stage is requested, wait for the status file.
 if [[ -n "$WAIT_STAGE" ]]; then
   echo "[sampler] waiting for stage count=$WAIT_STAGE..." | tee -a "$OUTPUT"
-  # The benchmark creates --output-dir/status; search for the most recent one.
-  STATUS=""
-  until [[ -n "$STATUS" ]]; do
-    STATUS=$(ls -td /tmp/flutter-rust-window-benchmark-* 2>/dev/null | head -1)/status
-    [[ -f "$STATUS" ]] || STATUS=""
-    sleep 0.1
-  done
-  until grep -q "start count=$WAIT_STAGE" "$STATUS" 2>/dev/null; do
+  until rg -q "start count=$WAIT_STAGE" "$STATUS" 2>/dev/null; do
     sleep 0.1
     kill -0 "$pid" 2>/dev/null || { echo "[sampler] process exited while waiting for stage"; exit 0; }
   done
@@ -74,9 +78,10 @@ if [[ -n "$WAIT_STAGE" ]]; then
 fi
 
 # Collect stack snapshots.
-SLEEP_S=$(echo "scale=3; $INTERVAL_MS / 1000" | bc)
+SLEEP_S=$(python3 -c 'import sys; print(int(sys.argv[1]) / 1000)' "$INTERVAL_MS")
 for i in $(seq 1 "$SAMPLES"); do
-  eu-stack -p "$tid" -m -i 2>/dev/null >> "$OUTPUT" || true
+  eu-stack -p "$pid" -m -i | awk -v t="TID $tid:" \
+    '$0==t{p=1;print;next} /^TID /{p=0} p' >> "$OUTPUT"
   echo "----" >> "$OUTPUT"
   sleep "$SLEEP_S"
 done
@@ -102,6 +107,8 @@ for s in txt:
     for name in names:
         incl[name] += 1
 print(f"\n{n} samples")
+if not n:
+    sys.exit("No raster stack samples captured")
 print(f"{'Count':>6}  {'%':>5}  Frame")
 print("-" * 90)
 for k, v in incl.most_common(30):

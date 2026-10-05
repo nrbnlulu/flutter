@@ -299,6 +299,7 @@ Each needs its own design note before it starts:
 
 | Phase | Change | Baseline → candidate (12-child raster p50, submissions/s) | Gate | Kept? |
 |---|---|---|---|---|
+| 0 / 3e prerequisite | Repeat harness, complete submission/resource counters, CPU guards and texture dispatch repair | no rendering optimization; measured 6 submits/frame (2 Rust + 4 C++) | Rust/accounting tests, validation lifecycle, both texture paths and full validation benchmark pass; noise calibration pending | yes (measurement prerequisite) |
 | 1 | wgpu `std` feature + validation off in benchmark | 82 ms / 11.8 → 21 ms / 44.9 (single run each) | measured before Phase 0 | yes (re-verify) |
 | 2a | Per-view `SwapchainTransientsVK` | 24.4 ms → 21.8 ms | 3 vs 5 runs, REGRESSED flag was unrelated code path (noise) | yes |
 | 2b | Cache swapchain image views | n/a -- measured 0.93 µs/call (~0.06% of frame budget) before implementing | not implemented | no (negligible win, real correctness hazard) |

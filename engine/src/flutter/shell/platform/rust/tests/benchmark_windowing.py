@@ -11,6 +11,7 @@ applications. Native window geometry is observed, never changed by this test.
 """
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ import re
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -66,25 +68,20 @@ def native_timings(path: Path, first: int, last: int) -> dict:
   rows = [
       line.split() for line in path.read_text().splitlines(keepends=True) if line.endswith("\n")
   ]
-  # Accept both 7-token rows (legacy) and rows with a trailing submits=N token.
-  rows = [row for row in rows if len(row) in (7, 8) and first < int(row[0]) <= last]
+  rows = [row for row in rows if len(row) >= 7 and first < int(row[0]) <= last]
   result = {
       name: distribution([int(row[index]) / 1000 for row in rows])
       for index, name in enumerate(("acquire_ms", "swapchain_ms", "handoff_ms", "present_ms"),
                                    start=3)
   }
-  # Parse submits=N from the optional 8th token.
-  submit_counts = []
-  for row in rows:
-    if len(row) == 8:
-      try:
-        token = row[7]
-        if token.startswith("submits="):
-          submit_counts.append(int(token[len("submits="):]))
-      except (ValueError, IndexError):
-        pass
-  if submit_counts:
-    result["submits_per_frame"] = distribution([float(v) for v in submit_counts])
+  for counter in ("submits", "rust_submits", "cpp_submits", "image_views", "transients"):
+    values = []
+    for row in rows:
+      counters = dict(token.split("=", 1) for token in row[7:] if "=" in token)
+      if counter in counters:
+        values.append(float(counters[counter]))
+    if values:
+      result[f"{counter}_per_frame"] = distribution(values)
   return result
 
 
@@ -94,6 +91,34 @@ def command_output(command: list[str]) -> dict:
     return {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
   except (OSError, subprocess.TimeoutExpired) as error:
     return {"error": str(error)}
+
+
+def unlocked_session() -> dict:
+  sessions = command_output(["loginctl", "list-sessions", "--json=short"])
+  try:
+    for session in json.loads(sessions.get("stdout", "")):
+      if session["uid"] != os.getuid():
+        continue
+      result = command_output([
+          "loginctl", "show-session", session["session"],
+          "-p", "Type", "-p", "Active", "-p", "LockedHint"
+      ])
+      properties = dict(line.split("=", 1) for line in result.get("stdout", "").splitlines())
+      if properties.get("Type") in ("wayland", "x11") and properties.get("Active") == "yes":
+        if properties.get("LockedHint") != "no":
+          raise RuntimeError("Refusing benchmark in a locked session")
+        return {"id": session["session"], **properties}
+  except (ValueError, KeyError) as error:
+    raise RuntimeError(f"Cannot verify session lock state: {sessions}") from error
+  raise RuntimeError("Cannot find an active, unlocked graphical session")
+
+
+def file_hash(path: Path) -> str:
+  digest = hashlib.sha256()
+  with path.open("rb") as source:
+    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+      digest.update(chunk)
+  return digest.hexdigest()
 
 
 def windows(pid: int) -> dict:
@@ -183,15 +208,33 @@ def main() -> None:
   )
   parser.add_argument("--frame-budget-ms", type=float, default=1000 / 60)
   parser.add_argument("--timeout", type=float, default=120)
+  parser.add_argument("--repeat", type=int, default=3, help="Independent runs (default: 3)")
+  parser.add_argument(
+      "--allow-stack-sampling", action="store_true",
+      help="Allow eu-stack attachment; use separate profiling runs"
+  )
   args = parser.parse_args()
-  if args.frame_budget_ms <= 0 or args.timeout <= 0:
-    parser.error("frame budget and timeout must be positive")
+  session = unlocked_session()
+  if args.frame_budget_ms <= 0 or args.timeout <= 0 or args.repeat < 1:
+    parser.error("frame budget, timeout and repeat must be positive")
   if args.output_dir:
     work = args.output_dir.resolve()
     work.mkdir(parents=True, exist_ok=False)
   else:
     work = Path(tempfile.mkdtemp(prefix="flutter-rust-window-benchmark-"))
   print(f"Evidence: {work}", flush=True)
+  if args.repeat > 1:
+    for index in range(args.repeat):
+      command = [sys.executable, str(Path(__file__).resolve()), "--repeat=1"]
+      for name in ("runner", "assets", "icu", "label", "workload", "frame_budget_ms", "timeout"):
+        command.append(f"--{name.replace('_', '-')}={getattr(args, name)}")
+      command.append(f"--output-dir={work / f'run-{index + 1}'}")
+      if args.validation:
+        command.append("--validation")
+      if args.allow_stack_sampling:
+        command.append("--allow-stack-sampling")
+      subprocess.run(command, check=True)
+    return
   stats, status = work / "presentations", work / "status"
   status.touch()
   environment = os.environ.copy()
@@ -218,8 +261,12 @@ def main() -> None:
           str(args.runner.resolve()),
       "runner_mtime_ns":
           args.runner.stat().st_mtime_ns,
+      "runner_sha256": file_hash(args.runner),
+      "session": session,
+      "allow_stack_sampling": args.allow_stack_sampling,
       "assets":
           str(args.assets.resolve()),
+      "kernel_sha256": file_hash(args.assets / "kernel_blob.bin"),
       "frame_budget_ms":
           args.frame_budget_ms,
       "git":
@@ -254,10 +301,12 @@ def main() -> None:
   next_gpu_sample = 0.0
   try:
     with (work / "runner.log").open("wb") as log, (work / "samples.jsonl").open("w") as samples:
+      command = [str(args.runner.resolve()), str(args.assets.resolve()), str(args.icu.resolve())]
+      if args.allow_stack_sampling:
+        wrapper = Path(__file__).resolve().parent.parent / "tools" / "exec_ptracer.py"
+        command = [sys.executable, str(wrapper), *command]
       process = subprocess.Popen(
-          [str(args.runner.resolve()),
-           str(args.assets.resolve()),
-           str(args.icu.resolve())],
+          command,
           stdout=log,
           stderr=subprocess.STDOUT,
           env=environment,
@@ -271,6 +320,7 @@ def main() -> None:
           if line.startswith("complete "):
             continue
           kind, count, view_ids, elapsed_us = parse_event(line)
+          unlocked_session()
           counts = {
               str(view): presentation_count(Path(f"{stats}.view-{view}")) for view in view_ids
           }
@@ -328,7 +378,7 @@ def main() -> None:
             def geometry(clients):
               return sorted((
                   client["address"], client.get("size"), client.get("at"), client.get("hidden"),
-                  client.get("workspace")
+                  client.get("workspace"), client.get("monitor")
               ) for client in clients)
 
             result["geometry_changed"] = geometry(initial) != geometry(final)

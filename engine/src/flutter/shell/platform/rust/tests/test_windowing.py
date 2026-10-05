@@ -25,6 +25,8 @@ def main():
     environment = os.environ.copy()
     environment.update({
         "VK_INSTANCE_LAYERS": "VK_LAYER_KHRONOS_validation",
+        "WGPU_VALIDATION": "1",
+        "WGPU_DEBUG": "1",
         "FLUTTER_RUST_PRESENTATION_STATS": str(stats),
         "RUST_BACKTRACE": "1",
         "FLUTTER_RUST_WINDOWING_STATUS": str(status),

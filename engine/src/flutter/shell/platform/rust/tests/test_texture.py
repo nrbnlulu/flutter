@@ -105,6 +105,9 @@ def main() -> None:
 
     environment = os.environ.copy()
     environment.update({
+        "VK_INSTANCE_LAYERS": "VK_LAYER_KHRONOS_validation",
+        "WGPU_VALIDATION": "1",
+        "WGPU_DEBUG": "1",
         "FLUTTER_RUST_TEXTURE_DEMO": "1",
         "FLUTTER_RUST_TEXTURE_ID_FILE": str(texture_id),
         "FLUTTER_RUST_PRESENTATION_STATS": str(presentations),
@@ -117,11 +120,6 @@ def main() -> None:
           "FLUTTER_RUST_TEXTURE_LIFECYCLE_ITERATIONS": str(args.lifecycle_iterations),
           "FLUTTER_RUST_TEXTURE_LIFECYCLE_STATUS": str(lifecycle_status),
       })
-    if shutil.which("vulkaninfo"):
-      vulkan = subprocess.run(["vulkaninfo"], capture_output=True, text=True)
-      if "VK_LAYER_KHRONOS_validation" in vulkan.stdout + vulkan.stderr:
-        environment["VK_INSTANCE_LAYERS"] = "VK_LAYER_KHRONOS_validation"
-
     address = None
     with log_path.open("wb") as log:
       process = subprocess.Popen(

@@ -158,6 +158,30 @@ same way Linux's own flutter_tools integration followed its native runner.
 
 ## Implementation log
 
+### Phase 3e prerequisite — complete benchmark accounting
+
+The private bridge is ABI v12: C++ reports successful graphics-queue submits,
+swapchain image-view creations and transient recreations to Rust's presentation
+stats. Total submissions now include the two Rust bridge submits and all C++
+submits during that view's acquire-to-present interval. Initial validation
+evidence confirms six submits per presented frame (2 Rust + 4 C++), one image
+view per frame, and zero transient recreations once view sizes stabilize.
+
+The benchmark supports `--repeat` (default 3), refuses locked or unverifiable
+graphical sessions, and records runner/kernel hashes alongside monitor/window
+snapshots. The comparator rejects partial runs or missing/nonfinite metrics,
+adds raster/fence-waiter CPU guards, reports 8-/12-child submissions/s/view,
+and checks native timing guards across all views. The stack sampler now has a
+checked repository-owned ptracer exec wrapper and explicit status/PID options.
+Profiling remains separate from acceptance measurements.
+
+Validation: build and workspace Rust tests pass; 13 accounting tests pass;
+forced-validation lifecycle passes 60 removals/419 presentations; wgpu texture
+and CPU pixel-buffer fixtures pass (20/23 presentations). The full five-stage
+validation benchmark also completes without diagnostics
+(`/tmp/flutter-hal-validation`). Baseline repetition is being established
+before experiment A.
+
 ### Phase 3e prerequisite — texture harness compatibility
 
 Updated the texture fixture to select Hyprland's Lua window dispatchers when

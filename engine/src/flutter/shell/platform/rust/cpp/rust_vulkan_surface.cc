@@ -113,6 +113,10 @@ FlutterVulkanImage RustVulkanPresentation::AcquireImage(const DlISize& size) {
   }
 
   FlutterRustVulkanImage rust_image = {};
+  const auto& context = impeller::ContextVK::Cast(*context_);
+  view->submission_start = context.GetGraphicsQueue()->GetSubmissionCount();
+  view->image_views = 0;
+  view->transients = 0;
   if (view->acquire_semaphore != VK_NULL_HANDLE ||
       view->render_semaphore != VK_NULL_HANDLE || size.width <= 0 ||
       size.height <= 0 ||
@@ -140,7 +144,6 @@ FlutterVulkanImage RustVulkanPresentation::AcquireImage(const DlISize& size) {
   impeller::vk::SubmitInfo submit_info;
   submit_info.setWaitSemaphores(acquire_semaphore);
   submit_info.setWaitDstStageMask(wait_stage);
-  const auto& context = impeller::ContextVK::Cast(*context_);
   if (context.GetGraphicsQueue()->Submit(submit_info, {}) !=
       impeller::vk::Result::eSuccess) {
     view->acquire_semaphore = VK_NULL_HANDLE;
@@ -154,6 +157,14 @@ FlutterVulkanImage RustVulkanPresentation::AcquireImage(const DlISize& size) {
   return {.struct_size = sizeof(FlutterVulkanImage),
           .image = rust_image.image,
           .format = rust_image.format};
+}
+
+void RustVulkanPresentation::RecordFrameResources(bool recreated_transients) {
+  std::scoped_lock lock(views_mutex_);
+  if (active_frame_) {
+    active_frame_->image_views++;
+    active_frame_->transients += recreated_transients ? 1 : 0;
+  }
 }
 
 bool RustVulkanPresentation::PresentImage(VkImage image, VkFormat format) {
@@ -216,6 +227,10 @@ bool RustVulkanPresentation::PresentImage(VkImage image, VkFormat format) {
       .format = static_cast<uint32_t>(format),
       .acquire_semaphore = reinterpret_cast<uintptr_t>(view->acquire_semaphore),
       .render_semaphore = reinterpret_cast<uintptr_t>(view->render_semaphore),
+      .cpp_submits = context.GetGraphicsQueue()->GetSubmissionCount() -
+                     view->submission_start,
+      .image_views = view->image_views,
+      .transients = view->transients,
   };
   view->acquire_semaphore = VK_NULL_HANDLE;
   view->render_semaphore = VK_NULL_HANDLE;

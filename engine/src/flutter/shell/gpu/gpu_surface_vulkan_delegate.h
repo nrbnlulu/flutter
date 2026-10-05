@@ -39,6 +39,9 @@ class GPUSurfaceVulkanDelegate {
   /// Single-view delegates intentionally ignore this notification.
   virtual void SetActiveViewId(int64_t view_id);
 
+  // Optional accounting for swapchain resources allocated for the active frame.
+  virtual void RecordFrameResources(bool recreated_transients) {}
+
   /// @brief  Called by the engine to fetch a VkImage for writing the next
   ///         frame.
   ///

@@ -41,12 +41,15 @@ class QueueVK {
 
   vk::Result Submit(const vk::Fence& fence) const;
 
+  uint64_t GetSubmissionCount() const;
+
   vk::Result Present(const vk::PresentInfoKHR& present_info);
 
   void InsertDebugMarker(std::string_view label) const;
 
  private:
   mutable Mutex queue_mutex_;
+  mutable uint64_t submission_count_ IPLR_GUARDED_BY(queue_mutex_) = 0;
 
   const QueueIndexVK index_;
   const vk::Queue queue_ IPLR_GUARDED_BY(queue_mutex_);
