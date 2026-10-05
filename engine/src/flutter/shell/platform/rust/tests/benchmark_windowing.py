@@ -101,8 +101,8 @@ def unlocked_session() -> dict:
       if session["uid"] != os.getuid():
         continue
       result = command_output([
-          "loginctl", "show-session", session["session"],
-          "-p", "Type", "-p", "Active", "-p", "LockedHint"
+          "loginctl", "show-session", session["session"], "-p", "Type", "-p", "Active", "-p",
+          "LockedHint"
       ])
       properties = dict(line.split("=", 1) for line in result.get("stdout", "").splitlines())
       if properties.get("Type") in ("wayland", "x11") and properties.get("Active") == "yes":
@@ -139,8 +139,10 @@ def windows(pid: int) -> dict:
 def benchmark_monitor(name: str) -> dict:
   result = command_output(["hyprctl", "monitors", "-j"])
   monitors = json.loads(result.get("stdout", ""))
-  selected = [monitor for monitor in monitors
-              if (monitor.get("focused") if name == "focused" else monitor["name"] == name)]
+  selected = [
+      monitor for monitor in monitors
+      if (monitor.get("focused") if name == "focused" else monitor["name"] == name)
+  ]
   if len(selected) != 1 or not selected[0].get("dpmsStatus"):
     raise RuntimeError(f"Cannot select an active benchmark monitor: {name}")
   monitor = selected[0]
@@ -202,21 +204,25 @@ def verify_windows(snapshot: dict, children: int, monitor: dict) -> list:
   clients = snapshot.get("clients", [])
   if len(clients) != children + 1:
     raise RuntimeError("Incomplete native window geometry evidence")
-  expected_titles = {"Flutter Rust Shell"} | {f"Rust window benchmark {children}/{i}" for i in range(children)}
+  expected_titles = {"Flutter Rust Shell"
+                    } | {f"Rust window benchmark {children}/{i}" for i in range(children)}
   if {client["title"] for client in clients} != expected_titles:
     raise RuntimeError("Unexpected native benchmark windows")
   monitors = json.loads(snapshot.get("monitors", {}).get("stdout", ""))
   actual = next((m for m in monitors if m["name"] == monitor["name"]), None)
-  if actual is None or any(actual[key] != monitor[key] for key in ("id", "refreshRate", "scale", "x", "y")):
+  if actual is None or any(
+      actual[key] != monitor[key] for key in ("id", "refreshRate", "scale", "x", "y")):
     raise RuntimeError("Benchmark monitor configuration changed during measurement")
   scene = []
   for client in clients:
     expected_size = [640, 480] if client["title"] == "Flutter Rust Shell" else [320, 240]
-    if (client.get("monitor") != monitor["id"] or client.get("size") != expected_size
-        or client.get("hidden") or not client.get("floating")):
+    if (client.get("monitor") != monitor["id"] or client.get("size") != expected_size or
+        client.get("hidden") or not client.get("floating")):
       raise RuntimeError(f"Unexpected benchmark geometry/visibility: {client}")
-    scene.append([client["title"], client["size"], client["at"], monitor["name"],
-                  actual["refreshRate"], actual["scale"]])
+    scene.append([
+        client["title"], client["size"], client["at"], monitor["name"], actual["refreshRate"],
+        actual["scale"]
+    ])
   return sorted(scene)
 
 
@@ -294,9 +300,12 @@ def main() -> None:
   parser.add_argument("--frame-budget-ms", type=float, default=1000 / 60)
   parser.add_argument("--timeout", type=float, default=120)
   parser.add_argument("--repeat", type=int, default=3, help="Independent runs (default: 3)")
-  parser.add_argument("--monitor", default="focused", help="Hyprland output name (default: focused)")
   parser.add_argument(
-      "--allow-stack-sampling", action="store_true",
+      "--monitor", default="focused", help="Hyprland output name (default: focused)"
+  )
+  parser.add_argument(
+      "--allow-stack-sampling",
+      action="store_true",
       help="Allow eu-stack attachment; use separate profiling runs"
   )
   args = parser.parse_args()
@@ -314,7 +323,8 @@ def main() -> None:
   if args.repeat > 1:
     for index in range(args.repeat):
       command = [sys.executable, str(Path(__file__).resolve()), "--repeat=1"]
-      for name in ("runner", "assets", "icu", "label", "workload", "frame_budget_ms", "timeout", "monitor"):
+      for name in ("runner", "assets", "icu", "label", "workload", "frame_budget_ms", "timeout",
+                   "monitor"):
         command.append(f"--{name.replace('_', '-')}={getattr(args, name)}")
       command.append(f"--output-dir={work / f'run-{index + 1}'}")
       if args.validation:
@@ -350,13 +360,18 @@ def main() -> None:
           str(args.runner.resolve()),
       "runner_mtime_ns":
           args.runner.stat().st_mtime_ns,
-      "runner_sha256": file_hash(args.runner),
-      "session": session,
-      "benchmark_monitor": monitor,
-      "allow_stack_sampling": args.allow_stack_sampling,
+      "runner_sha256":
+          file_hash(args.runner),
+      "session":
+          session,
+      "benchmark_monitor":
+          monitor,
+      "allow_stack_sampling":
+          args.allow_stack_sampling,
       "assets":
           str(args.assets.resolve()),
-      "kernel_sha256": file_hash(args.assets / "kernel_blob.bin"),
+      "kernel_sha256":
+          file_hash(args.assets / "kernel_blob.bin"),
       "frame_budget_ms":
           args.frame_budget_ms,
       "git":

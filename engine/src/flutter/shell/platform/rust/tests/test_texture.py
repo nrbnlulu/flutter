@@ -37,7 +37,8 @@ def dispatch_window(action: str, address: str, *, width=0, height=0, check=True)
   # without executing an action; never fall back after a failed close request.
   probe = subprocess.run(
       ["hyprctl", "eval", 'assert(type(hl.dsp.window.close) == "function")'],
-      capture_output=True, text=True,
+      capture_output=True,
+      text=True,
   )
   selector = f"address:{address}"
   if probe.returncode == 0:
@@ -157,8 +158,9 @@ def main() -> None:
             milestone = count - count % 5
             if milestone > resized_generation:
               resized_generation = milestone
-              dispatch_window("resize", address,
-                              width=640 + milestone * 3, height=480 + milestone * 2)
+              dispatch_window(
+                  "resize", address, width=640 + milestone * 3, height=480 + milestone * 2
+              )
             return count >= args.lifecycle_iterations
 
           if not wait_until(

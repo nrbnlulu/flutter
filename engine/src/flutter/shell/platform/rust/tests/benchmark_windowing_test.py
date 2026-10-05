@@ -85,11 +85,13 @@ class AccountingTest(unittest.TestCase):
       self.assertEqual(result["transients_per_frame"]["mean"], .5)
 
   def test_thread_names_use_linux_truncation(self):
-    stage = {"threads": [
-        {"name": "FlutterRust.ras", "cpu_percent": 60},
-        {"name": "IplrVkFenceWait", "cpu_percent": 30},
-        {"name": "unrelated", "cpu_percent": 90},
-    ]}
+    stage = {
+        "threads": [
+            {"name": "FlutterRust.ras", "cpu_percent": 60},
+            {"name": "IplrVkFenceWait", "cpu_percent": 30},
+            {"name": "unrelated", "cpu_percent": 90},
+        ]
+    }
     self.assertEqual(comparator.get_by_path(stage, "raster_thread_cpu_percent"), 60)
     self.assertEqual(comparator.get_by_path(stage, "fence_waiter_cpu_percent"), 30)
 
@@ -123,13 +125,17 @@ class AccountingTest(unittest.TestCase):
       base, candidate = Path(directory) / "base", Path(directory) / "candidate"
       for path, raster in ((base, 20), (candidate, 10)):
         path.mkdir()
-        (path / "summary.json").write_text(json.dumps([
-            {"children": n, "scene": list(range(n + 1)), "timings": {"raster_ms": {"p50": raster}}}
-            for n in benchmark.STAGES
-        ]))
+        (path / "summary.json").write_text(
+            json.dumps([{
+                "children": n, "scene": list(range(n + 1)),
+                "timings": {"raster_ms": {"p50": raster}}
+            } for n in benchmark.STAGES])
+        )
       result = subprocess.run(
-          [sys.executable, comparator.__file__, str(base), "--", str(candidate)],
-          capture_output=True, text=True,
+          [sys.executable, comparator.__file__,
+           str(base), "--", str(candidate)],
+          capture_output=True,
+          text=True,
       )
       self.assertEqual(result.returncode, 1)
       self.assertIn("required metrics are missing", result.stdout)
@@ -139,23 +145,31 @@ class AccountingTest(unittest.TestCase):
     with tempfile.TemporaryDirectory() as directory:
       path = Path(directory)
       native = {name: {"p95": 1} for name in ("acquire_ms", "handoff_ms", "present_ms")}
-      (path / "summary.json").write_text(json.dumps([
-          {
-              "children": n, "scene": list(range(n + 1)), "cpu_percent": 100,
+      (path / "summary.json").write_text(
+          json.dumps([{
+              "children": n,
+              "scene": list(range(n + 1)),
+              "cpu_percent": 100,
               "threads": [{"name": name, "cpu_percent": 20}
                           for name in ("FlutterRust.ras", "IplrVkFenceWait")],
               "timings": {
-                  "build_ms": {"p95": 1}, "raster_ms": {"p50": 10, "p95": 12},
+                  "build_ms": {"p95": 1},
+                  "raster_ms": {"p50": 10, "p95": 12},
                   "raster_queue_ms": {"p95": 1},
               },
               "implicit_native_timings": native,
-              "native_timings": {str(view): native for view in range(n)},
-              "presentation_fps": {str(view): 75 for view in range(n)},
-          } for n in benchmark.STAGES
-      ]))
+              "native_timings": {str(view): native
+                                 for view in range(n)},
+              "presentation_fps": {str(view): 75
+                                   for view in range(n)},
+          }
+                      for n in benchmark.STAGES])
+      )
       result = subprocess.run(
-          [sys.executable, comparator.__file__, str(path), "--", str(path)],
-          capture_output=True, text=True,
+          [sys.executable, comparator.__file__,
+           str(path), "--", str(path)],
+          capture_output=True,
+          text=True,
       )
       self.assertEqual(result.returncode, 1)
       self.assertIn("no primary metric improvement", result.stdout)
@@ -163,12 +177,18 @@ class AccountingTest(unittest.TestCase):
 
   def test_mixed_monitor_or_wrong_size_is_rejected(self):
     monitor = {"id": 1, "name": "DP-1", "refreshRate": 75, "scale": 1, "x": 0, "y": 0}
-    snapshot = {"monitors": {"stdout": json.dumps([monitor])}, "clients": [
-        {"title": "Flutter Rust Shell", "monitor": 1, "size": [640, 480],
-         "at": [1000, 36], "floating": True, "hidden": False},
-        {"title": "Rust window benchmark 1/0", "monitor": 0, "size": [320, 240],
-         "at": [10, 36], "floating": True, "hidden": False},
-    ]}
+    snapshot = {
+        "monitors": {"stdout": json.dumps([monitor])}, "clients": [
+            {
+                "title": "Flutter Rust Shell", "monitor": 1, "size": [640, 480], "at": [1000, 36],
+                "floating": True, "hidden": False
+            },
+            {
+                "title": "Rust window benchmark 1/0", "monitor": 0, "size": [320, 240],
+                "at": [10, 36], "floating": True, "hidden": False
+            },
+        ]
+    }
     with self.assertRaisesRegex(RuntimeError, "geometry/visibility"):
       benchmark.verify_windows(snapshot, 1, monitor)
     snapshot["clients"][1]["monitor"] = 1

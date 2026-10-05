@@ -60,7 +60,9 @@ def get_by_path(obj: dict, path: str):
     if implicit is None or len(views) != obj["children"]:
       return None
     values = [get_by_path(view, ".".join(parts[1:])) for view in views + [implicit]]
-    return max(values) if all(value is not None and math.isfinite(value) for value in values) else None
+    return max(values) if all(
+        value is not None and math.isfinite(value) for value in values
+    ) else None
   if path == "mean_presentation_fps":
     values = list(obj.get("presentation_fps", {}).values())
     return statistics.mean(values) if len(values) == obj["children"] else None
@@ -122,8 +124,10 @@ def compare_metric(
   b = summarize(base_values)
   c = summarize(cand_values)
   if b["median"] is None or c["median"] is None:
-    return {"label": label, "children": children, "verdict": "MISSING",
-            "base": b, "cand": c, "improvement": False, "regression": False}
+    return {
+        "label": label, "children": children, "verdict": "MISSING", "base": b, "cand": c,
+        "improvement": False, "regression": False
+    }
 
   threshold = noise(base_values)
   b_med = b["median"]
@@ -191,8 +195,12 @@ def main():
     print("REVERT: stage sets differ across runs.")
     sys.exit(1)
   for children in expected:
-    scenes = [next(s for s in run if s["children"] == children).get("scene")
-              for run in base_runs + cand_runs]
+    scenes = [
+        next(s
+             for s in run
+             if s["children"] == children).get("scene")
+        for run in base_runs + cand_runs
+    ]
     if any(scene is None or len(scene) != children + 1 or scene != scenes[0] for scene in scenes):
       print(f"REVERT: missing or inconsistent monitor/window geometry at {children} children.")
       sys.exit(1)
