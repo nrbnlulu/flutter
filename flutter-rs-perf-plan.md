@@ -124,6 +124,15 @@ now places its own windows on a selected output, with 320×240 children and a
 640×480 implicit view, before warm-up, and rejects differing scenes. Historical
 tiled-run numbers above are not directly comparable to this controlled baseline.
 
+**Controlled baseline / Phase 0 exit:** five runs at 74.973 Hz DP-1 give
+8-child raster p50/p95 11.91/19.09 ms and 71.3 submissions/s/view;
+12-child 16.78/20.31 ms and 58.1 submissions/s/view. Primary noise is 26.0%
+at 8 children and 7.2% at 12. Three independent runs of the same frozen build
+report REVERT (-0.8% 12-child p50, no guard regressions). Evidence:
+`/tmp/flutter-hal-controlled-baseline`, `/tmp/flutter-hal-controlled-aa` and
+`/tmp/flutter-hal-controlled-comparison.txt`. A separate 30-stack profile still
+finds NVIDIA driver code in 97% of samples. HAL experiment A remains next.
+
 ## Phase 1: validation-layer policy (measured: about 3.8× at 12 children)
 
 Done so far:
@@ -305,8 +314,9 @@ Each needs its own design note before it starts:
 
 | Phase | Change | Baseline → candidate (12-child raster p50, submissions/s) | Gate | Kept? |
 |---|---|---|---|---|
-| 0 / 3e prerequisite | Repeat harness, complete submission/resource counters, CPU guards and texture dispatch repair | no rendering optimization; measured 6 submits/frame (2 Rust + 4 C++) | Rust/accounting tests, validation lifecycle, both texture paths and full validation benchmark pass; noise calibration pending | yes (measurement prerequisite) |
+| 0 / 3e prerequisite | Repeat harness, complete submission/resource counters, CPU guards and texture dispatch repair | no rendering optimization; measured 6 submits/frame (2 Rust + 4 C++) | Rust/accounting tests, validation lifecycle, both texture paths and full validation benchmark pass | yes (measurement prerequisite) |
 | 0 / 3e prerequisite | Controlled monitor and fixture geometry with preparation handshake | mixed-output/tiny tiled-view evidence discarded; fresh controlled baseline required | 14 accounting tests and controlled full validation benchmark pass | yes (measurement prerequisite) |
+| 0 exit | Five-run controlled baseline and three-run A/A | 16.78 ms / 58.1 → 16.64 ms / 57.6 (same build) | REVERT as required; primary noise 7.2% at 12 children, no guard regressions | yes (calibration only) |
 | 1 | wgpu `std` feature + validation off in benchmark | 82 ms / 11.8 → 21 ms / 44.9 (single run each) | measured before Phase 0 | yes (re-verify) |
 | 2a | Per-view `SwapchainTransientsVK` | 24.4 ms → 21.8 ms | 3 vs 5 runs, REGRESSED flag was unrelated code path (noise) | yes |
 | 2b | Cache swapchain image views | n/a -- measured 0.93 µs/call (~0.06% of frame budget) before implementing | not implemented | no (negligible win, real correctness hazard) |

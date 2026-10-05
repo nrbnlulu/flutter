@@ -401,6 +401,7 @@ def main() -> None:
           stderr=subprocess.STDOUT,
           env=environment,
       )
+      (work / "runner.pid").write_text(str(process.pid))
       deadline = time.monotonic() + args.timeout
       while True:
         running = process.poll() is None

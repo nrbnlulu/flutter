@@ -59,7 +59,10 @@ echo "pid=$pid" >> "$OUTPUT"
 
 # Locate the raster thread by comm name.
 until tid=$(for t in /proc/$pid/task/*; do
-               [[ "$(cat "$t/comm" 2>/dev/null)" == "FlutterRust.ras" ]] && basename "$t"
+               if [[ "$(cat "$t/comm" 2>/dev/null)" == "FlutterRust.ras" ]]; then
+                 basename "$t"
+                 break
+               fi
              done | head -1) && [[ -n "$tid" ]]; do
   sleep 0.05
   # Make sure process still alive.
@@ -80,8 +83,13 @@ fi
 # Collect stack snapshots.
 SLEEP_S=$(python3 -c 'import sys; print(int(sys.argv[1]) / 1000)' "$INTERVAL_MS")
 for i in $(seq 1 "$SAMPLES"); do
-  eu-stack -p "$pid" -m -i | awk -v t="TID $tid:" \
-    '$0==t{p=1;print;next} /^TID /{p=0} p' >> "$OUTPUT"
+  if ! eu-stack -p "$pid" -m -i | awk -v t="TID $tid:" \
+    '$0==t{p=1;print;next} /^TID /{p=0} p' >> "$OUTPUT"; then
+    # The final stage may finish before the requested sample count.
+    kill -0 "$pid" 2>/dev/null || break
+    echo "[sampler] eu-stack failed while the runner was alive" >&2
+    exit 1
+  fi
   echo "----" >> "$OUTPUT"
   sleep "$SLEEP_S"
 done

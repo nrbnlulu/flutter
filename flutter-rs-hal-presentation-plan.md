@@ -3,6 +3,12 @@
 Status: investigated, implementation not started. This design uses the pinned
 wgpu revision `014d9e84813a2946febfa4888694c0b70565b2f5`. Performance decisions
 remain subject to the gate in [the performance plan](flutter-rs-perf-plan.md).
+Measurement prerequisites are complete: the texture harness passes, all three
+resource/submission counters and CPU guards are recorded, and the controlled
+five-run baseline passes the independent A/A calibration. Uncontrolled tiled
+evidence was discarded after finding mixed refresh rates and tiny child sizes.
+See the performance plan and implementation log for the current baseline and
+its 7.2% primary noise at 12 children.
 
 ## Findings that change the approach
 
@@ -159,4 +165,6 @@ baseline, with no concurrent builds. Compare all specified guards and primary
 metrics; verify removed work with counters and a before/after raster profile.
 Run a 60-second bounded-resource check. Record results in both existing logs and
 commit each accepted experiment separately. The immediate next implementation
-work is the harness repair and measurement prerequisites, followed by experiment A.
+work is experiment A, using the frozen controlled baseline and bundle. Preserve
+the concurrent diagnostic edits outside this experiment's commit and make build
+provenance explicit before comparing another runner.

@@ -158,6 +158,41 @@ same way Linux's own flutter_tools integration followed its native runner.
 
 ## Implementation log
 
+### Phase 0 exit — controlled baseline and A/A calibration
+
+Five baseline runs and three independent same-build runs completed on DP-1
+(74.973 Hz), using the frozen runner at `/tmp/flutter-hal-baseline` and the
+controlled benchmark bundle. Evidence is at
+`/tmp/flutter-hal-controlled-baseline/run-{1..5}` and
+`/tmp/flutter-hal-controlled-aa/run-{1..3}`; the full comparison is
+`/tmp/flutter-hal-controlled-comparison.txt`.
+
+| Children | Baseline raster p50 | Raster p95 | Submissions/s/view | Raster p50 noise |
+|---|---|---|---|---|
+| 8 | 11.91 ms | 19.09 ms | 71.3 | 26.0% |
+| 12 | 16.78 ms | 20.31 ms | 58.1 | 7.2% |
+
+A/A reports **REVERT: no primary improvement beyond noise**, with no guard
+regressions. At 12 children the second set measures 16.64 ms p50 (-0.8%) and
+57.6 submissions/s/view. Baseline raster-thread CPU is 62.71% and fence-waiter
+CPU 36.96% at that stage. Counts remain six submits/frame (2 Rust + 4 C++),
+one image-view creation/frame and zero steady transient recreations.
+
+A separate profiling run (`/tmp/flutter-hal-controlled-profile`) captured 30
+raster stacks: 97% include NVIDIA driver code; 50% include `ioctl` and 37%
+`pthread_mutex_lock`. This confirms submission/driver contention still dominates.
+The sampler's raster-thread discovery was repaired after the live check exposed
+a `pipefail` loop issue. Benchmark evidence now includes an explicit runner PID.
+The profiling run is excluded from the acceptance datasets.
+
+Runner SHA-256:
+`21de056eede477940623a227289d70b9d0c6e61e6729cfb94b1fedeb6ed48767`.
+Runtime source is the ABI-v12 instrumentation build; the later geometry commit
+changes only the harness/bundle. Concurrent uncommitted `rust_shell.cc`
+diagnostics are outside these commits and are absent from the frozen runner.
+The next rendering experiment is HAL semaphore bridges (experiment A in the
+design note); no HAL rendering change has been implemented or accepted yet.
+
 ### Phase 3e prerequisite — controlled benchmark geometry
 
 Fresh repetitions exposed a measurement condition the old harness only
