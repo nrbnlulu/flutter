@@ -36,6 +36,10 @@ tracking. Its 3-run immediate-baseline comparison showed only a 1.7% raster-p50
 improvement at both 8 and 12 children, within noise, plus guard regressions.
 The extra submit therefore remains until a different synchronization design
 measures better.
+Phase 3c was also correctness-validated then reverted. It moved the wgpu
+acquire wait onto Impeller's first onscreen submit, including the batching
+flush path, but raster p50 remained within noise and 8-child present p95
+regressed by 20.5% beyond its 15% threshold.
 Validation for this change passed 32 Rust unit tests, 19 relevant framework
 tests, five benchmark-accounting tests, and the native 60-removal fixture with
 Vulkan validation forced. The native animated-texture screenshot check remains

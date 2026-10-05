@@ -216,11 +216,15 @@ render with the final barrier, and wgpu handoff/present), and fewer later.
   16.31 -> 16.04 ms (-1.7%, within ±8%). It also regressed 4-child raster p50
   by 5.6% (beyond ±5%), acquire p95 by 319% (beyond ±112%), and 8-child present
   p95 by 26.8% (beyond ±15%). Reverted under the measured-improvement rule.
-- **3c. Fold the acquire wait into the first submit.** Attach the acquire
-  semaphore wait to the first Impeller submission of that view's frame, using the
-  same extension, instead of the empty wait-only submit.
-  - Requires hooking where `RenderToTarget` submits, or prepending the wait to the
-    first command buffer.
+- **3c. Fold the acquire wait into the first submit — measured and reverted.**
+  Added a one-shot wait to `ContextVK::SubmitOnscreen`, so the semaphore from
+  wgpu acquisition was consumed by the first real onscreen Impeller submission;
+  the batching path attached it at its flush submission. The validation-forced
+  60-window lifecycle fixture passed (60 removals, 435 primary presentations,
+  no VUID diagnostics), but the 3-run immediate-baseline gate found no primary
+  improvement: 8-child raster p50 11.45 -> 11.84 ms (+3.4%, within ±5%),
+  12-child 16.31 -> 15.78 ms (-3.2%, within ±8%). 8-child present p95 regressed
+  20.5%, beyond its ±15% noise threshold. Reverted.
 - **3d. Remove the wgpu acquire clear pass.** It exists only so that wgpu's tracker
   waits on the swapchain acquire semaphore and marks the texture as initialized,
   but it also clears the whole image on the GPU, which Impeller then overwrites.
@@ -288,3 +292,4 @@ Each needs its own design note before it starts:
 | 2c | Semaphore pool | 21.57 ms → 22.10 ms (+2.5%, unchanged) | 3 vs 3 runs | no (no primary-metric improvement) |
 | 3a | Merge redundant layout barrier, fix wrong `oldLayout` | 21.57 ms → 15.23 ms (-29.4%) | 3 vs 3 runs, KEEP, no guard regressions | yes |
 | 3b | Signal render semaphore from tracked barrier submit | 16.31 ms → 16.04 ms (-1.7%) | 3 vs 3 runs, REVERT: no primary win; guard regressions | no |
+| 3c | Fold acquire wait into first Impeller submit | 16.31 ms → 15.78 ms (-3.2%) | 3 vs 3 runs, REVERT: no primary win; 8-child present p95 regressed | no |
