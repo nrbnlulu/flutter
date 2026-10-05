@@ -217,7 +217,11 @@ mod vulkan {
                     path.display()
                 )
             })?;
-            Ok(Self { file, count: 0, submits_this_frame: 0 })
+            Ok(Self {
+                file,
+                count: 0,
+                submits_this_frame: 0,
+            })
         }
 
         fn record(&mut self, width: u32, height: u32, timings: [u128; 4]) {

@@ -150,12 +150,29 @@ Each item is a separate experiment and is gated independently.
   - Verify with the recreation counter, which should drop to 0 per steady frame.
   - A previous attempt was measured only with validation on, so it is
     inconclusive and must be re-measured.
-- **2b. Cache swapchain image views.** Keep an image view per `VkImage` for each
-  view, invalidated when wgpu reconfigures the surface. Rust would report a
-  configuration generation with the image. This removes one create and one
-  destroy per view per frame.
-- **2c. Semaphore pool.** In the wgpu broker, recycle semaphore pairs once their
-  retired submission has completed, instead of destroying and recreating them.
+- **2b. Cache swapchain image views — measured and skipped.** `createImageViewUnique`
+  was timed directly with a temporary probe at the 12-child stage: mean 0.93 µs
+  over ~18,800 calls. That's about 13 µs/frame across 13 views, versus a ~16.7 ms
+  frame budget — not a meaningful contributor. It was also the one Phase 2 item
+  with a real correctness hazard: caching by `(view_id, VkImage)` needs a positive
+  reconfigure signal from Rust, because `acquire_image`'s `Outdated` branch calls
+  `surface.configure()` again (destroying and recreating every swapchain image)
+  **without the requested size changing**, so the existing `entry.size != frame_size`
+  check would not catch it. A stale cached view surviving that reconfigure, if the
+  driver reuses the same raw handle for a new image, is a dangling-handle bug, not
+  a perf regression. Given the gain is negligible, skip rather than add the ABI
+  generation counter this would need to be safe.
+- **2c. Semaphore pool — measured and reverted.** Implemented and gated: a
+  `sync_pool: Vec<FrameSync>` reused the retired pair the steady-state overlap
+  eviction already waits on, instead of destroying it, with the creation call
+  site popping from the pool before falling back to `vkCreateSemaphore`. Passed
+  the 60-window lifecycle test under forced validation (no semaphore lifetime
+  errors). Gated result: 8-child raster p50 15.33 -> 15.19ms (-0.9%, within
+  ±7% noise), 12-child raster p50 21.57 -> 22.10ms (+2.5%, unchanged) — no
+  primary-metric improvement, so per the keep/revert rule this was reverted.
+  Same conclusion as 2b: `vkCreateSemaphore`/`vkDestroySemaphore` are cheap
+  relative to the actual submission cost; the bottleneck is the submissions
+  themselves (Phase 3), not the per-frame object churn around them.
 - **2d. Command and descriptor pool reuse.** `DisposeThreadLocalCachedResources()`
   currently runs twice per view: in `AcquireFrame` and in `RenderToTarget`'s
   cleanup. Run it once per engine frame instead, for example only on the
@@ -170,11 +187,25 @@ The profile shows submission ioctls and driver-lock contention dominate.
 Today there are about 7 submits per view; the goal is 3 (wgpu acquire, Impeller
 render with the final barrier, and wgpu handoff/present), and fewer later.
 
-- **3a. Merge the two layout barriers.** The submit callback transitions the image
-  to `COLOR_ATTACHMENT_OPTIMAL`, and `PresentImage` then transitions it to
-  `PRESENT_SRC_KHR` in another command buffer. Do the single
-  `COLOR_ATTACHMENT → PRESENT_SRC_KHR` transition once, from a Rust-shell-specific
-  submit path, and delete the redundant one.
+- **3a. Merge the two layout barriers — measured and kept.** These were not
+  actually redundant/mergeable no-ops: `GPUSurfaceVulkanImpeller`'s submit
+  callback transitioned `eGeneral -> eColorAttachmentOptimal` (tracked, via
+  `TextureSourceVK::SetLayout`), purely so that `RustVulkanPresentation::
+  PresentImage`'s hand-built barrier -- which hardcodes `oldLayout =
+  eColorAttachmentOptimal` and bypasses Impeller's layout tracking entirely --
+  would hold. Tracing `render_pass_vk.cc`'s `is_swapchain` branch (which
+  mirrors the Vulkan render pass's actual `finalLayout`) showed the real
+  post-render layout for a swapchain color/resolve attachment is `eGeneral`,
+  not `eColorAttachmentOptimal`. Deleted the fixup barrier+submit entirely and
+  changed `PresentImage`'s barrier to transition `eGeneral -> ePresentSrcKHR`
+  directly -- one real, correct barrier instead of two, with no new Impeller
+  API needed. Validated with the 60-window lifecycle test under forced Vulkan
+  validation (413 presentations, no VUID errors -- notably including
+  `VUID-vkCmdDraw-None-09600`, the exact failure mode this change risked) and
+  a visual check of rendered output. Gated result: 8-child raster p50
+  15.33 -> 10.97ms (-28.4%), 12-child raster p50 21.57 -> 15.23ms (-29.4%),
+  8-child process CPU% 109.6% -> 90.5% (-17.4%), present p95 dropped from
+  ~0.24ms to ~0.10ms across every stage. No guard regressions. Kept.
 - **3b. Signal on a real submit.** Attach the render semaphore to the barrier
   submit from 3a, which removes the signal-only submit.
   - This needs a small fork-local Impeller extension: a `CommandQueueVK` submit
@@ -247,3 +278,7 @@ Each needs its own design note before it starts:
 | Phase | Change | Baseline → candidate (12-child raster p50, submissions/s) | Gate | Kept? |
 |---|---|---|---|---|
 | 1 | wgpu `std` feature + validation off in benchmark | 82 ms / 11.8 → 21 ms / 44.9 (single run each) | measured before Phase 0 | yes (re-verify) |
+| 2a | Per-view `SwapchainTransientsVK` | 24.4 ms → 21.8 ms | 3 vs 5 runs, REGRESSED flag was unrelated code path (noise) | yes |
+| 2b | Cache swapchain image views | n/a -- measured 0.93 µs/call (~0.06% of frame budget) before implementing | not implemented | no (negligible win, real correctness hazard) |
+| 2c | Semaphore pool | 21.57 ms → 22.10 ms (+2.5%, unchanged) | 3 vs 3 runs | no (no primary-metric improvement) |
+| 3a | Merge redundant layout barrier, fix wrong `oldLayout` | 21.57 ms → 15.23 ms (-29.4%) | 3 vs 3 runs, KEEP, no guard regressions | yes |
