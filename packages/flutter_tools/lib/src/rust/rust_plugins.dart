@@ -19,6 +19,11 @@ import 'native_libraries.dart';
 
 const rustPluginDependenciesBegin = '# === BEGIN FLUTTER GENERATED RUST PLUGINS ===';
 const rustPluginDependenciesEnd = '# === END FLUTTER GENERATED RUST PLUGINS ===';
+
+/// Version of the tool-owned runner files generated from `templates/rust_shell`.
+/// Keep in sync with the `flutter-rust-runner-version` marker in the templates.
+const rustRunnerVersion = 2;
+const _rustRunnerVersionMarker = '// flutter-rust-runner-version: ';
 const _rustShellBundleUrl =
     'https://github.com/nrbnlulu/flutter/releases/download/BETA/flutter-rust-linux-x64.tar.gz';
 
@@ -77,6 +82,7 @@ Future<void> refreshRustPlugins(
   }
 
   await _ensureRustShellSdk(project);
+  _regenerateRunnerIfOutdated(project, runner);
 
   final bool useSharedResources =
       packageGraph != null && packageGraph.dependencies.containsKey(project.manifest.appName);
@@ -317,13 +323,15 @@ Future<void> _ensureRustShellSdk(FlutterProject project) async {
     ),
   );
   if (localShell.childDirectory('crates').existsSync()) {
-    if (!sdkWorkspaceManifest.existsSync() || !sdkManifest.existsSync()) {
-      sdk.createSync(recursive: true);
-      localShell.childFile('Cargo.toml').copySync(sdkWorkspaceManifest.path);
-      localShell.childFile('Cargo.lock').copySync(sdk.childFile('Cargo.lock').path);
-      _replaceLink(sdk.childLink('crates'), localShell.childDirectory('crates').path);
-      _replaceLink(sdk.childLink('third_party'), localShell.childDirectory('third_party').path);
-    }
+    // Always re-sync with the local checkout: an SDK directory created
+    // earlier (from another checkout or the downloaded bundle) would
+    // otherwise keep Rust crates that no longer match the engine library
+    // linked below, which fails at runtime with a misaligned shell ABI.
+    sdk.createSync(recursive: true);
+    _copyIfChanged(localShell.childFile('Cargo.toml'), sdkWorkspaceManifest);
+    _copyIfChanged(localShell.childFile('Cargo.lock'), sdk.childFile('Cargo.lock'));
+    _replaceLink(sdk.childLink('crates'), localShell.childDirectory('crates').path);
+    _replaceLink(sdk.childLink('third_party'), localShell.childDirectory('third_party').path);
     final Directory outDir = globals.fs.directory(
       globals.fs.path.join(Cache.flutterRoot!, 'engine', 'src', 'out'),
     );
@@ -371,6 +379,55 @@ Future<void> _ensureRustShellSdk(FlutterProject project) async {
       !engineLibrary.existsSync()) {
     throwToolExit('The Flutter Rust shell BETA SDK archive is incomplete.');
   }
+}
+
+void _copyIfChanged(File source, File destination) {
+  if (destination.existsSync() && destination.readAsStringSync() == source.readAsStringSync()) {
+    return;
+  }
+  source.copySync(destination.path);
+}
+
+/// Regenerates the tool-owned runner files (`build.rs`, `src/main.rs`) when
+/// their `flutter-rust-runner-version` marker is absent or differs from
+/// [rustRunnerVersion], e.g. for projects created by an older Flutter tool.
+///
+/// Bump [rustRunnerVersion] and the marker in the templates whenever the
+/// runner must change in lockstep with the SDK or engine.
+void _regenerateRunnerIfOutdated(FlutterProject project, Directory runner) {
+  final File buildScript = runner.childFile('build.rs');
+  final File main = runner.childDirectory('src').childFile('main.rs');
+  const marker = '$_rustRunnerVersionMarker$rustRunnerVersion';
+  bool isCurrent(File file) =>
+      file.existsSync() &&
+      RegExp('${RegExp.escape(marker)}\\s*\$', multiLine: true).hasMatch(file.readAsStringSync());
+  if (isCurrent(buildScript) && isCurrent(main)) {
+    return;
+  }
+
+  final Directory templates = globals.fs.directory(
+    globals.fs.path.join(
+      Cache.flutterRoot!,
+      'packages',
+      'flutter_tools',
+      'templates',
+      'rust_shell',
+      'runner-rs',
+    ),
+  );
+  final File buildTemplate = templates.childFile('build.rs.tmpl');
+  final File mainTemplate = templates.childDirectory('src').childFile('main.rs.tmpl');
+  if (!buildTemplate.existsSync() || !mainTemplate.existsSync()) {
+    return;
+  }
+  buildScript.writeAsStringSync(buildTemplate.readAsStringSync());
+  main.createSync(recursive: true);
+  main.writeAsStringSync(
+    mainTemplate.readAsStringSync().replaceAll('{{projectName}}', project.manifest.appName),
+  );
+  globals.logger.printStatus(
+    'Regenerated runner-rs/build.rs and runner-rs/src/main.rs (runner version $rustRunnerVersion).',
+  );
 }
 
 /// Symlinks a local `out/host_<profile>` engine build's library and ICU data
