@@ -106,6 +106,17 @@ class _WindowingBenchmarkState extends State<_WindowingBenchmark>
       setState(() => windows.addAll(stage));
       await WidgetsBinding.instance.endOfFrame.timeout(const Duration(seconds: 10));
       final List<int> viewIds = stage.map((controller) => controller.rootView.viewId).toList();
+      if (Platform.environment['FLUTTER_RUST_WINDOWING_BENCHMARK_CONTROL_GEOMETRY'] == '1') {
+        report('prepare', count, viewIds, 0);
+        final File ready = File('${status.path}.ready-$count');
+        final DateTime deadline = DateTime.now().add(const Duration(seconds: 10));
+        while (!ready.existsSync()) {
+          if (DateTime.now().isAfter(deadline)) {
+            throw StateError('Benchmark window placement timed out');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+      }
       await Future<void>.delayed(const Duration(seconds: 2));
       timings.clear();
       final int timingStart = developer.Timeline.now;

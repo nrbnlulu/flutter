@@ -82,9 +82,15 @@ bool GPUSurfaceVulkanImpeller::IsValid() {
 
 // |Surface|
 void GPUSurfaceVulkanImpeller::SetActiveViewId(int64_t view_id) {
+  active_view_id_ = view_id;
   if (delegate_) {
     delegate_->SetActiveViewId(view_id);
   }
+}
+
+// |Surface|
+void GPUSurfaceVulkanImpeller::CollectView(int64_t view_id) {
+  view_transients_.erase(view_id);
 }
 
 // |Surface|
@@ -201,17 +207,21 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
     }
 
     impeller::ISize frame_size{size.width, size.height};
-    if (transients_ == nullptr || transients_size_ != frame_size) {
-      transients_ = std::make_shared<impeller::SwapchainTransientsVK>(
+    auto& entry = view_transients_[active_view_id_];
+    const bool recreated_transients =
+        entry.transients == nullptr || entry.size != frame_size;
+    if (recreated_transients) {
+      entry.transients = std::make_shared<impeller::SwapchainTransientsVK>(
           impeller_context_, desc,
           /*enable_msaa=*/true);
-      transients_size_ = frame_size;
+      entry.size = frame_size;
     }
+    delegate_->RecordFrameResources(recreated_transients);
 
     auto wrapped_onscreen = std::make_shared<WrappedTextureSourceVK>(
         vk_image, std::move(image_view), desc);
     auto surface = impeller::SurfaceVK::WrapSwapchainImage(
-        transients_, wrapped_onscreen, [&]() -> bool { return true; });
+        entry.transients, wrapped_onscreen, [&]() -> bool { return true; });
     impeller::RenderTarget render_target = surface->GetRenderTarget();
     auto cull_rect =
         impeller::Rect::MakeSize(render_target.GetRenderTargetSize());
@@ -239,44 +249,21 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
       );
     };
 
+    // The swapchain image's real (and Impeller-tracked) layout after
+    // RenderToTarget is eGeneral, not eColorAttachmentOptimal -- see the
+    // is_swapchain branch of RenderPassVK's color/resolve attachment
+    // bookkeeping in render_pass_vk.cc, which mirrors the render pass's
+    // actual finalLayout. A previous version of this callback inserted an
+    // extra barrier+submit here to transition eGeneral -> eColorAttachment-
+    // Optimal purely so PresentImage's hardcoded oldLayout assumption would
+    // hold; PresentImage now transitions directly from eGeneral instead, so
+    // that fixup is gone. wrapped_onscreen is still kept alive for this
+    // frame via encode_callback's render_target capture, so it is
+    // intentionally not captured here anymore.
     SurfaceFrame::SubmitCallback submit_callback =
-        [image = flutter_image, delegate = delegate_,
-         impeller_context = impeller_context_,
-         wrapped_onscreen](const SurfaceFrame&) -> bool {
+        [image = flutter_image,
+         delegate = delegate_](const SurfaceFrame&) -> bool {
       TRACE_EVENT0("flutter", "GPUSurfaceVulkan::PresentImage");
-
-      {
-        const auto& context = impeller::ContextVK::Cast(*impeller_context);
-
-        //----------------------------------------------------------------------------
-        /// Transition the image to color-attachment-optimal.
-        ///
-        auto cmd_buffer = context.CreateCommandBuffer();
-
-        auto vk_final_cmd_buffer =
-            impeller::CommandBufferVK::Cast(*cmd_buffer).GetCommandBuffer();
-        {
-          impeller::BarrierVK barrier;
-          barrier.new_layout =
-              impeller::vk::ImageLayout::eColorAttachmentOptimal;
-          barrier.cmd_buffer = vk_final_cmd_buffer;
-          barrier.src_access =
-              impeller::vk::AccessFlagBits::eColorAttachmentWrite;
-          barrier.src_stage =
-              impeller::vk::PipelineStageFlagBits::eColorAttachmentOutput;
-          barrier.dst_access = {};
-          barrier.dst_stage =
-              impeller::vk::PipelineStageFlagBits::eBottomOfPipe;
-
-          if (!wrapped_onscreen->SetLayout(barrier).ok()) {
-            return false;
-          }
-        }
-        if (!context.GetCommandQueue()->Submit({cmd_buffer}).ok()) {
-          return false;
-        }
-      }
-
       return delegate->PresentImage(reinterpret_cast<VkImage>(image.image),
                                     static_cast<VkFormat>(image.format));
     };

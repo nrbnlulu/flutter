@@ -19,7 +19,7 @@ extern "C" {
 
 // This private ABI is lockstep-versioned with the Flutter fork. It is not the
 // Flutter Embedder API and is never exposed to application plugins.
-#define FLUTTER_RUST_SHELL_ABI_VERSION 11u
+#define FLUTTER_RUST_SHELL_ABI_VERSION 12u
 #define FLUTTER_RUST_PLUGIN_SDK_API_VERSION 1u
 
 typedef struct FlutterRustShellAbi {
@@ -233,6 +233,10 @@ typedef struct FlutterRustVulkanImage {
   // Binary semaphore signalled after Impeller's last submission. The broker
   // makes its final wgpu/present submission wait on it.
   uint64_t render_semaphore;
+  // Successful C++ graphics-queue submissions between acquire and present.
+  uint64_t cpp_submits;
+  uint64_t image_views;
+  uint64_t transients;
 } FlutterRustVulkanImage;
 
 typedef int (*FlutterRustAcquireVulkanImageCallback)(

@@ -42,6 +42,7 @@ class RustVulkanPresentation final : public GPUSurfaceVulkanDelegate {
   // |GPUSurfaceVulkanDelegate|
   const vulkan::VulkanProcTable& vk() override;
   void SetActiveViewId(int64_t view_id) override;
+  void RecordFrameResources(bool recreated_transients) override;
   FlutterVulkanImage AcquireImage(const DlISize& size) override;
   bool PresentImage(VkImage image, VkFormat format) override;
 
@@ -49,6 +50,9 @@ class RustVulkanPresentation final : public GPUSurfaceVulkanDelegate {
     FlutterRustVulkanPresentationCallbacks callbacks;
     VkSemaphore acquire_semaphore = VK_NULL_HANDLE;
     VkSemaphore render_semaphore = VK_NULL_HANDLE;
+    uint64_t submission_start = 0;
+    uint64_t image_views = 0;
+    uint64_t transients = 0;
   };
 
   fml::RefPtr<vulkan::VulkanProcTable> vk_;

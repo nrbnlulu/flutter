@@ -203,6 +203,9 @@ mod vulkan {
     struct PresentationStats {
         file: File,
         count: u64,
+        /// Rust bridge submissions made this frame. record() adds the C++
+        /// graphics-queue count and resets this after each presentation.
+        submits_this_frame: u32,
     }
 
     impl PresentationStats {
@@ -213,14 +216,33 @@ mod vulkan {
                     path.display()
                 )
             })?;
-            Ok(Self { file, count: 0 })
+            Ok(Self {
+                file,
+                count: 0,
+                submits_this_frame: 0,
+            })
         }
 
-        fn record(&mut self, width: u32, height: u32, timings: [u128; 4]) {
+        fn record(
+            &mut self,
+            width: u32,
+            height: u32,
+            timings: [u128; 4],
+            image: FlutterRustVulkanImage,
+        ) {
             self.count += 1;
+            let rust_submits = self.submits_this_frame;
+            let FlutterRustVulkanImage {
+                cpp_submits,
+                image_views,
+                transients,
+                ..
+            } = image;
+            let submits = u64::from(rust_submits) + cpp_submits;
+            self.submits_this_frame = 0;
             let _ = writeln!(
                 self.file,
-                "{} {width} {height} {} {} {} {}",
+                "{} {width} {height} {} {} {} {} submits={submits} rust_submits={rust_submits} cpp_submits={cpp_submits} image_views={image_views} transients={transients}",
                 self.count, timings[0], timings[1], timings[2], timings[3]
             );
             let _ = self.file.flush();
@@ -1344,6 +1366,9 @@ mod vulkan {
             };
             queue.add_signal_semaphore(sync.acquire, None);
             self.context.queue.submit([encoder.finish()]);
+            if let Some(stats) = &self.presentation_stats {
+                stats.lock().submits_this_frame += 1;
+            }
             state.pending_frame = Some(PendingFrame {
                 texture: surface_texture,
                 sync,
@@ -1360,7 +1385,7 @@ mod vulkan {
 
         /// Presents the frame most recently returned by [`Self::acquire_image`].
         ///
-        pub fn present_image(&self) -> bool {
+        pub fn present_image(&self, image: FlutterRustVulkanImage) -> bool {
             let started = self.presentation_stats.as_ref().map(|_| Instant::now());
             self.context.assert_gpu_thread();
             let mut state = self.surface_state.lock();
@@ -1419,6 +1444,9 @@ mod vulkan {
                 ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             );
             let submission = self.context.queue.submit([encoder.finish()]);
+            if let Some(stats) = &self.presentation_stats {
+                stats.lock().submits_this_frame += 1;
+            }
             // Wayland frame callbacks must only be armed when a surface commit
             // is guaranteed. Doing this at the earlier vsync pulse can freeze
             // redraw delivery when Flutter requested a secondary vsync that
@@ -1439,6 +1467,7 @@ mod vulkan {
                         started.map_or(0, |t| t.elapsed().as_micros()),
                         present_us,
                     ],
+                    image,
                 );
             }
             state.retired_frames.push_back(RetiredFrame {
@@ -1629,6 +1658,9 @@ mod vulkan {
                         format: image.format,
                         acquire_semaphore: image.acquire_semaphore,
                         render_semaphore: image.render_semaphore,
+                        cpp_submits: 0,
+                        image_views: 0,
+                        transients: 0,
                     };
                 }
                 1
@@ -1639,11 +1671,11 @@ mod vulkan {
 
     extern "C" fn present_image_callback(
         user_data: *mut c_void,
-        _image: FlutterRustVulkanImage,
+        image: FlutterRustVulkanImage,
     ) -> i32 {
         // SAFETY: see acquire_image_callback.
         let broker = unsafe { &*user_data.cast::<GpuBroker>() };
-        i32::from(broker.present_image())
+        i32::from(broker.present_image(image))
     }
 
     #[cfg(test)]

@@ -16,12 +16,35 @@ The debug benchmark on this machine sustained about 60 implicit-view submissions
 per second with 1 through 12 static children, with native main-thread CPU around
 4–6% of one core (previously about 97–99% with dirty-view compositing alone).
 With all views animated, five children sustained about 60 submissions per second,
-but eight and twelve still fell to about 32 and 15 respectively. These are debug
-measurements with compositor-assigned window sizes, not release guarantees.
-Per-view acquire/present timing and process/thread accounting now retain evidence
-for that remaining raster-phase bottleneck. Disabling wgpu's debug/validation
-flags alone did not remove it. Do not infer active validation layers solely from
-whether their shared libraries appear in process maps.
+but eight and twelve still fell to about 28 and 12 respectively. Raster-thread stack
+sampling showed that most of this was the Khronos validation layer. Debug builds
+enable it through wgpu's `InstanceFlags::default()`, and because Impeller shares
+the instance, it also intercepts every Impeller call. An earlier note claimed that
+disabling wgpu validation did not help, but that was wrong: wgpu was built without
+its `std` feature, so `WGPU_VALIDATION=0`/`WGPU_DEBUG=0` were silently ignored.
+With `std` enabled and validation disabled, eight and twelve children sustain about
+67 and 45 submissions per second (12-child raster p95 drops from 125 ms to 30 ms).
+`benchmark_windowing.py` now disables wgpu validation unless `--validation` is
+passed. The remaining per-view cost is NVIDIA driver submission work. The phased
+plan in [`flutter-rs-perf-plan.md`](flutter-rs-perf-plan.md) addresses it. These
+are debug measurements with compositor-assigned window sizes, not release
+guarantees.
+Phase 3b of that plan was implemented and correctness-validated, but reverted:
+signalling the wgpu render semaphore from the tracked Impeller barrier submit
+removed the signal-only submit while preserving `FenceWaiterVK` lifetime
+tracking. Its 3-run immediate-baseline comparison showed only a 1.7% raster-p50
+improvement at both 8 and 12 children, within noise, plus guard regressions.
+The extra submit therefore remains until a different synchronization design
+measures better.
+Phase 3c was also correctness-validated then reverted. It moved the wgpu
+acquire wait onto Impeller's first onscreen submit, including the batching
+flush path, but raster p50 remained within noise and 8-child present p95
+regressed by 20.5% beyond its 15% threshold.
+Phase 3d changed the wgpu acquire handoff from a transparent clear to
+`LoadOp::Load`. The Vulkan lifecycle fixture passed, but the required texture
+fixture reached texture initialization and pixel capture before failing its
+window cleanup/runner-exit step. It was reverted without performance
+measurement because the correctness gate did not pass.
 Validation for this change passed 32 Rust unit tests, 19 relevant framework
 tests, five benchmark-accounting tests, and the native 60-removal fixture with
 Vulkan validation forced. The native animated-texture screenshot check remains
@@ -134,6 +157,108 @@ same way Linux's own flutter_tools integration followed its native runner.
 | CPU pixel-buffer texture | Linux runtime path complete | `PixelBufferTexture` reserves one of three reusable shell-owned RGBA8 buffers through the same bounded channel/backpressure model. `write_pixels` lends the plugin that allocation and its row stride directly, eliminating a plugin-to-shell CPU copy; acquire performs the unavoidable wgpu CPU-to-GPU upload into the existing Vulkan external-texture ring. Registration, notification, freeze, release, unregister, and teardown reuse the proven hardware-texture seam. The permanent Dart fixture passes under Vulkan validation with changing pixels. |
 
 ## Implementation log
+
+### Phase 0 exit — controlled baseline and A/A calibration
+
+Five baseline runs and three independent same-build runs completed on DP-1
+(74.973 Hz), using the frozen runner at `/tmp/flutter-hal-baseline` and the
+controlled benchmark bundle. Evidence is at
+`/tmp/flutter-hal-controlled-baseline/run-{1..5}` and
+`/tmp/flutter-hal-controlled-aa/run-{1..3}`; the full comparison is
+`/tmp/flutter-hal-controlled-comparison.txt`.
+
+| Children | Baseline raster p50 | Raster p95 | Submissions/s/view | Raster p50 noise |
+|---|---|---|---|---|
+| 8 | 11.91 ms | 19.09 ms | 71.3 | 26.0% |
+| 12 | 16.78 ms | 20.31 ms | 58.1 | 7.2% |
+
+A/A reports **REVERT: no primary improvement beyond noise**, with no guard
+regressions. At 12 children the second set measures 16.64 ms p50 (-0.8%) and
+57.6 submissions/s/view. Baseline raster-thread CPU is 62.71% and fence-waiter
+CPU 36.96% at that stage. Counts remain six submits/frame (2 Rust + 4 C++),
+one image-view creation/frame and zero steady transient recreations.
+
+A separate profiling run (`/tmp/flutter-hal-controlled-profile`) captured 30
+raster stacks: 97% include NVIDIA driver code; 50% include `ioctl` and 37%
+`pthread_mutex_lock`. This confirms submission/driver contention still dominates.
+The sampler's raster-thread discovery was repaired after the live check exposed
+a `pipefail` loop issue. Benchmark evidence now includes an explicit runner PID.
+The profiling run is excluded from the acceptance datasets.
+
+Runner SHA-256:
+`21de056eede477940623a227289d70b9d0c6e61e6729cfb94b1fedeb6ed48767`.
+Runtime source is the ABI-v12 instrumentation build; the later geometry commit
+changes only the harness/bundle. Concurrent uncommitted `rust_shell.cc`
+diagnostics are outside these commits and are absent from the frozen runner.
+The next rendering experiment is HAL semaphore bridges (experiment A in the
+design note); no HAL rendering change has been implemented or accepted yet.
+
+### Phase 3e prerequisite — controlled benchmark geometry
+
+Fresh repetitions exposed a measurement condition the old harness only
+observed: Hyprland placed some children on 60 Hz HDMI-A-1 and others on 75 Hz
+DP-1, and tiling squeezed children down to 1×-6 compositor-reported sizes.
+Evidence at `/tmp/flutter-hal-baseline-runs` is unsuitable as a HAL baseline;
+the fourth run was interrupted and these datasets must not gate an experiment.
+
+The harness now arranges only its own windows on a selected monitor (`--monitor`,
+defaulting to the initially focused output), with a non-overlapping grid of
+320×240 children and a 640×480 implicit view. Dart waits for placement to
+complete, then warms up for two seconds. Start/end checks reject mixed outputs,
+wrong sizes, hidden/tiled windows or changing monitor/geometry, and the
+comparator refuses differing scenes across repetitions or builds. No desktop
+configuration is changed. Historical tiled-run numbers are not directly
+comparable with this controlled workload.
+
+Fourteen accounting tests pass; the controlled five-stage benchmark completes
+under forced Vulkan validation without diagnostics
+(`/tmp/flutter-hal-fixed-validation`). Fresh baseline calibration follows.
+
+### Phase 3e prerequisite — complete benchmark accounting
+
+The private bridge is ABI v12: C++ reports successful graphics-queue submits,
+swapchain image-view creations and transient recreations to Rust's presentation
+stats. Total submissions now include the two Rust bridge submits and all C++
+submits during that view's acquire-to-present interval. Initial validation
+evidence confirms six submits per presented frame (2 Rust + 4 C++), one image
+view per frame, and zero transient recreations once view sizes stabilize.
+
+The benchmark supports `--repeat` (default 3), refuses locked or unverifiable
+graphical sessions, and records runner/kernel hashes alongside monitor/window
+snapshots. The comparator rejects partial runs or missing/nonfinite metrics,
+adds raster/fence-waiter CPU guards, reports 8-/12-child submissions/s/view,
+and checks native timing guards across all views. The stack sampler now has a
+checked repository-owned ptracer exec wrapper and explicit status/PID options.
+Profiling remains separate from acceptance measurements.
+
+Validation: build and workspace Rust tests pass; 13 accounting tests pass;
+forced-validation lifecycle passes 60 removals/419 presentations; wgpu texture
+and CPU pixel-buffer fixtures pass (20/23 presentations). The full five-stage
+validation benchmark also completes without diagnostics
+(`/tmp/flutter-hal-validation`). Baseline repetition is being established
+before experiment A.
+
+### Phase 3e prerequisite — texture harness compatibility
+
+Updated the texture fixture to select Hyprland's Lua window dispatchers when
+available, with exact window-address selectors and checked command results.
+Legacy dispatch remains available for older compositors. Failed runs preserve
+their logs and screenshots. The unchanged renderer, rebuilt from current source,
+passes `task test-rust-shell-texture` (18 presentations, changing pixels and
+clean exit). This corrects the harness failure behind the inconclusive 3d run.
+
+### Phase 3e — HAL presentation investigation (no runtime change)
+
+Added [the HAL presentation design](flutter-rs-hal-presentation-plan.md), based
+on the pinned wgpu source. Public HAL submission owns private WSI semaphore and
+fence bookkeeping; bypassing core removes render passes but does not by itself
+eliminate semaphore bridge submissions. The design separates those experiments
+and specifies retirement, cancellation, queue serialization and Android scope.
+The Phase 3d texture failure was previously misinterpreted: captured Hyprland
+output showed dispatch syntax rejection, not proof of an already-closed window.
+Its rendering result remains inconclusive. The next implementation steps are
+harness compatibility and complete submission/CPU instrumentation before a new
+baseline and HAL experiment.
 
 ### Phase 0 — PlatformView seam
 

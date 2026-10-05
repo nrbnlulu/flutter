@@ -195,6 +195,9 @@ void Rasterizer::CollectView(int64_t view_id) {
   if (external_view_embedder_) {
     external_view_embedder_->CollectView(view_id);
   }
+  if (surface_) {
+    surface_->CollectView(view_id);
+  }
   view_records_.erase(view_id);
 }
 
