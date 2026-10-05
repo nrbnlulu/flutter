@@ -244,6 +244,11 @@ render with the final barrier, and wgpu handoff/present), and fewer later.
 
   Verify pixels with the texture screenshot test.
 - **3e. Stretch goal: drive acquire and present through `wgpu-hal` directly.**
+  - Investigation and implementation sequence:
+    [HAL presentation design](flutter-rs-hal-presentation-plan.md). Public HAL
+    APIs can remove the two render passes with semaphore bridges, but removing
+    the bridge submissions requires additional swapchain ownership work.
+    Repair the texture harness and complete measurement prerequisites first.
   This bypasses wgpu-core's tracker for borrowed swapchain images, so the
   acquire and handoff render passes disappear entirely.
   - Larger change; only attempt it if 3a–3d leave the target unmet.

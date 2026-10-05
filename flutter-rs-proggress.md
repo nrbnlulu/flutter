@@ -158,6 +158,28 @@ same way Linux's own flutter_tools integration followed its native runner.
 
 ## Implementation log
 
+### Phase 3e prerequisite — texture harness compatibility
+
+Updated the texture fixture to select Hyprland's Lua window dispatchers when
+available, with exact window-address selectors and checked command results.
+Legacy dispatch remains available for older compositors. Failed runs preserve
+their logs and screenshots. The unchanged renderer, rebuilt from current source,
+passes `task test-rust-shell-texture` (18 presentations, changing pixels and
+clean exit). This corrects the harness failure behind the inconclusive 3d run.
+
+### Phase 3e — HAL presentation investigation (no runtime change)
+
+Added [the HAL presentation design](flutter-rs-hal-presentation-plan.md), based
+on the pinned wgpu source. Public HAL submission owns private WSI semaphore and
+fence bookkeeping; bypassing core removes render passes but does not by itself
+eliminate semaphore bridge submissions. The design separates those experiments
+and specifies retirement, cancellation, queue serialization and Android scope.
+The Phase 3d texture failure was previously misinterpreted: captured Hyprland
+output showed dispatch syntax rejection, not proof of an already-closed window.
+Its rendering result remains inconclusive. The next implementation steps are
+harness compatibility and complete submission/CPU instrumentation before a new
+baseline and HAL experiment.
+
 ### Phase 0 — PlatformView seam
 
 - Added `engine/src/flutter/shell/platform/rust/`.
