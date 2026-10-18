@@ -6,6 +6,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
   material_ui: ^1.1.0
   vector_math: ^2.2.0
 
@@ -17,4 +19,4 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 
-# PUBSPEC CHECKSUM: 57nl77
+# PUBSPEC CHECKSUM: l3870m

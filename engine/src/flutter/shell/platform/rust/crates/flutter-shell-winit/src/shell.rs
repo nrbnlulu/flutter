@@ -43,7 +43,7 @@ use flutter_shell_core::{
 use flutter_shell_wgpu::GpuBroker;
 use flutter_shell_wgpu::{GpuContext, WgpuTextureRing};
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize, de::IgnoredAny};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::ffi::CString;
 use std::{
@@ -1659,7 +1659,13 @@ impl<'a> StandardCodecDecoder<'a> {
 }
 
 #[derive(Deserialize)]
-struct SetClientArguments(TextInputClientId, IgnoredAny);
+#[serde(rename_all = "camelCase")]
+struct TextInputConfiguration {
+    input_action: String,
+}
+
+#[derive(Deserialize)]
+struct SetClientArguments(TextInputClientId, TextInputConfiguration);
 
 #[derive(Deserialize)]
 struct RectArguments {
@@ -1671,7 +1677,7 @@ struct RectArguments {
 
 #[derive(Debug, Clone, PartialEq)]
 enum TextInputCommand {
-    SetClient(TextInputClientId),
+    SetClient(TextInputClientId, String),
     SetEditingState(TextEditingState),
     Show,
     Hide,
@@ -1739,8 +1745,9 @@ impl TextInputCommand {
         let call: RawMethodCall = serde_json::from_slice(message).ok()?;
         match call.method.as_str() {
             "TextInput.setClient" => {
-                let SetClientArguments(client_id, _) = serde_json::from_value(call.args).ok()?;
-                Some(Self::SetClient(client_id))
+                let SetClientArguments(client_id, configuration) =
+                    serde_json::from_value(call.args).ok()?;
+                Some(Self::SetClient(client_id, configuration.input_action))
             }
             "TextInput.setEditingState" => {
                 let state: TextEditingState = serde_json::from_value(call.args).ok()?;
@@ -1776,6 +1783,8 @@ struct TextInputInbox {
     texture_fixture_messages: Mutex<VecDeque<String>>,
     wake_proxy: HostEventSender,
     exit: Arc<ApplicationExitCoordinator>,
+    #[cfg(target_os = "linux")]
+    clipboard: Mutex<Option<arboard::Clipboard>>,
 }
 struct ApplicationExitCoordinator {
     initialized: AtomicBool,
@@ -1819,6 +1828,8 @@ impl TextInputInbox {
                 pending: AtomicBool::new(false),
                 wake_proxy,
             }),
+            #[cfg(target_os = "linux")]
+            clipboard: Mutex::new(None),
         }
     }
     fn callbacks(&self) -> FlutterRustPlatformMessageCallbacks {
@@ -1869,6 +1880,19 @@ extern "C" fn handle_platform_message(
         if is_initialization_complete(message) {
             inbox.exit.initialized.store(true, Ordering::Release);
             return FlutterRustPlatformMessageDisposition::Success;
+        }
+        #[cfg(target_os = "linux")]
+        if let Ok(call) = serde_json::from_slice::<RawMethodCall>(message)
+            && let Some(envelope) = handle_linux_clipboard_call(inbox, &call)
+        {
+            if response_handle.0.is_null() {
+                return FlutterRustPlatformMessageDisposition::Success;
+            }
+            complete_cpp_platform_message(
+                PendingPlatformResponse(response_handle.0 as usize),
+                &envelope,
+            );
+            return FlutterRustPlatformMessageDisposition::Pending;
         }
         #[cfg(target_os = "android")]
         if let Ok(call) = serde_json::from_slice::<RawMethodCall>(message)
@@ -2018,6 +2042,7 @@ fn send_cancelable_exit_request(
 #[derive(Default)]
 struct TextInputSession {
     active_client: Option<TextInputClientId>,
+    input_action: String,
     editing_state: TextEditingState,
     ime_allowed: bool,
     cursor_rect: Option<TextInputRect>,
@@ -2071,8 +2096,9 @@ impl TextInputSession {
 
     fn apply(&mut self, command: TextInputCommand) -> Option<TextInputEffect> {
         match command {
-            TextInputCommand::SetClient(client) => {
+            TextInputCommand::SetClient(client, input_action) => {
                 self.active_client = Some(client);
+                self.input_action = input_action;
                 None
             }
             TextInputCommand::SetEditingState(state) => {
@@ -2093,6 +2119,7 @@ impl TextInputSession {
             }
             TextInputCommand::ClearClient => {
                 self.active_client = None;
+                self.input_action.clear();
                 self.editing_state = TextEditingState::default();
                 self.ime_allowed = false;
                 Some(TextInputEffect::SetImeAllowed(false))
@@ -2120,6 +2147,9 @@ impl TextInputSession {
 
     fn keyboard_text(&mut self, text: &str) -> Option<Vec<u8>> {
         let client = self.active_client?;
+        if text == "\n" && self.input_action != "TextInputAction.newline" {
+            return Some(self.encode_action(client));
+        }
         if self.editing_state.composing_base >= 0 || self.editing_state.composing_extent >= 0 {
             return None;
         }
@@ -2215,6 +2245,19 @@ impl TextInputSession {
             args: (client, &self.editing_state),
         })
         .expect("typed text editing state must serialize")
+    }
+
+    fn encode_action(&self, client: TextInputClientId) -> Vec<u8> {
+        #[derive(Serialize)]
+        struct PerformAction<'a> {
+            method: &'static str,
+            args: (TextInputClientId, &'a str),
+        }
+        serde_json::to_vec(&PerformAction {
+            method: "TextInputClient.performAction",
+            args: (client, &self.input_action),
+        })
+        .expect("typed text input action must serialize")
     }
 }
 
@@ -2505,7 +2548,7 @@ impl KeyboardState {
     }
 
     fn event(&self, event: &WinitKeyEvent, synthesized: bool) -> Option<FlutterRustKeyEvent> {
-        make_key_event(
+        let mut event = make_key_event(
             self.started_at.elapsed().as_micros().min(u64::MAX as u128) as u64,
             event.physical_key,
             &event.logical_key,
@@ -2513,7 +2556,11 @@ impl KeyboardState {
             event.state,
             event.repeat,
             synthesized,
-        )
+        )?;
+        if let Some(shortcut_key) = shortcut_logical_key(self.modifiers, event.physical) {
+            event.logical = shortcut_key;
+        }
+        Some(event)
     }
 
     fn raw_event_message(&self, event: &FlutterRustKeyEvent) -> Vec<u8> {
@@ -2586,7 +2633,22 @@ fn committed_key_text(
     {
         return None;
     }
-    text.filter(|text| !text.is_empty() && text.chars().all(|character| !character.is_control()))
+    match text {
+        Some("\r" | "\n") => Some("\n"),
+        _ => text.filter(|text| {
+            !text.is_empty() && text.chars().all(|character| !character.is_control())
+        }),
+    }
+}
+
+fn shortcut_logical_key(modifiers: ModifiersState, physical: u64) -> Option<u64> {
+    if !modifiers.control_key() && !modifiers.meta_key() {
+        return None;
+    }
+    let usage = physical & 0xffff;
+    (0x04..=0x1d)
+        .contains(&usage)
+        .then_some(u64::from(b'a') + usage - 0x04)
 }
 
 fn make_key_event(
@@ -3186,6 +3248,32 @@ mod android_app {
             .set(app)
             .unwrap_or_else(|_| panic!("set_android_app must only be called once"));
     }
+}
+
+#[cfg(target_os = "linux")]
+fn handle_linux_clipboard_call(inbox: &TextInputInbox, call: &RawMethodCall) -> Option<Vec<u8>> {
+    use serde_json::json;
+
+    let mut clipboard = inbox.clipboard.lock();
+    if clipboard.is_none() {
+        *clipboard = arboard::Clipboard::new().ok();
+    }
+    let clipboard = clipboard.as_mut()?;
+    let value = match call.method.as_str() {
+        "Clipboard.setData" => {
+            clipboard.set_text(call.args.get("text")?.as_str()?).ok()?;
+            Value::Null
+        }
+        "Clipboard.getData" => match clipboard.get_text() {
+            Ok(text) => json!({ "text": text }),
+            Err(_) => Value::Null,
+        },
+        "Clipboard.hasStrings" => {
+            json!({ "value": clipboard.get_text().is_ok_and(|text| !text.is_empty()) })
+        }
+        _ => return None,
+    };
+    Some(serde_json::to_vec(&[value]).expect("JSON method envelope must serialize"))
 }
 
 /// Handles the `flutter/platform` methods the framework uses for text

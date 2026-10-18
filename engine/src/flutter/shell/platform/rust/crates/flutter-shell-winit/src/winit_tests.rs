@@ -420,7 +420,7 @@ fn installs_callbacks_backed_by_the_rust_host() {
         }]
     );
     destroyed(callbacks.user_data);
-    assert!(host.is_destroyed());
+    assert!(host.destroyed.load(Ordering::Acquire));
 }
 
 #[test]
@@ -429,7 +429,10 @@ fn decodes_typed_text_input_commands() {
             TextInputCommand::decode(
                 br#"{"method":"TextInput.setClient","args":[42,{"inputAction":"TextInputAction.done"}]}"#,
             ),
-            Some(TextInputCommand::SetClient(TextInputClientId(42)))
+            Some(TextInputCommand::SetClient(
+                TextInputClientId(42),
+                "TextInputAction.done".to_owned(),
+            ))
         );
     assert_eq!(
             TextInputCommand::decode(
@@ -537,7 +540,10 @@ fn android_text_input_sync_suppresses_stale_native_echo_until_target_arrives() {
 #[test]
 fn ime_replaces_utf16_selection_and_serializes_framework_update() {
     let mut session = TextInputSession::default();
-    session.apply(TextInputCommand::SetClient(TextInputClientId(7)));
+    session.apply(TextInputCommand::SetClient(
+        TextInputClientId(7),
+        "TextInputAction.newline".to_owned(),
+    ));
     session.apply(TextInputCommand::SetEditingState(TextEditingState {
         text: "A🙂B".to_owned(),
         selection_base: 1,
@@ -571,7 +577,10 @@ fn ime_replaces_utf16_selection_and_serializes_framework_update() {
 #[test]
 fn preedit_with_hidden_cursor_remains_composing() {
     let mut session = TextInputSession::default();
-    session.apply(TextInputCommand::SetClient(TextInputClientId(9)));
+    session.apply(TextInputCommand::SetClient(
+        TextInputClientId(9),
+        "TextInputAction.newline".to_owned(),
+    ));
     session.apply(TextInputCommand::SetEditingState(
         TextEditingState::default(),
     ));
@@ -603,11 +612,14 @@ fn keyboard_text_commits_without_turning_shortcuts_into_text() {
     );
     assert_eq!(
         committed_key_text(ModifiersState::empty(), ElementState::Pressed, Some("\r")),
-        None
+        Some("\n")
     );
 
     let mut session = TextInputSession::default();
-    session.apply(TextInputCommand::SetClient(TextInputClientId(10)));
+    session.apply(TextInputCommand::SetClient(
+        TextInputClientId(10),
+        "TextInputAction.newline".to_owned(),
+    ));
     session.apply(TextInputCommand::SetEditingState(TextEditingState {
         text: "A🙂B".to_owned(),
         selection_base: 1,
@@ -626,9 +638,46 @@ fn keyboard_text_commits_without_turning_shortcuts_into_text() {
     let update: Value = serde_json::from_slice(&update).expect("valid update JSON");
     assert_eq!(update["args"][1]["text"], "AéB");
 
+    let update = session
+        .keyboard_text("\n")
+        .expect("newline action should insert a line break");
+    assert_eq!(session.editing_state.text, "Aé\nB");
+    let update: Value = serde_json::from_slice(&update).expect("valid update JSON");
+    assert_eq!(update["args"][1]["text"], "Aé\nB");
+
     session.editing_state.composing_base = 1;
     session.editing_state.composing_extent = 2;
     assert!(session.keyboard_text("x").is_none());
+}
+
+#[test]
+fn enter_performs_the_configured_action_for_single_line_input() {
+    let mut session = TextInputSession::default();
+    session.apply(TextInputCommand::SetClient(
+        TextInputClientId(11),
+        "TextInputAction.done".to_owned(),
+    ));
+
+    let message = session
+        .keyboard_text("\n")
+        .expect("enter should perform the configured action");
+    let message: Value = serde_json::from_slice(&message).expect("valid action JSON");
+    assert_eq!(message["method"], "TextInputClient.performAction");
+    assert_eq!(message["args"][0], 11);
+    assert_eq!(message["args"][1], "TextInputAction.done");
+}
+
+#[test]
+fn control_shortcuts_use_the_latin_physical_key_on_non_latin_layouts() {
+    let physical = physical_key_id(PhysicalKey::Code(KeyCode::KeyC)).expect("physical key C");
+    assert_eq!(
+        shortcut_logical_key(ModifiersState::CONTROL, physical),
+        Some(u64::from('c'))
+    );
+    assert_eq!(
+        shortcut_logical_key(ModifiersState::empty(), physical),
+        None
+    );
 }
 
 #[test]

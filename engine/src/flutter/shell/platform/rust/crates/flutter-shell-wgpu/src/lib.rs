@@ -1262,6 +1262,11 @@ mod vulkan {
             self.context.assert_gpu_thread();
             let mut state = self.surface_state.lock();
             if state.suspended || state.pending_frame.is_some() {
+                eprintln!(
+                    "Flutter Rust Vulkan acquire skipped: suspended={}, pending_frame={}",
+                    state.suspended,
+                    state.pending_frame.is_some()
+                );
                 return None;
             }
             let presentable = self.presentable.read();
@@ -1327,15 +1332,30 @@ mod vulkan {
                     match surface.get_current_texture() {
                         wgpu::CurrentSurfaceTexture::Success(texture) => (texture, false),
                         wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
-                        _ => return None,
+                        status => {
+                            eprintln!(
+                                "Flutter Rust Vulkan acquire after outdated-surface reconfiguration ({requested_width}x{requested_height}): {status:?}"
+                            );
+                            return None;
+                        }
                     }
                 }
-                _ => return None,
+                status => {
+                    eprintln!(
+                        "Flutter Rust Vulkan acquire ({requested_width}x{requested_height}): {status:?}"
+                    );
+                    return None;
+                }
             };
             let swapchain_us = swapchain_started.map_or(0, |t| t.elapsed().as_micros());
             if surface_texture.texture.width() != requested_width
                 || surface_texture.texture.height() != requested_height
             {
+                eprintln!(
+                    "Flutter Rust Vulkan acquire size mismatch: requested {requested_width}x{requested_height}, received {}x{}",
+                    surface_texture.texture.width(),
+                    surface_texture.texture.height()
+                );
                 return None;
             }
             if suboptimal && state.deferred_configuration.is_none() {

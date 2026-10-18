@@ -6,6 +6,7 @@
 
 #include <vector>
 
+#include "flutter/fml/logging.h"
 #include "flutter/shell/gpu/gpu_surface_vulkan_impeller.h"
 #include "impeller/renderer/backend/vulkan/command_buffer_vk.h"
 #include "impeller/renderer/backend/vulkan/context_vk.h"
@@ -106,7 +107,13 @@ FlutterVulkanImage RustVulkanPresentation::AcquireImage(const DlISize& size) {
   {
     std::scoped_lock lock(views_mutex_);
     const auto found = views_.find(active_view_id_);
-    if (found == views_.end() || active_frame_) {
+    if (found == views_.end()) {
+      FML_LOG(ERROR) << "Rust Vulkan acquire: unknown view " << active_view_id_;
+      return {};
+    }
+    if (active_frame_) {
+      FML_LOG(ERROR) << "Rust Vulkan acquire for view " << active_view_id_
+                     << ": previous frame has not been presented";
       return {};
     }
     view = found->second;

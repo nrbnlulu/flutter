@@ -62,7 +62,7 @@ tasks:
       - '{{.TASKFILE_DIR}}/bin/flutter config --enable-windowing'
       - |
         cd {{.RUST_WINDOWING_EXAMPLE}}
-        {{.TASKFILE_DIR}}/bin/flutter build bundle --debug \
+        {{.TASKFILE_DIR}}/bin/flutter build bundle --debug --target={{.TARGET | default "lib/main.dart"}} \
           --local-engine={{.LOCAL_ENGINE}} \
           --local-engine-host={{.LOCAL_ENGINE}} \
           --local-engine-src-path={{.ENGINE_SRC}}
@@ -70,6 +70,31 @@ tasks:
         {{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/flutter_rust_shell_runner \
           {{.RUST_WINDOWING_EXAMPLE}}/build/flutter_assets \
           {{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/icudtl.dat
+
+  run-rust-hebrew:
+    desc: Run the Hebrew/English text editing playground on the Rust shell.
+    cmds:
+      - task: configure-rust-shell-fontconfig
+      - task: run-rust-multiple-windows
+        vars:
+          TARGET: lib/hebrew_main.dart
+
+  configure-rust-shell-fontconfig:
+    internal: true
+    cmds:
+      - |
+        args={{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}}/args.gn
+        if rg -q '^(flutter|skia)_use_fontconfig = false$' "$args"; then
+          sed -i 's/^flutter_use_fontconfig = false$/flutter_use_fontconfig = true/' "$args"
+          sed -i 's/^skia_use_fontconfig = false$/skia_use_fontconfig = true/' "$args"
+          PATH="{{.PY312_BIN}}:{{.BUNDLED_DEPOT_TOOLS}}:$PATH" \
+          VPYTHON_BYPASS="manually managed python not supported by chrome operations" \
+          {{.ENGINE_SRC}}/flutter/third_party/gn/gn gen \
+            {{.ENGINE_SRC}}/out/{{.LOCAL_ENGINE}} \
+            --root={{.ENGINE_SRC}}
+        else
+          true
+        fi
 
   test-rust-shell-windowing:
     desc: Stress native window creation, resize, and release while another view renders.

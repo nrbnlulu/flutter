@@ -158,7 +158,9 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
   } else {
     FlutterVulkanImage flutter_image = delegate_->AcquireImage(size);
     if (!flutter_image.image) {
-      FML_LOG(ERROR) << "Invalid VkImage given by the embedder.";
+      FML_LOG(ERROR) << "Invalid VkImage given by the embedder for view "
+                     << active_view_id_ << " (" << size.width << "x"
+                     << size.height << ").";
       return nullptr;
     }
     impeller::vk::Format vk_format =
