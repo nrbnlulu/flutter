@@ -11,7 +11,7 @@
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 11;
+pub const SHELL_ABI_VERSION: u32 = 12;
 /// Plugin SDK API version expected by this lockstep private runtime.
 pub const PLUGIN_SDK_API_VERSION: u32 = 1;
 
@@ -230,6 +230,10 @@ pub struct FlutterRustVulkanImage {
     pub acquire_semaphore: u64,
     /// Binary semaphore signalled by Impeller after its final image use.
     pub render_semaphore: u64,
+    /// Successful C++ graphics-queue submissions between acquire and present.
+    pub cpp_submits: u64,
+    pub image_views: u64,
+    pub transients: u64,
 }
 
 /// ABI-compatible with `FlutterRustVulkanPresentationCallbacks`.

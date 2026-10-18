@@ -7,10 +7,12 @@
 
 Presentation counters count submissions, not displayed frames. CPU percentages
 use one logical core as 100%. GPU utilization is device-wide, including other
-applications. Native window geometry is observed, never changed by this test.
+applications. Only this fixture's windows are positioned on the selected monitor
+before warm-up; no compositor configuration is changed.
 """
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,6 +21,7 @@ import re
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -66,12 +69,21 @@ def native_timings(path: Path, first: int, last: int) -> dict:
   rows = [
       line.split() for line in path.read_text().splitlines(keepends=True) if line.endswith("\n")
   ]
-  rows = [row for row in rows if len(row) == 7 and first < int(row[0]) <= last]
-  return {
+  rows = [row for row in rows if len(row) >= 7 and first < int(row[0]) <= last]
+  result = {
       name: distribution([int(row[index]) / 1000 for row in rows])
       for index, name in enumerate(("acquire_ms", "swapchain_ms", "handoff_ms", "present_ms"),
                                    start=3)
   }
+  for counter in ("submits", "rust_submits", "cpp_submits", "image_views", "transients"):
+    values = []
+    for row in rows:
+      counters = dict(token.split("=", 1) for token in row[7:] if "=" in token)
+      if counter in counters:
+        values.append(float(counters[counter]))
+    if values:
+      result[f"{counter}_per_frame"] = distribution(values)
+  return result
 
 
 def command_output(command: list[str]) -> dict:
@@ -80,6 +92,34 @@ def command_output(command: list[str]) -> dict:
     return {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
   except (OSError, subprocess.TimeoutExpired) as error:
     return {"error": str(error)}
+
+
+def unlocked_session() -> dict:
+  sessions = command_output(["loginctl", "list-sessions", "--json=short"])
+  try:
+    for session in json.loads(sessions.get("stdout", "")):
+      if session["uid"] != os.getuid():
+        continue
+      result = command_output([
+          "loginctl", "show-session", session["session"], "-p", "Type", "-p", "Active", "-p",
+          "LockedHint"
+      ])
+      properties = dict(line.split("=", 1) for line in result.get("stdout", "").splitlines())
+      if properties.get("Type") in ("wayland", "x11") and properties.get("Active") == "yes":
+        if properties.get("LockedHint") != "no":
+          raise RuntimeError("Refusing benchmark in a locked session")
+        return {"id": session["session"], **properties}
+  except (ValueError, KeyError) as error:
+    raise RuntimeError(f"Cannot verify session lock state: {sessions}") from error
+  raise RuntimeError("Cannot find an active, unlocked graphical session")
+
+
+def file_hash(path: Path) -> str:
+  digest = hashlib.sha256()
+  with path.open("rb") as source:
+    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+      digest.update(chunk)
+  return digest.hexdigest()
 
 
 def windows(pid: int) -> dict:
@@ -94,6 +134,96 @@ def windows(pid: int) -> dict:
     }
   except (ValueError, AttributeError):
     return {"unavailable": result}
+
+
+def benchmark_monitor(name: str) -> dict:
+  result = command_output(["hyprctl", "monitors", "-j"])
+  monitors = json.loads(result.get("stdout", ""))
+  selected = [
+      monitor for monitor in monitors
+      if (monitor.get("focused") if name == "focused" else monitor["name"] == name)
+  ]
+  if len(selected) != 1 or not selected[0].get("dpmsStatus"):
+    raise RuntimeError(f"Cannot select an active benchmark monitor: {name}")
+  monitor = selected[0]
+  if monitor.get("transform") != 0:
+    raise RuntimeError("Controlled benchmark placement requires an unrotated monitor")
+  width, height = monitor["width"] / monitor["scale"], monitor["height"] / monitor["scale"]
+  if width < 1660 or height - monitor["reserved"][1] < 1010:
+    raise RuntimeError("Monitor is too small for thirteen non-overlapping benchmark windows")
+  return monitor
+
+
+def arrange_windows(pid: int, children: int, monitor: dict) -> None:
+  deadline = time.monotonic() + 5
+  while True:
+    clients = windows(pid).get("clients", [])
+    if len(clients) == children + 1:
+      break
+    if time.monotonic() >= deadline:
+      raise RuntimeError("Missing native windows at benchmark preparation")
+    time.sleep(.05)
+  probe = command_output(["hyprctl", "eval", 'assert(type(hl.dsp.window.move) == "function")'])
+  lua = probe.get("returncode") == 0
+  for client in clients:
+    title = client["title"]
+    if title == "Flutter Rust Shell":
+      width, height, column, row = 640, 480, 3, 0
+    else:
+      match = re.fullmatch(rf"Rust window benchmark {children}/(\d+)", title)
+      if match is None:
+        raise RuntimeError(f"Unexpected fixture window: {title}")
+      index = int(match[1])
+      width, height, column, row = 320, 240, index % 3, index // 3
+    x, y = monitor["x"] + 10 + column * 330, monitor["y"] + monitor["reserved"][1] + 10 + row * 250
+    address = "address:" + client["address"]
+    workspace = str(monitor["activeWorkspace"]["id"])
+    if lua:
+      selector = f"window = {json.dumps(address)}"
+      dispatches = [
+          f'hl.dsp.window.float({{{selector}, action = "enable"}})',
+          f'hl.dsp.window.move({{{selector}, workspace = {json.dumps(workspace)}, follow = false}})',
+          f'hl.dsp.window.resize({{{selector}, x = {width}, y = {height}, relative = false}})',
+          f'hl.dsp.window.move({{{selector}, x = {x}, y = {y}, relative = false}})',
+      ]
+      commands = [["hyprctl", "dispatch", dispatch] for dispatch in dispatches]
+    else:
+      commands = [
+          ["hyprctl", "dispatch", "setfloating", address],
+          ["hyprctl", "dispatch", "movetoworkspacesilent", f"{workspace},{address}"],
+          ["hyprctl", "dispatch", "resizewindowpixel", f"exact {width} {height},{address}"],
+          ["hyprctl", "dispatch", "movewindowpixel", f"exact {x} {y},{address}"],
+      ]
+    for command in commands:
+      result = subprocess.run(command, capture_output=True, text=True)
+      if result.returncode != 0:
+        raise RuntimeError(f"Window placement failed: {command}: {result.stdout} {result.stderr}")
+
+
+def verify_windows(snapshot: dict, children: int, monitor: dict) -> list:
+  clients = snapshot.get("clients", [])
+  if len(clients) != children + 1:
+    raise RuntimeError("Incomplete native window geometry evidence")
+  expected_titles = {"Flutter Rust Shell"
+                    } | {f"Rust window benchmark {children}/{i}" for i in range(children)}
+  if {client["title"] for client in clients} != expected_titles:
+    raise RuntimeError("Unexpected native benchmark windows")
+  monitors = json.loads(snapshot.get("monitors", {}).get("stdout", ""))
+  actual = next((m for m in monitors if m["name"] == monitor["name"]), None)
+  if actual is None or any(
+      actual[key] != monitor[key] for key in ("id", "refreshRate", "scale", "x", "y")):
+    raise RuntimeError("Benchmark monitor configuration changed during measurement")
+  scene = []
+  for client in clients:
+    expected_size = [640, 480] if client["title"] == "Flutter Rust Shell" else [320, 240]
+    if (client.get("monitor") != monitor["id"] or client.get("size") != expected_size or
+        client.get("hidden") or not client.get("floating")):
+      raise RuntimeError(f"Unexpected benchmark geometry/visibility: {client}")
+    scene.append([
+        client["title"], client["size"], client["at"], monitor["name"], actual["refreshRate"],
+        actual["scale"]
+    ])
+  return sorted(scene)
 
 
 def distribution(values: list[float]) -> dict:
@@ -119,7 +249,7 @@ def distribution(values: list[float]) -> dict:
 
 def parse_event(line: str):
   match = re.fullmatch(
-      r"(start|end) count=(\d+) views=([0-9,]+) elapsed_us=(\d+) runtime_us=\d+", line
+      r"(prepare|start|end) count=(\d+) views=([0-9,]+) elapsed_us=(\d+) runtime_us=\d+", line
   )
   if match is None:
     raise ValueError(f"Malformed stage event: {line!r}")
@@ -154,7 +284,11 @@ def main() -> None:
   parser.add_argument("--runner", required=True, type=Path)
   parser.add_argument("--assets", required=True, type=Path)
   parser.add_argument("--icu", required=True, type=Path)
-  parser.add_argument("--validation", action="store_true", help="Force the Vulkan validation layer")
+  parser.add_argument(
+      "--validation",
+      action="store_true",
+      help="Measure with Vulkan validation; by default it is disabled for performance",
+  )
   parser.add_argument("--output-dir", type=Path, help="New directory for retained evidence")
   parser.add_argument("--label", default="unspecified", help="Build/experiment description")
   parser.add_argument(
@@ -165,15 +299,40 @@ def main() -> None:
   )
   parser.add_argument("--frame-budget-ms", type=float, default=1000 / 60)
   parser.add_argument("--timeout", type=float, default=120)
+  parser.add_argument("--repeat", type=int, default=3, help="Independent runs (default: 3)")
+  parser.add_argument(
+      "--monitor", default="focused", help="Hyprland output name (default: focused)"
+  )
+  parser.add_argument(
+      "--allow-stack-sampling",
+      action="store_true",
+      help="Allow eu-stack attachment; use separate profiling runs"
+  )
   args = parser.parse_args()
-  if args.frame_budget_ms <= 0 or args.timeout <= 0:
-    parser.error("frame budget and timeout must be positive")
+  session = unlocked_session()
+  monitor = benchmark_monitor(args.monitor)
+  args.monitor = monitor["name"]
+  if args.frame_budget_ms <= 0 or args.timeout <= 0 or args.repeat < 1:
+    parser.error("frame budget, timeout and repeat must be positive")
   if args.output_dir:
     work = args.output_dir.resolve()
     work.mkdir(parents=True, exist_ok=False)
   else:
     work = Path(tempfile.mkdtemp(prefix="flutter-rust-window-benchmark-"))
   print(f"Evidence: {work}", flush=True)
+  if args.repeat > 1:
+    for index in range(args.repeat):
+      command = [sys.executable, str(Path(__file__).resolve()), "--repeat=1"]
+      for name in ("runner", "assets", "icu", "label", "workload", "frame_budget_ms", "timeout",
+                   "monitor"):
+        command.append(f"--{name.replace('_', '-')}={getattr(args, name)}")
+      command.append(f"--output-dir={work / f'run-{index + 1}'}")
+      if args.validation:
+        command.append("--validation")
+      if args.allow_stack_sampling:
+        command.append("--allow-stack-sampling")
+      subprocess.run(command, check=True)
+    return
   stats, status = work / "presentations", work / "status"
   status.touch()
   environment = os.environ.copy()
@@ -181,8 +340,13 @@ def main() -> None:
       "FLUTTER_RUST_PRESENTATION_STATS": str(stats),
       "FLUTTER_RUST_WINDOWING_BENCHMARK_STATUS": str(status),
       "FLUTTER_RUST_WINDOWING_BENCHMARK_WORKLOAD": args.workload,
+      "FLUTTER_RUST_WINDOWING_BENCHMARK_CONTROL_GEOMETRY": "1",
       "RUST_LOG": "wgpu_core=warn,wgpu_hal=warn",
   })
+  # Debug builds enable wgpu validation on the Vulkan instance Impeller shares,
+  # which dominates multi-view raster time. Measure without it unless asked.
+  environment["WGPU_VALIDATION"] = "1" if args.validation else "0"
+  environment["WGPU_DEBUG"] = "1" if args.validation else "0"
   if args.validation:
     environment["VK_INSTANCE_LAYERS"] = "VK_LAYER_KHRONOS_validation"
   metadata = {
@@ -196,8 +360,18 @@ def main() -> None:
           str(args.runner.resolve()),
       "runner_mtime_ns":
           args.runner.stat().st_mtime_ns,
+      "runner_sha256":
+          file_hash(args.runner),
+      "session":
+          session,
+      "benchmark_monitor":
+          monitor,
+      "allow_stack_sampling":
+          args.allow_stack_sampling,
       "assets":
           str(args.assets.resolve()),
+      "kernel_sha256":
+          file_hash(args.assets / "kernel_blob.bin"),
       "frame_budget_ms":
           args.frame_budget_ms,
       "git":
@@ -218,7 +392,10 @@ def main() -> None:
               "Only the implicit view is animated; child views are static."
           ), "Window sizes and visibility are compositor-controlled; inspect snapshots.",
           "GPU utilization includes other applications.",
-          "No validation flag means inherited/default layer settings, not forced off."
+          (
+              "Vulkan validation forced on." if args.validation else
+              "wgpu validation/debug disabled; explicit VK_* layers are still inherited."
+          )
       ],
   }
   (work / "metadata.json").write_text(json.dumps(metadata, indent=2))
@@ -229,14 +406,17 @@ def main() -> None:
   next_gpu_sample = 0.0
   try:
     with (work / "runner.log").open("wb") as log, (work / "samples.jsonl").open("w") as samples:
+      command = [str(args.runner.resolve()), str(args.assets.resolve()), str(args.icu.resolve())]
+      if args.allow_stack_sampling:
+        wrapper = Path(__file__).resolve().parent.parent / "tools" / "exec_ptracer.py"
+        command = [sys.executable, str(wrapper), *command]
       process = subprocess.Popen(
-          [str(args.runner.resolve()),
-           str(args.assets.resolve()),
-           str(args.icu.resolve())],
+          command,
           stdout=log,
           stderr=subprocess.STDOUT,
           env=environment,
       )
+      (work / "runner.pid").write_text(str(process.pid))
       deadline = time.monotonic() + args.timeout
       while True:
         running = process.poll() is None
@@ -246,6 +426,11 @@ def main() -> None:
           if line.startswith("complete "):
             continue
           kind, count, view_ids, elapsed_us = parse_event(line)
+          unlocked_session()
+          if kind == "prepare":
+            arrange_windows(process.pid, count, monitor)
+            Path(f"{status}.ready-{count}").touch()
+            continue
           counts = {
               str(view): presentation_count(Path(f"{stats}.view-{view}")) for view in view_ids
           }
@@ -253,9 +438,11 @@ def main() -> None:
           if kind == "start":
             if active is not None or count != STAGES[len(results)]:
               raise RuntimeError("Unexpected benchmark stage order")
+            snapshot = windows(process.pid)
+            verify_windows(snapshot, count, monitor)
             active = {
                 "children": count, "start": sample, "counts": counts,
-                "implicit_count": presentation_count(stats), "windows_start": windows(process.pid)
+                "implicit_count": presentation_count(stats), "windows_start": snapshot
             }
           else:
             if active is None or active["children"] != count or sample is None:
@@ -299,11 +486,14 @@ def main() -> None:
             }
             initial = result["windows_start"].get("clients", [])
             final = result["windows_end"].get("clients", [])
+            result["scene"] = verify_windows(result["windows_start"], count, monitor)
+            if result["scene"] != verify_windows(result["windows_end"], count, monitor):
+              raise RuntimeError("Native benchmark geometry changed during measurement")
 
             def geometry(clients):
               return sorted((
                   client["address"], client.get("size"), client.get("at"), client.get("hidden"),
-                  client.get("workspace")
+                  client.get("workspace"), client.get("monitor")
               ) for client in clients)
 
             result["geometry_changed"] = geometry(initial) != geometry(final)

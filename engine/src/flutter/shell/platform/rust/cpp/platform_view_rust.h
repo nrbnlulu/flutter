@@ -10,6 +10,7 @@
 
 #include "flutter/shell/common/platform_view.h"
 #include "flutter/shell/platform/rust/cpp/rust_bridge.h"
+#include "impeller/renderer/context.h"
 
 namespace flutter {
 
@@ -57,6 +58,10 @@ class PlatformViewRust final : public PlatformView {
     // Requests a compositor-aligned pulse from the Rust window host. When it
     // is absent CreateVSyncWaiter retains Flutter's timer fallback.
     FlutterRustVsyncCallbacks vsync_callbacks = {};
+
+    // The Impeller context shared with the Rust-owned Vulkan device. Used by
+    // the image decoder and the IO manager.
+    std::shared_ptr<impeller::Context> impeller_context;
   };
 
   PlatformViewRust(Delegate& delegate,
@@ -82,6 +87,9 @@ class PlatformViewRust final : public PlatformView {
 
   // |PlatformView|
   std::unique_ptr<VsyncWaiter> CreateVSyncWaiter() override;
+
+  // |PlatformView|
+  std::shared_ptr<impeller::Context> GetImpellerContext() const override;
 
   Configuration configuration_;
   std::shared_ptr<RustVsyncState> vsync_state_;

@@ -5,6 +5,8 @@
 #ifndef FLUTTER_SHELL_GPU_GPU_SURFACE_VULKAN_IMPELLER_H_
 #define FLUTTER_SHELL_GPU_GPU_SURFACE_VULKAN_IMPELLER_H_
 
+#include <unordered_map>
+
 #include "flutter/common/graphics/gl_context_switch.h"
 #include "flutter/flow/surface.h"
 #include "flutter/fml/macros.h"
@@ -12,6 +14,7 @@
 #include "flutter/impeller/display_list/aiks_context.h"
 #include "flutter/impeller/renderer/context.h"
 #include "flutter/shell/gpu/gpu_surface_vulkan_delegate.h"
+#include "impeller/geometry/size.h"
 #include "impeller/renderer/backend/vulkan/swapchain/swapchain_transients_vk.h"
 
 namespace flutter {
@@ -35,6 +38,9 @@ class GPUSurfaceVulkanImpeller final : public Surface {
   // |Surface|
   void SetActiveViewId(int64_t view_id) override;
 
+  // |Surface|
+  void CollectView(int64_t view_id) override;
+
  private:
   FML_FRIEND_TEST(testing::GPUSurfaceVulkanImpeller,
                   RecreatesTransientsWhenFrameSizeChanges);
@@ -42,9 +48,17 @@ class GPUSurfaceVulkanImpeller final : public Surface {
   GPUSurfaceVulkanDelegate* delegate_;
   std::shared_ptr<impeller::Context> impeller_context_;
   std::shared_ptr<impeller::AiksContext> aiks_context_;
-  std::shared_ptr<impeller::SwapchainTransientsVK> transients_;
-  /// The size of the textures in [transients_]
-  impeller::ISize transients_size_ = {};
+
+  struct ViewTransients {
+    std::shared_ptr<impeller::SwapchainTransientsVK> transients;
+    impeller::ISize size;
+  };
+  /// Per-view MSAA and depth/stencil buffers, keyed by view ID.
+  /// Avoids recreating these allocations every frame when the active view
+  /// switches between views of different sizes.
+  std::unordered_map<int64_t, ViewTransients> view_transients_;
+  int64_t active_view_id_ = 0;
+
   bool is_valid_ = false;
 
   // |Surface|

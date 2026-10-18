@@ -32,6 +32,29 @@ def clients() -> list[dict[str, object]]:
   return json.loads(result.stdout)
 
 
+def dispatch_window(action: str, address: str, *, width=0, height=0, check=True):
+  # Hyprland 0.55+ interprets dispatch arguments as Lua. Detect capabilities
+  # without executing an action; never fall back after a failed close request.
+  probe = subprocess.run(
+      ["hyprctl", "eval", 'assert(type(hl.dsp.window.close) == "function")'],
+      capture_output=True,
+      text=True,
+  )
+  selector = f"address:{address}"
+  if probe.returncode == 0:
+    options = f"window = {json.dumps(selector)}"
+    if action == "resize":
+      options += f", x = {width}, y = {height}, relative = false"
+    elif action == "float":
+      options += ', action = "enable"'
+    command = ["hyprctl", "dispatch", f"hl.dsp.window.{action}({{{options}}})"]
+  else:
+    legacy = {"close": "closewindow", "float": "togglefloating", "resize": "resizewindowpixel"}
+    argument = f"exact {width} {height},{selector}" if action == "resize" else selector
+    command = ["hyprctl", "dispatch", legacy[action], argument]
+  return subprocess.run(command, check=check, capture_output=True, text=True)
+
+
 def presentation_count(path: Path) -> int:
   try:
     last = path.read_text().splitlines()[-1]
@@ -68,7 +91,10 @@ def main() -> None:
   parser.add_argument("--lifecycle-iterations", type=int, default=0)
   args = parser.parse_args()
 
-  with tempfile.TemporaryDirectory(prefix="flutter-rust-texture-") as directory:
+  # Retain evidence on failure, including failed compositor commands.
+  directory = tempfile.mkdtemp(prefix="flutter-rust-texture-")
+  succeeded = False
+  try:
     work = Path(directory)
     texture_id = work / "texture-id"
     presentations = work / "presentations"
@@ -80,6 +106,9 @@ def main() -> None:
 
     environment = os.environ.copy()
     environment.update({
+        "VK_INSTANCE_LAYERS": "VK_LAYER_KHRONOS_validation",
+        "WGPU_VALIDATION": "1",
+        "WGPU_DEBUG": "1",
         "FLUTTER_RUST_TEXTURE_DEMO": "1",
         "FLUTTER_RUST_TEXTURE_ID_FILE": str(texture_id),
         "FLUTTER_RUST_PRESENTATION_STATS": str(presentations),
@@ -92,11 +121,6 @@ def main() -> None:
           "FLUTTER_RUST_TEXTURE_LIFECYCLE_ITERATIONS": str(args.lifecycle_iterations),
           "FLUTTER_RUST_TEXTURE_LIFECYCLE_STATUS": str(lifecycle_status),
       })
-    if shutil.which("vulkaninfo"):
-      vulkan = subprocess.run(["vulkaninfo"], capture_output=True, text=True)
-      if "VK_LAYER_KHRONOS_validation" in vulkan.stdout + vulkan.stderr:
-        environment["VK_INSTANCE_LAYERS"] = "VK_LAYER_KHRONOS_validation"
-
     address = None
     with log_path.open("wb") as log:
       process = subprocess.Popen(
@@ -125,11 +149,7 @@ def main() -> None:
         if args.lifecycle_iterations:
           client = next(item for item in clients() if str(item.get("address")) == address)
           width, height = client["size"]
-          subprocess.run(
-              ["hyprctl", "dispatch", "togglefloating", f"address:{address}"],
-              check=True,
-              stdout=subprocess.DEVNULL,
-          )
+          dispatch_window("float", address)
           resized_generation = 0
 
           def lifecycle_completed():
@@ -138,15 +158,8 @@ def main() -> None:
             milestone = count - count % 5
             if milestone > resized_generation:
               resized_generation = milestone
-              subprocess.run(
-                  [
-                      "hyprctl",
-                      "dispatch",
-                      "resizewindowpixel",
-                      f"exact {640 + milestone * 3} {480 + milestone * 2},address:{address}",
-                  ],
-                  check=True,
-                  stdout=subprocess.DEVNULL,
+              dispatch_window(
+                  "resize", address, width=640 + milestone * 3, height=480 + milestone * 2
               )
             return count >= args.lifecycle_iterations
 
@@ -191,9 +204,7 @@ def main() -> None:
           if first_capture.read_bytes() == second_capture.read_bytes():
             raise RuntimeError("presentations advanced but captured pixels did not change")
 
-        subprocess.run(["hyprctl", "dispatch", "closewindow", f"address:{address}"],
-                       check=True,
-                       stdout=subprocess.DEVNULL)
+        dispatch_window("close", address)
         process.wait(timeout=5)
         if process.returncode != 0:
           raise RuntimeError(f"runner exited with status {process.returncode}")
@@ -209,23 +220,25 @@ def main() -> None:
             f"Rust-shell {producer} texture fixture passed "
             f"({presentation_count(presentations)} presentations{lifecycle})."
         )
+        succeeded = True
       except Exception as error:
         log.flush()
         print(log_path.read_text(errors="replace"), end="")
+        if isinstance(error, subprocess.CalledProcessError):
+          print(error.stdout or "", error.stderr or "")
         raise SystemExit(f"Texture fixture failed: {error}; log: {log_path}") from error
       finally:
         if process.poll() is None:
           if address:
-            subprocess.run(
-                ["hyprctl", "dispatch", "closewindow", f"address:{address}"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            dispatch_window("close", address, check=False)
           try:
             process.wait(timeout=5)
           except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
+  finally:
+    if succeeded:
+      shutil.rmtree(directory)
 
 
 if __name__ == "__main__":

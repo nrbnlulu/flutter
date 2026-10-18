@@ -27,6 +27,8 @@
 #include "flutter/shell/platform/rust/cpp/rust_external_texture.h"
 #include "flutter/shell/platform/rust/cpp/rust_task_runner.h"
 #include "flutter/shell/platform/rust/cpp/rust_vulkan_surface.h"
+#include "impeller/renderer/backend/vulkan/context_vk.h"
+#include "impeller/renderer/backend/vulkan/queue_vk.h"
 
 struct FlutterRustPlatformMessageResponseHandle {
   fml::RefPtr<flutter::PlatformMessageResponse> response;
@@ -167,6 +169,7 @@ std::unique_ptr<RustShell> RustShell::Create(
         }
       };
   platform_view_configuration.vsync_callbacks = vsync_callbacks;
+  platform_view_configuration.impeller_context = presentation->context();
   auto shell = Shell::Create(
       PlatformData{}, task_runners, settings,
       [platform_view_configuration =
@@ -506,6 +509,18 @@ void RustShell::TestRecreateTextureContext(
           callback(user_data);
         }
       });
+}
+
+void RustShell::LockQueue() {
+  impeller::ContextVK::Cast(*presentation_->context())
+      .GetGraphicsQueue()
+      ->LockExternal();
+}
+
+void RustShell::UnlockQueue() {
+  impeller::ContextVK::Cast(*presentation_->context())
+      .GetGraphicsQueue()
+      ->UnlockExternal();
 }
 
 void RustShell::PostRasterTask(void (*callback)(void*), void* user_data) {
@@ -1088,6 +1103,14 @@ extern "C" void FlutterRustShellPostRasterTask(void* shell,
                                                void (*callback)(void*),
                                                void* user_data) {
   static_cast<flutter::RustShell*>(shell)->PostRasterTask(callback, user_data);
+}
+
+extern "C" void FlutterRustShellLockQueue(void* shell) {
+  static_cast<flutter::RustShell*>(shell)->LockQueue();
+}
+
+extern "C" void FlutterRustShellUnlockQueue(void* shell) {
+  static_cast<flutter::RustShell*>(shell)->UnlockQueue();
 }
 
 extern "C" void FlutterRustShellDestroyShell(void* shell) {

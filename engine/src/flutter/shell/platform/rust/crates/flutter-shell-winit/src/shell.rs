@@ -754,6 +754,19 @@ fn create_cpp_shell(
         )
     }
 }
+/// Hooks that make every wgpu queue operation take the mutex Impeller holds
+/// around its own submits and presents on the shared Vulkan queue.
+fn cpp_queue_lock_hooks(shell: *mut c_void) -> flutter_gpu_queue::QueueLockHooks {
+    unsafe extern "C" {
+        fn FlutterRustShellLockQueue(shell: *mut c_void);
+        fn FlutterRustShellUnlockQueue(shell: *mut c_void);
+    }
+    flutter_gpu_queue::QueueLockHooks {
+        user_data: shell,
+        lock: FlutterRustShellLockQueue,
+        unlock: FlutterRustShellUnlockQueue,
+    }
+}
 fn run_cpp_shell(shell: *mut c_void) -> i32 {
     unsafe extern "C" {
         fn FlutterRustShellRunShell(shell: *mut c_void) -> i32;
@@ -4011,6 +4024,10 @@ impl Drop for ShellApplication {
                     Box::into_raw(reclamation).cast(),
                 );
             }
+            // Wgpu must stop calling the shell's queue lock before it dies.
+            if let Some(view) = windows.views.values().next() {
+                view.gpu_broker.clear_queue_lock();
+            }
             // C++ stops rendering through NotifyDestroyed, then releases all
             // swapchains on raster before draining and joining that runner.
             destroy_cpp_shell(shell);
@@ -4144,6 +4161,9 @@ impl ApplicationHandler for ShellApplication {
                     !shell.is_null(),
                     "C++ failed to create the Flutter Rust shell"
                 );
+                // SAFETY: the hooks are cleared in `ShellApplication::drop`
+                // before the shell is destroyed.
+                unsafe { gpu_broker.install_queue_lock(cpp_queue_lock_hooks(shell)) };
                 assert!(
                     run_cpp_shell(shell) != 0,
                     "the Flutter Rust shell failed to start running"

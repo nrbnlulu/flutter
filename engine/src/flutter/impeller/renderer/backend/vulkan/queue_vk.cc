@@ -22,12 +22,25 @@ const QueueIndexVK& QueueVK::GetIndex() const {
 vk::Result QueueVK::Submit(const vk::SubmitInfo& submit_info,
                            const vk::Fence& fence) const {
   Lock lock(queue_mutex_);
-  return queue_.submit(submit_info, fence);
+  const auto result = queue_.submit(submit_info, fence);
+  if (result == vk::Result::eSuccess) {
+    submission_count_++;
+  }
+  return result;
 }
 
 vk::Result QueueVK::Submit(const vk::Fence& fence) const {
   Lock lock(queue_mutex_);
-  return queue_.submit({}, fence);
+  const auto result = queue_.submit({}, fence);
+  if (result == vk::Result::eSuccess) {
+    submission_count_++;
+  }
+  return result;
+}
+
+uint64_t QueueVK::GetSubmissionCount() const {
+  Lock lock(queue_mutex_);
+  return submission_count_;
 }
 
 vk::Result QueueVK::Present(const vk::PresentInfoKHR& present_info) {

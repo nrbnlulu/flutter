@@ -19,7 +19,7 @@ extern "C" {
 
 // This private ABI is lockstep-versioned with the Flutter fork. It is not the
 // Flutter Embedder API and is never exposed to application plugins.
-#define FLUTTER_RUST_SHELL_ABI_VERSION 11u
+#define FLUTTER_RUST_SHELL_ABI_VERSION 12u
 #define FLUTTER_RUST_PLUGIN_SDK_API_VERSION 1u
 
 typedef struct FlutterRustShellAbi {
@@ -233,6 +233,10 @@ typedef struct FlutterRustVulkanImage {
   // Binary semaphore signalled after Impeller's last submission. The broker
   // makes its final wgpu/present submission wait on it.
   uint64_t render_semaphore;
+  // Successful C++ graphics-queue submissions between acquire and present.
+  uint64_t cpp_submits;
+  uint64_t image_views;
+  uint64_t transients;
 } FlutterRustVulkanImage;
 
 typedef int (*FlutterRustAcquireVulkanImageCallback)(
@@ -609,6 +613,13 @@ FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellTestRecreateTextureContext(
     void* shell,
     FlutterRustExternalTextureUnregisteredCallback callback,
     void* user_data);
+
+// Locks/unlocks the mutex Impeller holds around every submit and present on
+// the shared Vulkan queue. Callable from any thread while the shell is alive.
+// Every host (wgpu) queue operation must be bracketed by this pair. Not
+// recursive; unlock on the thread that locked.
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellLockQueue(void* shell);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellUnlockQueue(void* shell);
 
 // Called on the merged main runner with a live shell. Invokes callback once
 // on raster; teardown drains pending tasks before destroying the runner.

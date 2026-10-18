@@ -262,4 +262,9 @@ std::unique_ptr<VsyncWaiter> PlatformViewRust::CreateVSyncWaiter() {
   return std::make_unique<RustVsyncWaiter>(task_runners_, vsync_state_);
 }
 
+std::shared_ptr<impeller::Context> PlatformViewRust::GetImpellerContext()
+    const {
+  return configuration_.impeller_context;
+}
+
 }  // namespace flutter

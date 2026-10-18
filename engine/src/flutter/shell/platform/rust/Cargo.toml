@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/flutter-gpu-queue",
   "crates/flutter-plugin-sdk",
   "crates/flutter-shell-android-runner",
   "crates/flutter-shell-core",

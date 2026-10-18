@@ -388,6 +388,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
+name = "flutter-gpu-queue"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "parking_lot",
+ "wgpu",
+]
+
+[[package]]
 name = "flutter-plugin-sdk"
 version = "0.1.0"
 dependencies = [
@@ -416,6 +425,7 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "async-trait",
+ "flutter-gpu-queue",
  "flutter-plugin-sdk",
  "flutter-shell-core",
  "parking_lot",
@@ -430,6 +440,7 @@ name = "flutter-shell-winit"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "flutter-gpu-queue",
  "flutter-plugin-sdk",
  "flutter-shell-core",
  "flutter-shell-wgpu",
@@ -1838,12 +1849,16 @@ dependencies = [
  "cfg_aliases",
  "document-features",
  "hashbrown 0.17.1",
+ "js-sys",
  "log",
  "portable-atomic",
  "profiling",
  "raw-window-handle",
  "smallvec",
  "static_assertions",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "wgpu-core",
  "wgpu-hal",
  "wgpu-types",
@@ -1949,10 +1964,12 @@ source = "git+https://github.com/gfx-rs/wgpu.git?rev=014d9e84813a2946febfa488869
 dependencies = [
  "bitflags",
  "bytemuck",
+ "js-sys",
  "log",
  "naga-types",
  "raw-window-handle",
  "static_assertions",
+ "web-sys",
 ]
 
 [[package]]
