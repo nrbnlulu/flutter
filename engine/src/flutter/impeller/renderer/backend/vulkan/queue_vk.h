@@ -47,6 +47,21 @@ class QueueVK {
 
   void InsertDebugMarker(std::string_view label) const;
 
+  //----------------------------------------------------------------------------
+  /// @brief      Acquires the queue mutex on behalf of a host that submits to
+  ///             the same `VkQueue` through its own API (e.g. a Rust shell
+  ///             sharing the device with wgpu). Every call must be paired with
+  ///             `UnlockExternal` on the same thread. The mutex is not
+  ///             recursive: do not call other `QueueVK` methods while held.
+  ///
+  void LockExternal() const IPLR_NO_THREAD_SAFETY_ANALYSIS {
+    queue_mutex_.Lock();
+  }
+
+  void UnlockExternal() const IPLR_NO_THREAD_SAFETY_ANALYSIS {
+    queue_mutex_.Unlock();
+  }
+
  private:
   mutable Mutex queue_mutex_;
   mutable uint64_t submission_count_ IPLR_GUARDED_BY(queue_mutex_) = 0;

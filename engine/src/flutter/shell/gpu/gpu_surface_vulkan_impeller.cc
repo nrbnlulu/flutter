@@ -249,20 +249,36 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
       );
     };
 
-    // The swapchain image's real (and Impeller-tracked) layout after
-    // RenderToTarget is eGeneral, not eColorAttachmentOptimal -- see the
-    // is_swapchain branch of RenderPassVK's color/resolve attachment
-    // bookkeeping in render_pass_vk.cc, which mirrors the render pass's
-    // actual finalLayout. A previous version of this callback inserted an
-    // extra barrier+submit here to transition eGeneral -> eColorAttachment-
-    // Optimal purely so PresentImage's hardcoded oldLayout assumption would
-    // hold; PresentImage now transitions directly from eGeneral instead, so
-    // that fixup is gone. wrapped_onscreen is still kept alive for this
-    // frame via encode_callback's render_target capture, so it is
-    // intentionally not captured here anymore.
+    // Preserve the legacy embedder presentation layout. Impeller leaves
+    // swapchain attachments in GENERAL, but FlutterPresentCallback does not
+    // communicate a layout to the embedder.
     SurfaceFrame::SubmitCallback submit_callback =
-        [image = flutter_image,
-         delegate = delegate_](const SurfaceFrame&) -> bool {
+        [image = flutter_image, delegate = delegate_,
+         context = impeller_context_,
+         wrapped_onscreen](const SurfaceFrame&) -> bool {
+      auto command_buffer = context->CreateCommandBuffer();
+      if (!command_buffer) {
+        return false;
+      }
+      auto& command_buffer_vk =
+          impeller::CommandBufferVK::Cast(*command_buffer);
+      if (!command_buffer_vk.Track(wrapped_onscreen)) {
+        return false;
+      }
+      impeller::BarrierVK barrier;
+      barrier.cmd_buffer = command_buffer_vk.GetCommandBuffer();
+      barrier.new_layout = impeller::vk::ImageLayout::eColorAttachmentOptimal;
+      barrier.src_stage =
+          impeller::vk::PipelineStageFlagBits::eColorAttachmentOutput;
+      barrier.src_access = impeller::vk::AccessFlagBits::eColorAttachmentWrite;
+      barrier.dst_stage =
+          impeller::vk::PipelineStageFlagBits::eColorAttachmentOutput;
+      barrier.dst_access = impeller::vk::AccessFlagBits::eColorAttachmentRead |
+                           impeller::vk::AccessFlagBits::eColorAttachmentWrite;
+      if (!wrapped_onscreen->SetLayout(barrier).ok() ||
+          !context->GetCommandQueue()->Submit({command_buffer}).ok()) {
+        return false;
+      }
       TRACE_EVENT0("flutter", "GPUSurfaceVulkan::PresentImage");
       return delegate->PresentImage(reinterpret_cast<VkImage>(image.image),
                                     static_cast<VkFormat>(image.format));

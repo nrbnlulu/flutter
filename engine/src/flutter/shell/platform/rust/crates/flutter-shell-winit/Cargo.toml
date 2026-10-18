@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 async-trait = "=0.1.89"
+flutter-gpu-queue = { path = "../flutter-gpu-queue", version = "0.1.0" }
 flutter-plugin-sdk = { path = "../flutter-plugin-sdk", version = "0.1.0" }
 flutter-shell-core = { path = "../flutter-shell-core", version = "0.1.0" }
 flutter-shell-wgpu = { path = "../flutter-shell-wgpu", version = "0.1.0" }

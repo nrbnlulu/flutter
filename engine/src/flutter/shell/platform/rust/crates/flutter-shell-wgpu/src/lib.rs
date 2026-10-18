@@ -34,7 +34,7 @@ mod vulkan {
         instance: wgpu::Instance,
         adapter: wgpu::Adapter,
         device: wgpu::Device,
-        queue: wgpu::Queue,
+        queue: flutter_gpu_queue::SharedQueue,
         gpu_thread: std::sync::OnceLock<std::thread::ThreadId>,
     }
 
@@ -399,7 +399,7 @@ mod vulkan {
                 instance,
                 adapter,
                 device,
-                queue,
+                queue: flutter_gpu_queue::SharedQueue::new(queue),
                 gpu_thread: std::sync::OnceLock::new(),
             }))
         }
@@ -552,14 +552,17 @@ mod vulkan {
             if state.slots.is_empty() {
                 return;
             }
+            if state.submitted {
+                // Includes Impeller's final release; the queue lock keeps
+                // Impeller's worker-thread submissions out of this wait.
+                self.inner
+                    .context
+                    .queue
+                    .wait_device_idle(&self.inner.context.device);
+            }
             if let Some(device) =
                 unsafe { self.inner.context.device.as_hal::<wgpu::hal::vulkan::Api>() }
             {
-                if state.submitted {
-                    // Both APIs submit on this thread, so no host queue access
-                    // can overlap this wait. Includes Impeller's final release.
-                    let _ = unsafe { device.raw_device().device_wait_idle() };
-                }
                 for slot in state.slots.drain(..) {
                     unsafe {
                         device
@@ -1060,11 +1063,13 @@ mod vulkan {
             if state.pending_frame.is_none() && state.retired_frames.is_empty() {
                 return;
             }
+            if !self.context.queue.wait_device_idle(&self.context.device) {
+                return;
+            }
             let Some(device) = (unsafe { self.context.device.as_hal::<wgpu::hal::vulkan::Api>() })
             else {
                 return;
             };
-            let _ = unsafe { device.raw_device().device_wait_idle() };
             if let Some(pending) = state.pending_frame.take() {
                 unsafe {
                     device
@@ -1148,6 +1153,22 @@ mod vulkan {
             }
             self.destroy_frame_sync(retired.sync);
             true
+        }
+
+        /// Routes every shared-queue operation through the engine's queue
+        /// mutex. Call once the C++ shell exists.
+        ///
+        /// # Safety
+        /// The hooks must stay valid until [`Self::clear_queue_lock`].
+        pub unsafe fn install_queue_lock(&self, hooks: flutter_gpu_queue::QueueLockHooks) {
+            // SAFETY: forwarded caller contract.
+            unsafe { self.context.queue.install_lock_hooks(hooks) };
+        }
+
+        /// Stops using the engine's queue mutex. Call before the C++ shell is
+        /// destroyed.
+        pub fn clear_queue_lock(&self) {
+            self.context.queue.clear_lock_hooks();
         }
 
         /// Calls `callback` while wgpu-hal guards keep the borrowed Vulkan
@@ -1359,13 +1380,15 @@ mod vulkan {
             // Make the acquire-complete semaphore part of the same wgpu
             // submission that consumes the swapchain's private acquire
             // semaphore. Impeller waits on this before its first image use.
-            let Some(queue) = (unsafe { self.context.queue.as_hal::<wgpu::hal::vulkan::Api>() })
-            else {
+            if self
+                .context
+                .queue
+                .submit_with_semaphores(&[], &[sync.acquire], [encoder.finish()])
+                .is_none()
+            {
                 self.destroy_frame_sync(sync);
                 return None;
-            };
-            queue.add_signal_semaphore(sync.acquire, None);
-            self.context.queue.submit([encoder.finish()]);
+            }
             if let Some(stats) = &self.presentation_stats {
                 stats.lock().submits_this_frame += 1;
             }
@@ -1397,18 +1420,10 @@ mod vulkan {
                 // already gone (e.g. Android destroyed the window before
                 // Impeller finished this frame); presenting would touch a
                 // dead swapchain. Drop the frame instead of submitting it.
-                if let Some(device) =
-                    unsafe { self.context.device.as_hal::<wgpu::hal::vulkan::Api>() }
-                {
-                    let _ = unsafe { device.raw_device().device_wait_idle() };
-                }
+                self.context.queue.wait_device_idle(&self.context.device);
                 self.destroy_frame_sync(pending.sync);
                 return false;
             }
-            let Some(queue) = (unsafe { self.context.queue.as_hal::<wgpu::hal::vulkan::Api>() })
-            else {
-                return false;
-            };
             // Impeller signals `render` after its final layout transition. Make
             // a real wgpu submission wait on it and touch the surface texture,
             // so wgpu's own presentation semaphore is signalled only after all
@@ -1438,12 +1453,16 @@ mod vulkan {
                     ..Default::default()
                 });
             }
-            queue.add_wait_semaphore(
-                pending.sync.render,
-                None,
-                ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            );
-            let submission = self.context.queue.submit([encoder.finish()]);
+            let Some(submission) = self.context.queue.submit_with_semaphores(
+                &[flutter_gpu_queue::WaitSemaphore {
+                    semaphore: pending.sync.render,
+                    stage: ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                }],
+                &[],
+                [encoder.finish()],
+            ) else {
+                return false;
+            };
             if let Some(stats) = &self.presentation_stats {
                 stats.lock().submits_this_frame += 1;
             }
@@ -1581,23 +1600,28 @@ mod vulkan {
                 state: wgpu::TextureUses::RESOURCE,
             }),
         );
-        let Some(queue) = (unsafe { ring.inner.context.queue.as_hal::<wgpu::hal::vulkan::Api>() })
-        else {
+        let wait_for_flutter = slot.wait_for_flutter;
+        let waits = [flutter_gpu_queue::WaitSemaphore {
+            semaphore: slot.sync.render,
+            stage: ash::vk::PipelineStageFlags::ALL_COMMANDS,
+        }];
+        if ring
+            .inner
+            .context
+            .queue
+            .submit_with_semaphores(
+                if wait_for_flutter { &waits } else { &[] },
+                &[slot.sync.acquire],
+                [encoder.finish()],
+            )
+            .is_none()
+        {
             slot.state = TextureSlotState::Available;
             drop(state);
             ring.inner.return_available(index);
             return 0;
-        };
-        if slot.wait_for_flutter {
-            queue.add_wait_semaphore(
-                slot.sync.render,
-                None,
-                ash::vk::PipelineStageFlags::ALL_COMMANDS,
-            );
-            slot.wait_for_flutter = false;
         }
-        queue.add_signal_semaphore(slot.sync.acquire, None);
-        ring.inner.context.queue.submit([encoder.finish()]);
+        slot.wait_for_flutter = false;
         slot.state = TextureSlotState::InFlutter;
         let frame = FlutterRustExternalTextureFrame {
             image: slot.image.as_raw(),

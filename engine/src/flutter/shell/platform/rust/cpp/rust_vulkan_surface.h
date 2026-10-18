@@ -29,6 +29,7 @@ class RustVulkanPresentation final : public GPUSurfaceVulkanDelegate {
   ~RustVulkanPresentation() override;
 
   bool IsValid() const;
+  const std::shared_ptr<impeller::Context>& context() const { return context_; }
   std::unique_ptr<Surface> CreateSurface();
   bool RegisterView(FlutterRustViewId view_id,
                     FlutterRustVulkanPresentationCallbacks callbacks);

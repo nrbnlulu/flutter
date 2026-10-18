@@ -177,10 +177,8 @@ bool RustVulkanPresentation::PresentImage(VkImage image, VkFormat format) {
     return false;
   }
 
-  // GPUSurfaceVulkanImpeller's render pass leaves this swapchain image in
-  // GENERAL, not COLOR_ATTACHMENT_OPTIMAL: RenderPassVK mirrors the actual
-  // Vulkan render pass finalLayout for a swapchain color/resolve attachment,
-  // which is GENERAL (see the is_swapchain branch in render_pass_vk.cc).
+  // GPUSurfaceVulkanImpeller transitions the image to COLOR_ATTACHMENT_OPTIMAL
+  // before invoking the presentation delegate.
   // Wgpu's surface tracker expects its borrowed swapchain image back in
   // PRESENT_SRC_KHR before its final handoff pass.
   const auto& context = impeller::ContextVK::Cast(*context_);
@@ -193,7 +191,7 @@ bool RustVulkanPresentation::PresentImage(VkImage image, VkFormat format) {
   impeller::vk::ImageMemoryBarrier barrier;
   barrier.srcAccessMask = impeller::vk::AccessFlagBits::eColorAttachmentWrite;
   barrier.dstAccessMask = {};
-  barrier.oldLayout = impeller::vk::ImageLayout::eGeneral;
+  barrier.oldLayout = impeller::vk::ImageLayout::eColorAttachmentOptimal;
   barrier.newLayout = impeller::vk::ImageLayout::ePresentSrcKHR;
   barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;

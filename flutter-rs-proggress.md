@@ -6,6 +6,16 @@ for the architectural plan.
 
 ## Current focus
 
+Public Embedder API migration and prototyping are deferred; see the
+[2026-10-18 reassessment](flutter-rs.md#embedder-api-reassessment-2026-10-18).
+Source inspection confirms single-engine multi-view APIs, but Vulkan Impeller
+compositor backing stores are unimplemented and the public Vulkan GPU handoff
+requires host synchronization. No backend migration or runtime validation has
+been performed. Continue developing the private Rust-shell integration. Revisit
+when the public API provides Vulkan Impeller compositor backing-store support
+and suitable GPU synchronization. Android's adoption of Impeller alone does not
+resolve these gaps, because Android uses its internal platform integration.
+
 Multi-window performance now uses upstream #179874's dirty-view compositing,
 including external-texture repaint notifications and view lifecycle handling.
 The Rust host requests redraw from one pacing window per engine vsync request
@@ -1124,7 +1134,9 @@ baseline and HAL experiment.
 
 - The Rust shell is optional; existing Flutter shells remain buildable.
 - Impeller remains Flutter's renderer permanently.
-- The public Flutter Embedder API is not used.
+- Keep the private engine integration. Public Flutter Embedder API migration
+  and prototyping are deferred until the upstream rendering and synchronization
+  prerequisites in the architectural reassessment are met.
 - Multi-window means Flutter multi-view: one engine/root isolate per
   application, never one engine per native window.
 - Plugin-facing GPU types come from the semantically versioned

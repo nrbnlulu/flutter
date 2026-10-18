@@ -97,6 +97,12 @@ class RustShell final {
       void* user_data);
   void PostRasterTask(void (*callback)(void*), void* user_data);
 
+  // Takes/releases the mutex Impeller holds around every submit and present on
+  // the shared Vulkan queue, so host (wgpu) submissions can be serialized with
+  // Impeller's from any thread. Not recursive; pair on the same thread.
+  void LockQueue();
+  void UnlockQueue();
+
   FlutterRustViewId CreateRegularWindow(
       const FlutterRustRegularWindowRequest* request);
   FlutterRustViewId CreateDialogWindow(

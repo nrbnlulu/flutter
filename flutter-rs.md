@@ -5,9 +5,10 @@
 Proposed architecture for a Flutter engine fork in which Rust provides the
 cross-platform application shell and platform integration layer.
 
-This is intentionally **not** based on Flutter's public Embedder API. The Rust
-shell is compiled in-tree with the engine and uses private engine interfaces in
-lockstep with the Flutter revision.
+The current Rust shell is compiled in-tree with the engine and uses private
+engine interfaces in lockstep with the Flutter revision. The public Embedder
+API migration is deferred; the private integration remains the chosen approach.
+See the reassessment below for the conditions for revisiting this decision.
 
 ## Goals
 
@@ -34,8 +35,9 @@ lockstep with the Flutter revision.
 
 - Do not remove, disable, or deprecate Flutter's existing platform shells. The
   Rust shell is an additional backend selected explicitly by an application.
-- Do not build on or preserve compatibility with the public Flutter Embedder
-  API.
+- Do not pursue a public Embedder API migration or prototype in the current
+  work. Revisit when its Vulkan/Impeller compositor and GPU synchronization
+  support can meet our single-engine multi-view requirements.
 - Do not rewrite the Dart VM, Flutter framework, rasterizer, or Impeller.
   Impeller remains Flutter's renderer permanently; wgpu complements it as the
   Rust plugin GPU API and native device/presentation owner.
@@ -46,7 +48,113 @@ lockstep with the Flutter revision.
   their implementations live centrally in the Rust runtime rather than in
   every application.
 
-## Architectural conclusion
+## Embedder API reassessment (2026-10-18)
+
+Decision: defer migration and prototyping; continue with the private Rust-shell
+integration. Multi-view is supported by the public API, but our Vulkan/Impeller
+compositor and asynchronous GPU handoff requirements remain blockers. Revisit
+when upstream provides Vulkan Impeller compositor backing-store support and a
+suitable GPU synchronization contract. A switch to an unmodified engine is not
+currently a drop-in replacement. This assessment is based on source inspection,
+not a running Embedder API prototype.
+
+Android already uses Vulkan with Impeller through its internal platform
+integration. Android's broader Impeller migration does not by itself complete
+the public C API compositor path. Standard Linux GTK uses the OpenGL renderer
+configuration in this checkout. The trigger for reconsideration is readiness of
+the public API path, rather than Android renderer adoption alone.
+
+### Multi-window capabilities and limits
+
+The checked-in
+[`embedder.h`](engine/src/flutter/shell/platform/embedder/embedder.h) provides
+`FlutterEngineAddView`, `FlutterEngineRemoveView`, per-view metrics, pointer and
+focus events, and `FlutterCompositor.present_view_callback`. These support our
+one-engine, one-root-isolate model. Use the view-aware compositor callback;
+the deprecated `present_layers_callback` is for the implicit view. Direct
+Vulkan image acquisition/presentation callbacks do not carry a view ID.
+
+Add/remove are asynchronous. Native resources must survive until successful
+removal completion, and callbacks may need dispatch back to winit. View 0 is
+implicit and cannot be removed: removable application windows should use
+explicit views, with engine shutdown owning the implicit view's lifetime.
+Use the view-aware semantics callback as well; older semantics callbacks
+cannot represent multi-view updates correctly.
+
+The API does not create native windows or implement dialogs, transient parents,
+popups, modality, positioning, titles, activation, or close policy. Our winit
+implementation and Dart window-controller integration remain responsible for
+those features. Existing Dart FFI window exports can be implemented by the Rust
+host instead of the private C++ shell. Vsync requests are engine-wide, without
+a view ID, so per-monitor pacing remains host policy, as it is today.
+
+### Concrete rendering blockers
+
+1. In [`embedder.cc`](engine/src/flutter/shell/platform/embedder/embedder.cc),
+   `kFlutterBackingStoreTypeVulkan` with `enable_impeller` logs `Unimplemented`.
+   Vulkan Impeller has a direct surface path, but the compositor backing-store
+   path needed for view-aware presentation is missing. The upstream master
+   source inspected on this date has the same gap. Implement and test this
+   engine path before claiming Vulkan/Impeller multi-window support.
+2. `FlutterVulkanBackingStore` documents host completion before compositor
+   presentation. `FlutterVulkanExternalTexture` requires host synchronization
+   before returning a texture and a shader-read image layout. Neither descriptor
+   carries our producer/consumer semaphore handoff. A conforming baseline can
+   wait for completion; retaining asynchronous overlap may require an API
+   extension. CPU waits do not imply pixel readback, but may reduce throughput.
+3. Shared Vulkan queue access still requires synchronization across Flutter and
+   wgpu. The API documents wrapping Vulkan queue functions via the procedure
+   resolver with a common mutex. That protection must include wgpu queue use;
+   separate internal mutexes are insufficient. A custom raster runner alone
+   does not serialize background image-upload submissions.
+4. Backing stores are cached by default. The simplest prototype should render
+   to owned offscreen images and composite/copy to each wgpu surface. This may
+   introduce an extra GPU pass; direct swapchain rendering needs separate
+   lifetime/layout validation and cannot be assumed from the API signature.
+
+### Code savings
+
+The current `cpp/` directory has 3,767 lines including headers, tests, and
+export lists at assessment time. This is an inventory, not a net deletion
+estimate. Public calls can replace `PlatformViewRust`, the FML task-runner
+adapter, much of `RustShell` lifecycle/input/message/view glue, and custom
+context creation. Public external-texture callbacks can replace the texture
+adapter only after synchronization and reclamation parity is demonstrated.
+The private active-view surface hook can become unnecessary when presentation
+uses the public compositor.
+
+Rust bindings, callbacks, resource ownership, and compositor code must replace
+some of these lines. The winit host, IME, accessibility translation, clipboard,
+window controllers, GPU broker, plugin SDK, FRB integration, Cargo generation,
+and Flutter-tool support remain. The benefit is primarily less dependence on
+Flutter's C++ internals, not removal of most shell code or automatic support for
+GTK/Windows/macOS plugins. Engine/Dart artifact compatibility remains required.
+
+Public custom task runners support assigning UI and platform to the same winit
+thread, plus a separate render runner. `PlatformViewEmbedder` already exposes
+its renderer context to the engine, avoiding the current Rust platform view's
+missing `GetImpellerContext()` override. This corrects the earlier suggestion
+that migration would necessarily require us to implement that wiring again.
+
+### Acceptance criteria if migration is revisited
+
+These criteria are deferred, not current implementation tasks. Once the upstream
+rendering and synchronization prerequisites are met, build a separate
+experimental backend. Demonstrate two explicit views in one engine/isolate,
+independent input and resizing, popup/dialog behavior, removal of either view,
+image decoding, hot reload/restart, and AOT launch. Exercise texture replacement
+and shutdown under Vulkan validation. Compare frame latency, CPU waits, GPU
+passes, and retained code against the private backend using the same workload.
+Adopt the public backend if the remaining engine patches and measured costs
+are smaller than maintaining the private seam. No migration is implemented by
+this document update.
+
+Upstream references checked during reassessment:
+
+- [Public API declarations](https://github.com/flutter/flutter/blob/master/engine/src/flutter/shell/platform/embedder/embedder.h)
+- [Renderer and backing-store implementation](https://github.com/flutter/flutter/blob/master/engine/src/flutter/shell/platform/embedder/embedder.cc)
+
+## Current architecture
 
 The Rust integration should be an opt-in, first-class internal Flutter platform
 backend under `engine/src/flutter/shell/platform/rust/`. It lives alongside the
@@ -88,7 +196,8 @@ dispatch, viewport metrics, semantics, platform messages, texture registration,
 lifecycle notifications, external view composition, and Impeller setup.
 
 The new backend should implement that contract directly rather than routing
-through the public Embedder API.
+through the public Embedder API. This describes the current implementation;
+the reassessment above governs the proposed migration.
 
 ## Repository layout
 
@@ -760,8 +869,8 @@ and finally macOS/iOS.
 - Boot a basic Flutter application on Linux.
 - Render Flutter content with Impeller from the first working shell.
 
-Exit condition: a Flutter counter application runs through the Rust backend,
-without the public Embedder API or routing through the GTK shell. The regular
+Original exit condition: a Flutter counter application runs through the private
+Rust backend without routing through the GTK shell. The regular
 GTK shell remains available as a separate build target.
 
 The native runner built here is a GN executable with a two-line `main.cc` that
@@ -858,7 +967,7 @@ The first milestone that validates the architecture is:
 > A Linux Flutter application whose window and event loop are owned by winit,
 > whose Vulkan device and surface are owned by the Rust GPU broker, and whose
 > Flutter `Texture` widget displays animated wgpu-rendered content without CPU
-> readback, Dart rebuilds, routing through GTK, or the public Embedder API. The
+> readback, Dart rebuilds, or routing through GTK. The
 > existing GTK shell remains intact as an alternative target.
 
 If this succeeds, the core architecture is sound. If it fails, the likely cause

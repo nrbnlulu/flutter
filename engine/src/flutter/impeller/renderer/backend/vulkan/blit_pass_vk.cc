@@ -418,13 +418,15 @@ bool BlitPassVK::OnGenerateMipmapCommand(std::shared_ptr<Texture> texture,
   // after writing to that mip level, we'll first switch its layout to
   // TransferSrc to prepare the mip level after it, use the image as the source
   // of the blit, before finally switching it to ShaderReadOnly so its available
-  // for sampling in a shader.
+  // for sampling in a shader. The layout transition is itself a write, so the
+  // blits that write mip levels 1..N must also wait on it.
   InsertImageMemoryBarrier(
       /*cmd=*/cmd,
       /*image=*/image,
       /*src_access_mask=*/vk::AccessFlagBits::eTransferWrite |
           vk::AccessFlagBits::eColorAttachmentWrite,
-      /*dst_access_mask=*/vk::AccessFlagBits::eTransferRead,
+      /*dst_access_mask=*/vk::AccessFlagBits::eTransferRead |
+          vk::AccessFlagBits::eTransferWrite,
       /*old_layout=*/src.GetLayout(),
       /*new_layout=*/vk::ImageLayout::eTransferDstOptimal,
       /*src_stage=*/vk::PipelineStageFlagBits::eTransfer |

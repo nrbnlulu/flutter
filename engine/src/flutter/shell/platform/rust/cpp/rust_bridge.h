@@ -614,6 +614,13 @@ FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellTestRecreateTextureContext(
     FlutterRustExternalTextureUnregisteredCallback callback,
     void* user_data);
 
+// Locks/unlocks the mutex Impeller holds around every submit and present on
+// the shared Vulkan queue. Callable from any thread while the shell is alive.
+// Every host (wgpu) queue operation must be bracketed by this pair. Not
+// recursive; unlock on the thread that locked.
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellLockQueue(void* shell);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellUnlockQueue(void* shell);
+
 // Called on the merged main runner with a live shell. Invokes callback once
 // on raster; teardown drains pending tasks before destroying the runner.
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellPostRasterTask(
