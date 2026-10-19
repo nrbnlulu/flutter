@@ -55,6 +55,16 @@ tasks:
             flutter_rust_shell_runner libflutter_rust_engine.so \
             dart_sdk frontend_server_aot
 
+  build-rust-shell-release:
+    desc: Build the host-release Flutter Rust shell runner and shared engine.
+    cmds:
+      - |
+        PATH="{{.BUNDLED_DEPOT_TOOLS}}:$PATH" \
+        VPYTHON_BYPASS="manually managed python not supported by chrome operations" \
+          /usr/bin/ninja -C {{.ENGINE_SRC}}/out/host_release \
+            flutter_rust_shell_runner libflutter_rust_engine.so \
+            dart_sdk frontend_server_aot
+
   run-rust-multiple-windows:
     desc: Build and run Flutter's multiple_windows example on the Rust shell.
     deps: [build-rust-shell]
