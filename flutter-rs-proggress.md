@@ -1145,3 +1145,11 @@ baseline and HAL experiment.
   final link so it can pull in the Dart VM/Impeller/Skia archives); it is not
   the tooling model generated applications will use. See "Who owns the final
   link" in `flutter-rs.md`.
+
+## Tooling moved to `rlutter`
+
+The Rust-shell code that lived in `packages/flutter_tools` (`flutter create --shell=rust`, `flutter build rust`,
+`flutter run -d rust`, plugin discovery, the Linux pseudo-device) was replaced by the standalone `rlutter` CLI in
+`engine/src/flutter/shell/platform/rust/rlutter`, which delegates the Dart side to the unmodified `flutter` tool. Earlier
+entries in this log that mention those tool commands describe the previous implementation. Plan, decisions and what is
+and is not verified (notably Android release and anything on a device): `flutter-rs-cli-plan.md`.

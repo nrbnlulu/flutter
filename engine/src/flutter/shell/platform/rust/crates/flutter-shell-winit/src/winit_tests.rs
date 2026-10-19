@@ -932,3 +932,20 @@ fn lifecycle_tracks_focus_visibility_suspend_and_detach() {
         Some(FlutterRustLifecycleState::Detached)
     );
 }
+
+#[test]
+fn application_title_is_read_from_the_switcher_description_call() {
+    let call = br#"{"method":"SystemChrome.setApplicationSwitcherDescription","args":{"label":"My App","primaryColor":4278190080}}"#;
+    assert_eq!(decode_application_title(call).as_deref(), Some("My App"));
+}
+
+#[test]
+fn empty_or_unrelated_calls_do_not_change_the_title() {
+    let empty = br#"{"method":"SystemChrome.setApplicationSwitcherDescription","args":{"label":"","primaryColor":1}}"#;
+    assert_eq!(decode_application_title(empty), None);
+    let other = br#"{"method":"SystemChrome.setSystemUIOverlayStyle","args":{"label":"x"}}"#;
+    assert_eq!(decode_application_title(other), None);
+    assert_eq!(decode_application_title(b"not json"), None);
+    let no_label = br#"{"method":"SystemChrome.setApplicationSwitcherDescription","args":{}}"#;
+    assert_eq!(decode_application_title(no_label), None);
+}

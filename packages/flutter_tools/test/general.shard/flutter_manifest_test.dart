@@ -84,40 +84,6 @@ flutter:
     expect(flutterManifest.usesMaterialDesign, true);
   });
 
-  testWithoutContext('FlutterManifest recognizes the Rust shell', () async {
-    const manifest = '''
-name: test
-rust-shell: true
-''';
-    final FlutterManifest flutterManifest = FlutterManifest.createFromString(
-      manifest,
-      logger: logger,
-    )!;
-
-    expect(flutterManifest.usesRustShell, true);
-  });
-
-  testWithoutContext('FlutterManifest rejects a non-boolean Rust shell marker', () async {
-    const manifest = '''
-name: test
-rust-shell: rust
-''';
-
-    expect(FlutterManifest.createFromString(manifest, logger: logger), isNull);
-    expect(logger.errorText, contains('Expected "rust-shell" to be a bool'));
-  });
-
-  testWithoutContext('FlutterManifest rejects the legacy nested shell marker', () async {
-    const manifest = '''
-name: test
-flutter:
-  shell: rust
-''';
-
-    expect(FlutterManifest.createFromString(manifest, logger: logger), isNull);
-    expect(logger.errorText, contains('Unexpected child "shell" found under "flutter"'));
-  });
-
   testWithoutContext('FlutterManifest knows if generate is provided', () async {
     const manifest = '''
 name: test

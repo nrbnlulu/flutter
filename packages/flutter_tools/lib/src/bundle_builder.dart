@@ -38,7 +38,6 @@ class BundleBuilder {
     String? depfilePath,
     String? assetDirPath,
     BuildSystem? buildSystem,
-    Target? target,
   }) async {
     project ??= FlutterProject.current();
     mainPath ??= defaultMainPath;
@@ -72,7 +71,7 @@ class BundleBuilder {
       platform: globals.platform,
       generateDartPluginRegistry: true,
     );
-    target ??= buildInfo.mode == BuildMode.debug
+    final Target target = buildInfo.mode == BuildMode.debug
         ? globals.buildTargets.copyFlutterBundle
         : globals.buildTargets.releaseCopyFlutterBundle;
     final BuildResult result = await buildSystem.build(target, environment);
