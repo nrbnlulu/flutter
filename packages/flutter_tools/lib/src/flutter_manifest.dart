@@ -215,7 +215,7 @@ class FlutterManifest {
   }
 
   /// Whether this application selects the Rust application shell.
-  bool get usesRustShell => _flutterDescriptor['shell'] == 'rust';
+  bool get usesRustShell => _descriptor['rust-shell'] == true;
 
   /// True if this Flutter module should use AndroidX dependencies.
   ///
@@ -506,6 +506,13 @@ bool _validate(Object? manifest, Logger logger) {
           if (kvp.value is! String) {
             errors.add('Expected "${kvp.key}" to be a string, but got ${kvp.value}.');
           }
+        case 'rust-shell':
+          if (kvp.value is! bool) {
+            errors.add(
+              'Expected "${kvp.key}" to be a bool, but got ${kvp.value} '
+              '(${kvp.value.runtimeType}).',
+            );
+          }
         case 'flutter':
           if (kvp.value == null) {
             continue;
@@ -550,10 +557,6 @@ void _validateFlutter(YamlMap? yaml, List<String> errors) {
           errors.add(
             'Expected "$yamlKey" to be a bool, but got $yamlValue (${yamlValue.runtimeType}).',
           );
-        }
-      case 'shell':
-        if (yamlValue != 'rust') {
-          errors.add('Expected "$yamlKey" to be "rust", but got $yamlValue.');
         }
       case 'assets':
         errors.addAll(_validateAssets(yamlValue));

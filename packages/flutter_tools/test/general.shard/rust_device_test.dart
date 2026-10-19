@@ -63,8 +63,7 @@ void main() {
 name: rust_app
 environment:
   sdk: ^3.9.0
-flutter:
-  shell: rust
+rust-shell: true
 ''');
     fileSystem.file('runner-rs/Cargo.toml').createSync(recursive: true);
     final FlutterProject project = FlutterProjectFactory(
@@ -93,8 +92,7 @@ flutter:
 name: rust_app
 environment:
   sdk: ^3.9.0
-flutter:
-  shell: rust
+rust-shell: true
 ''');
       globals.fs.file('runner-rs/Cargo.toml').createSync(recursive: true);
       final device = RustShellDevice(

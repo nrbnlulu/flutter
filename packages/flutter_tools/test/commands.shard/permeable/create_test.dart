@@ -5258,7 +5258,7 @@ To keep the default AGP version $templateAndroidGradlePluginVersion, download a 
       expectedGitignoreLines: <String>['/runner-rs/target/'],
     );
 
-    expect(projectDir.childFile('pubspec.yaml').readAsStringSync(), contains('  shell: rust'));
+    expect(projectDir.childFile('pubspec.yaml').readAsStringSync(), contains('rust-shell: true'));
     expect(
       projectDir.childDirectory('runner-rs').childFile('Cargo.toml').readAsStringSync(),
       contains(rustPluginDependenciesBegin),

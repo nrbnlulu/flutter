@@ -112,7 +112,7 @@ crate root. Native operations use statically dispatched platform traits, with
 the current Linux implementation isolated under `platform/linux.rs`.
 The Rust-shell SDK (crates plus prebuilt engine libraries) is now distributed
 through a rolling BETA GitHub release built by CI from every push, so an
-FVM-installed Flutter fork can use `flutter.shell: rust` without a local engine
+FVM-installed Flutter fork can use `rust-shell: true` without a local engine
 checkout; a checked-out engine tree is still preferred automatically when
 present. `flutter run -d rust` now supports `--release` in addition to debug:
 the tool AOT-compiles the Dart app, builds `runner-rs` with `cargo build
@@ -157,9 +157,9 @@ same way Linux's own flutter_tools integration followed its native runner.
 | Multi-window | All five controller kinds implemented | View `0` remains the implicit engine view. Positive-ID winit windows share one engine, root isolate, plugin registry, task runner, and wgpu device while owning independent surfaces, metrics, input, and presentation state. Flutter's experimental window controllers select the Rust owner automatically in the Rust runner. Dialogs and satellites use native transient relationships. On Wayland, tooltip and popup views use real compositor-positioned `xdg_popup` roles; popup grabs are serial-bound and compositor dismissal enters the normal asynchronous Flutter view-removal path. Satellites support creation, shrink-wrap, reparenting, parent-driven teardown, and parent maximize/fullscreen visibility. Standard Wayland does not permit clients to choose absolute toplevel positions, so the initial satellite positioner is honored on X11 but compositor-selected on Wayland. |
 | Main-thread dispatch | SDK, host, and Dart/FRB path complete | `flutter-plugin-sdk` exposes a cloneable worker-safe dispatcher through `PluginRegistrar`. Work is always queued rather than invoked inline, executes through winit's owning thread, is limited to 64 callbacks per event-loop turn, and is rejected after shell shutdown. Unit coverage verifies worker posting, thread identity, nested non-reentrant dispatch, starvation bounds, and shutdown. A real application-level FRB fixture verifies root and background Dart isolates through the Cargo-owned runner while displaying SDK wgpu and pixel-buffer textures. |
 | Startup and shutdown ownership | Complete for merged runner | The dispatcher rejects work during bootstrap, starts only after the C++ shell and implicit view are installed, stops before shell/window teardown, and suppresses already queued callbacks after shutdown. A native lifecycle task requires 20 consecutive mapped-window startup, compositor-close, and status-zero shutdown cycles. |
-| Application plugin registration | Runtime and Flutter-tool generation complete | `flutter-shell-winit::run_application` accepts `register_application(&mut PluginRegistrar)` and invokes it once after startup capabilities are installed. For `flutter.shell: rust` projects, the Flutter tool discovers source-linked Rust plugins from the resolved Pub graph, updates the marked dependency block in `runner-rs/Cargo.toml`, generates `flutter_plugins.rs`, and validates a single resolved plugin SDK. |
-| Flutter CLI launch | Linux x64 debug and release complete | `flutter run -d rust` discovers the Rust shell as a built-in local device for `flutter.shell: rust` applications. Debug mode builds `build/flutter_assets` and the generated Cargo runner and uses the normal resident-runner lifecycle for logs, hot reload, and shutdown. Release mode AOT-compiles the Dart app to `app.so`, builds `runner-rs` with `cargo build --release`, and launches the release runner directly (no VM-service/resident-runner support, matching other release desktop targets). Profile mode is not yet supported. |
-| Rust-shell SDK distribution | BETA channel complete | CI (`flutter-rust-beta.yml`) configures and builds the engine in both `debug` and `release` runtime modes, packages the workspace crates plus each engine's `libflutter_rust_engine.so`/`icudtl.dat` under `lib/debug/` and `lib/release/`, and republishes them to a rolling `BETA` GitHub release tagged to the latest imported Flutter version. `flutter pub get` on a `flutter.shell: rust` project prefers a local engine checkout's `out/host_debug`/`out/host_release` when present and otherwise downloads and unpacks the BETA tarball into `.dart_tool/flutter_rs/sdk/`; `runner-rs/build.rs` links whichever profile directory matches Cargo's own build profile. |
+| Application plugin registration | Runtime and Flutter-tool generation complete | `flutter-shell-winit::run_application` accepts `register_application(&mut PluginRegistrar)` and invokes it once after startup capabilities are installed. For `rust-shell: true` projects, the Flutter tool discovers source-linked Rust plugins from the resolved Pub graph, updates the marked dependency block in `runner-rs/Cargo.toml`, generates `flutter_plugins.rs`, and validates a single resolved plugin SDK. |
+| Flutter CLI launch | Linux x64 debug and release complete | `flutter run -d rust` discovers the Rust shell as a built-in local device for `rust-shell: true` applications. Debug mode builds `build/flutter_assets` and the generated Cargo runner and uses the normal resident-runner lifecycle for logs, hot reload, and shutdown. Release mode AOT-compiles the Dart app to `app.so`, builds `runner-rs` with `cargo build --release`, and launches the release runner directly (no VM-service/resident-runner support, matching other release desktop targets). Profile mode is not yet supported. |
+| Rust-shell SDK distribution | BETA channel complete | CI (`flutter-rust-beta.yml`) configures and builds the engine in both `debug` and `release` runtime modes, packages the workspace crates plus each engine's `libflutter_rust_engine.so`/`icudtl.dat` under `lib/debug/` and `lib/release/`, and republishes them to a rolling `BETA` GitHub release tagged to the latest imported Flutter version. `flutter pub get` on a `rust-shell: true` project prefers a local engine checkout's `out/host_debug`/`out/host_release` when present and otherwise downloads and unpacks the BETA tarball into `.dart_tool/flutter_rs/sdk/`; `runner-rs/build.rs` links whichever profile directory matches Cargo's own build profile. |
 | Android scaffold (native) | AOT/release mode complete, debug/JIT already worked | The GameActivity cdylib (`crates/flutter-shell-android-runner`) dynamically links a GN-built `libflutter_rust_engine.so` and renders a real Dart isolate/Impeller frame in both runtime modes. `aot_library_path` now derives from `cfg!(debug_assertions)` instead of being hardcoded empty, matching `runner-rs/src/main.rs.tmpl`'s approach on Linux. Asset loading is still an adb-pushed placeholder (`flutter_assets/`/`icudtl.dat`/`app.so` copied into the app's private files dir before launch); real `AAssetManager`-backed loading and a flutter_tools-driven `AndroidRustShellDevice` remain future work. |
 | Rust external texture | Engine seam complete | `RustExternalTexture` uses Flutter's existing texture registry and dirty-frame scheduling path. It retains the last good image, honors freeze, retries failed acquisition, imports borrowed wgpu Vulkan image/view handles without taking ownership, and brackets Impeller sampling with producer/consumer semaphores. Context loss, unregister, and repeated teardown are covered by focused tests. |
 | Engine-owned wgpu texture | SDK runtime path complete | `WgpuTextureRing` owns three RGBA8 textures, views, and reusable semaphore pairs on the application's shared device. A bounded Tokio channel carries available slot IDs: `try_next_frame` applies immediate backpressure, `next_frame().await` sleeps until Flutter releases a slot, an unpresented reservation returns its slot on drop, and shutdown wakes waiters with `Shutdown`. Ready frames remain queue-serialized through Flutter's acquire callback. The opt-in animated proof now runs through normal `FlutterRustPlugin` registration and public SDK operations. |
@@ -748,7 +748,7 @@ baseline and HAL experiment.
 
 ### Phase 3 — Flutter-tool distribution, CLI device, and release mode
 
-- Added `refreshRustPlugins`/`rust_plugins.dart`: for `flutter.shell: rust`
+- Added `refreshRustPlugins`/`rust_plugins.dart`: for `rust-shell: true`
   projects, discovers source-linked Rust plugins from the resolved Pub graph,
   symlinks each into `.dart_tool/flutter_rs/plugins/`, rewrites the marked
   dependency block in `runner-rs/Cargo.toml`, regenerates
@@ -767,7 +767,7 @@ baseline and HAL experiment.
   a rolling `BETA` GitHub release so an FVM-installed fork can consume prebuilt
   artifacts without a local engine checkout.
 - Added `RustShellDevice`/`RustShellDevices` (`rust_device.dart`): registers
-  `rust` as a built-in `DesktopDevice` for `flutter.shell: rust` projects,
+  `rust` as a built-in `DesktopDevice` for `rust-shell: true` projects,
   building the generated Cargo runner and launching it with Flutter's normal
   desktop VM-service environment, hot reload, and shutdown lifecycle in debug
   mode.
@@ -908,7 +908,7 @@ baseline and HAL experiment.
   completed hot reload and hot restart, and terminated the native process with
   the standard `q` command.
 - `git diff --check` passes.
-- Added focused Flutter-tool coverage for `flutter.shell: rust`, strict generated
+- Added focused Flutter-tool coverage for `rust-shell: true`, strict generated
   Cargo section replacement, and `flutter create --shell=rust`. A real generated
   application with a source-linked Pub/Cargo plugin resolved one shared SDK and
   completed `cargo +1.93.1 build`; the template-manifest check also passes.

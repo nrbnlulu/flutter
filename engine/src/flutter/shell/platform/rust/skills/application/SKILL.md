@@ -1,6 +1,6 @@
 ---
 name: application
-description: Create, convert, build, and run a Flutter application with the nrbnlulu Flutter Rust shell. Use when an application needs the generated runner-rs Cargo runner, Rust plugins, or the flutter.shell rust setting. Currently supports Linux x64.
+description: Create, convert, build, and run a Flutter application with the nrbnlulu Flutter Rust shell. Use when an application needs the generated runner-rs Cargo runner, Rust plugins, or the rust-shell pubspec setting. Currently supports Linux x64.
 ---
 
 # Create a Flutter Rust-shell application
@@ -27,8 +27,7 @@ fvm flutter create --shell=rust --platforms=linux .
 The application `pubspec.yaml` must contain:
 
 ```yaml
-flutter:
-  shell: rust
+rust-shell: true
 ```
 
 The command creates `runner-rs/`, including its Cargo manifest, pinned Rust

@@ -14,8 +14,8 @@ import '../runner/flutter_command.dart' show FlutterCommandResult;
 import '../rust/build_rust.dart';
 import 'build.dart';
 
-/// A command to build a `flutter.shell: rust` application's generated
-/// `runner-rs/` Cargo project.
+/// A command to build a `rust-shell: true` application's generated `runner-rs/`
+/// Cargo project.
 class BuildRustCommand extends BuildSubCommand {
   BuildRustCommand({
     required ToolContext super.toolContext,

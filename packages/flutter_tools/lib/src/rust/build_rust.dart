@@ -37,8 +37,8 @@ class RustAotBundle extends CopyFlutterAotBundle {
   ];
 }
 
-/// Builds the generated `runner-rs/` Cargo project for a `flutter.shell:
-/// rust` application: compiles the Flutter asset bundle (AOT-compiling the
+/// Builds the generated `runner-rs/` Cargo project for a `rust-shell: true`
+/// application: compiles the Flutter asset bundle (AOT-compiling the
 /// Dart app to `app.so` in release mode), then builds the Rust runner with
 /// Cargo.
 ///

@@ -45,8 +45,7 @@ void main() {
 name: rust_app
 environment:
   sdk: ^3.9.0
-flutter:
-  shell: rust
+rust-shell: true
 ''');
     writePackageConfigFiles(directory: fileSystem.currentDirectory, mainLibName: 'rust_app');
     fileSystem.file(fileSystem.path.join('lib', 'main.dart')).createSync(recursive: true);

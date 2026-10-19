@@ -87,8 +87,7 @@ flutter:
   testWithoutContext('FlutterManifest recognizes the Rust shell', () async {
     const manifest = '''
 name: test
-flutter:
-  shell: rust
+rust-shell: true
 ''';
     final FlutterManifest flutterManifest = FlutterManifest.createFromString(
       manifest,
@@ -98,15 +97,25 @@ flutter:
     expect(flutterManifest.usesRustShell, true);
   });
 
-  testWithoutContext('FlutterManifest rejects an unknown shell', () async {
+  testWithoutContext('FlutterManifest rejects a non-boolean Rust shell marker', () async {
     const manifest = '''
 name: test
-flutter:
-  shell: other
+rust-shell: rust
 ''';
 
     expect(FlutterManifest.createFromString(manifest, logger: logger), isNull);
-    expect(logger.errorText, contains('Expected "shell" to be "rust"'));
+    expect(logger.errorText, contains('Expected "rust-shell" to be a bool'));
+  });
+
+  testWithoutContext('FlutterManifest rejects the legacy nested shell marker', () async {
+    const manifest = '''
+name: test
+flutter:
+  shell: rust
+''';
+
+    expect(FlutterManifest.createFromString(manifest, logger: logger), isNull);
+    expect(logger.errorText, contains('Unexpected child "shell" found under "flutter"'));
   });
 
   testWithoutContext('FlutterManifest knows if generate is provided', () async {
