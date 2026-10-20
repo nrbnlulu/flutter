@@ -76,9 +76,8 @@ class _WindowingFixtureState extends State<_WindowingFixture> with SingleTickerP
       for (final controller in retiring) {
         controller.dispose();
       }
-      File(
-        Platform.environment['FLUTTER_RUST_WINDOWING_STATUS']!,
-      ).writeAsStringSync('cycle=${cycle + 1} released=$destroyed');
+      File(Platform.environment['FLUTTER_RUST_WINDOWING_STATUS']!)
+          .writeAsStringSync('cycle=${cycle + 1} released=$destroyed');
     }
     // Keep additional rendered views alive through whole-shell teardown.
     for (var index = 0; index < 3; index += 1) {
@@ -93,9 +92,8 @@ class _WindowingFixtureState extends State<_WindowingFixture> with SingleTickerP
       );
     }
     await Future<void>.delayed(const Duration(milliseconds: 300));
-    File(
-      Platform.environment['FLUTTER_RUST_WINDOWING_STATUS']!,
-    ).writeAsStringSync('complete released=$destroyed');
+    File(Platform.environment['FLUTTER_RUST_WINDOWING_STATUS']!)
+        .writeAsStringSync('complete released=$destroyed');
     await ServicesBinding.instance.exitApplication(ui.AppExitType.required);
   }
 
