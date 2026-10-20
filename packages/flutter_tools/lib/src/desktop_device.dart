@@ -4,7 +4,6 @@
 
 import 'dart:async';
 
-import 'package:meta/meta.dart';
 import 'package:process/process.dart';
 
 import 'application_package.dart';
@@ -120,14 +119,11 @@ abstract class DesktopDevice extends Device {
     }
 
     Process process;
-    final command = <String>[executable, ...launchArgumentsForDevice(package, debuggingOptions)];
+    final command = <String>[executable, ...debuggingOptions.dartEntrypointArgs];
     try {
       process = await _processManager.start(
         command,
-        environment: <String, String>{
-          ..._computeEnvironment(debuggingOptions, traceStartup, route),
-          ...additionalEnvironmentForDevice(buildInfo),
-        },
+        environment: _computeEnvironment(debuggingOptions, traceStartup, route),
       );
     } on ProcessException catch (e) {
       _logger.printError('Unable to start executable "${command.join(' ')}": $e');
@@ -226,24 +222,9 @@ abstract class DesktopDevice extends Device {
   /// the given [BuildInfo.mode].
   String? executablePathForDevice(ApplicationPackage package, BuildInfo buildInfo);
 
-  /// Arguments passed to the executable when launching it.
-  ///
-  /// Desktop embedders normally forward only Dart entrypoint arguments. An
-  /// alternative desktop shell may prepend arguments required by its native
-  /// runner.
-  List<String> launchArgumentsForDevice(
-    ApplicationPackage package,
-    DebuggingOptions debuggingOptions,
-  ) => debuggingOptions.dartEntrypointArgs;
-
   /// Called after a process is attached, allowing any device-specific extra
   /// steps to be run.
   void onAttached(ApplicationPackage package, BuildInfo buildInfo, Process process) {}
-
-  /// Extra environment variables for the launched executable.
-  @protected
-  Map<String, String> additionalEnvironmentForDevice(BuildInfo buildInfo) =>
-      const <String, String>{};
 
   /// Computes a set of environment variables used to pass debugging information
   /// to the engine without interfering with application level command line

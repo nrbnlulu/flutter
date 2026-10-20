@@ -780,35 +780,42 @@ ownership and scene composition must be designed together. The Dart-facing
 
 ## Tooling and project generation
 
-Rust is a shell selection, not a deployment platform. Prefer:
+Rust is a shell selection, not a deployment platform. Projects are created and
+driven by the standalone `rlutter` CLI (`engine/src/flutter/shell/platform/rust/rlutter`,
+see `flutter-rs-cli-plan.md`), which delegates the Dart side to the stock
+`flutter` tool, so the Flutter tool itself carries no Rust-shell code:
 
 ```sh
-flutter create --shell=rust \
-  --platforms=linux,windows,android,web,macos,ios my_app
+rlutter create --rust-platforms=linux,android my_app
+cd my_app
+rlutter run               # debug, hot reload and DevTools
+rlutter build android --release
 ```
 
-over `--platform=rust`.
+`rlutter create` runs `flutter create` first, so the Rust shell can coexist with
+Flutter's own platform directories: arguments after `--` are forwarded to it
+(`rlutter create my_app -- --platforms=android,web`).
 
-The generated project contains `runner-rs/` but no checked-in `linux/`,
-`windows/`, `android/`, `web/`, `macos/`, or `ios/` directories. Platform
-packaging projects are generated into build output when needed:
+The generated project contains `runner-rs/` (and `android-rs/` when Android is
+requested). Without forwarded `--platforms`, no Flutter platform directories
+are kept. Other platforms (Windows, web, macOS, iOS) are not implemented yet;
+the intended direction is generating their packaging projects into build output:
 
 ```text
-.dart_tool/flutter_build/rust_shell/linux/
 .dart_tool/flutter_build/rust_shell/windows/
-.dart_tool/flutter_build/rust_shell/android/
 .dart_tool/flutter_build/rust_shell/web/
 .dart_tool/flutter_build/rust_shell/macos/
 .dart_tool/flutter_build/rust_shell/ios/
 ```
 
-Android still requires Gradle packaging, a manifest, signing configuration, and
-Android resources. Apple platforms still require Xcode packaging, signing,
-plist data, and entitlements. These become SDK-managed templates configured
+Android packaging lives in the generated, user-owned `android-rs/` Gradle
+project (manifest, signing configuration, resources). Apple platforms still
+require Xcode packaging, signing, plist data, and entitlements. These become SDK-managed templates configured
 from `pubspec.yaml` or a small `rust_shell.yaml`, not source directories users
 must maintain.
 
-The Flutter tool needs commands or build targets for:
+`rlutter` needs commands or build steps for (the first five exist today for Linux
+and Android; the rest are future work):
 
 - Cargo dependency resolution.
 - Discovering Rust-shell plugins in the resolved Pub package graph.

@@ -11,6 +11,7 @@ resolver = "3"
 
 [patch.crates-io]
 winit-wayland = { path = "third_party/winit-wayland" }
+android-activity = { git = "https://github.com/nrbnlulu/android-activity", rev = "10cf552eba323e5c9cd26f6e2619d62050f2395c" }
 
 [workspace.package]
 edition = "2024"

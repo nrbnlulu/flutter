@@ -1320,6 +1320,7 @@ const TEXT_INPUT_CHANNEL: &[u8] = b"flutter/textinput";
 const PLATFORM_CHANNEL: &[u8] = b"flutter/platform";
 const MOUSE_CURSOR_CHANNEL: &[u8] = b"flutter/mousecursor";
 const STANDARD_METHOD_SUCCESS: &[u8] = &[0, 0];
+const JSON_METHOD_SUCCESS: &[u8] = b"[null]";
 const REQUEST_APP_EXIT_MESSAGE: &[u8] =
     br#"{"method":"System.requestAppExit","args":{"type":"cancelable"}}"#;
 const KEY_EVENT_CHANNEL: &[u8] = b"flutter/keyevent";
@@ -1733,6 +1734,19 @@ impl ApplicationExitResponse {
     }
 }
 
+/// The window title an app asks for with
+/// `SystemChrome.setApplicationSwitcherDescription` (what `MaterialApp.title`
+/// sends). Empty labels are ignored so an app that sets no title keeps the one
+/// the runner chose.
+fn decode_application_title(message: &[u8]) -> Option<String> {
+    let call: RawMethodCall = serde_json::from_slice(message).ok()?;
+    if call.method != "SystemChrome.setApplicationSwitcherDescription" {
+        return None;
+    }
+    let label = call.args.get("label")?.as_str()?;
+    (!label.is_empty()).then(|| label.to_owned())
+}
+
 fn is_initialization_complete(message: &[u8]) -> bool {
     serde_json::from_slice::<Value>(message)
         .ok()
@@ -1780,6 +1794,8 @@ impl TextInputCommand {
 struct TextInputInbox {
     commands: Mutex<VecDeque<TextInputCommand>>,
     cursor_commands: Mutex<VecDeque<MouseCursorCommand>>,
+    /// Titles requested by the app for its main window, oldest first.
+    window_titles: Mutex<VecDeque<String>>,
     texture_fixture_messages: Mutex<VecDeque<String>>,
     wake_proxy: HostEventSender,
     exit: Arc<ApplicationExitCoordinator>,
@@ -1821,6 +1837,7 @@ impl TextInputInbox {
         Self {
             commands: Mutex::new(VecDeque::new()),
             cursor_commands: Mutex::new(VecDeque::new()),
+            window_titles: Mutex::new(VecDeque::new()),
             texture_fixture_messages: Mutex::new(VecDeque::new()),
             wake_proxy: wake_proxy.clone(),
             exit: Arc::new(ApplicationExitCoordinator {
@@ -1844,6 +1861,9 @@ impl TextInputInbox {
     }
     fn drain_cursor_commands(&self) -> VecDeque<MouseCursorCommand> {
         std::mem::take(&mut *self.cursor_commands.lock())
+    }
+    fn drain_window_titles(&self) -> VecDeque<String> {
+        std::mem::take(&mut *self.window_titles.lock())
     }
     fn drain_texture_fixture_messages(&self) -> VecDeque<String> {
         std::mem::take(&mut *self.texture_fixture_messages.lock())
@@ -1880,6 +1900,18 @@ extern "C" fn handle_platform_message(
         if is_initialization_complete(message) {
             inbox.exit.initialized.store(true, Ordering::Release);
             return FlutterRustPlatformMessageDisposition::Success;
+        }
+        if let Some(title) = decode_application_title(message) {
+            inbox.window_titles.lock().push_back(title);
+            let _ = inbox.wake_proxy.send_event(HostEvent::TaskScheduled);
+            if response_handle.0.is_null() {
+                return FlutterRustPlatformMessageDisposition::Success;
+            }
+            complete_cpp_platform_message(
+                PendingPlatformResponse(response_handle.0 as usize),
+                JSON_METHOD_SUCCESS,
+            );
+            return FlutterRustPlatformMessageDisposition::Pending;
         }
         #[cfg(target_os = "linux")]
         if let Ok(call) = serde_json::from_slice::<RawMethodCall>(message)
@@ -4763,6 +4795,7 @@ impl ApplicationHandler for ShellApplication {
         });
         self.apply_text_input_commands();
         self.apply_mouse_cursor_commands();
+        self.apply_window_titles();
         #[cfg(target_os = "android")]
         self.poll_android_text_input();
         if let Some(demo) = &mut self.demo_texture {
@@ -5455,6 +5488,21 @@ fn child_origin_offset(size: winit::dpi::LogicalSize<f64>, gravity: PopupAnchor)
 }
 
 impl ShellApplication {
+    /// Applies the app's requested title to its main window; the latest wins.
+    fn apply_window_titles(&mut self) {
+        let Some(title) = self.text_input_inbox.drain_window_titles().pop_back() else {
+            return;
+        };
+        let windows = self.windows.borrow();
+        if let Some(view) = windows
+            .view_windows
+            .get(&FlutterRustViewId::IMPLICIT)
+            .and_then(|id| windows.views.get(id))
+        {
+            view.window.set_title(&title);
+        }
+    }
+
     fn apply_mouse_cursor_commands(&mut self) {
         for command in self.text_input_inbox.drain_cursor_commands() {
             let windows = self

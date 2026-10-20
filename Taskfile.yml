@@ -29,10 +29,49 @@ tasks:
       - PATH="{{.PY312_BIN}}:{{.DEPOT_TOOLS}}:$PATH" ./ci/format.sh --fix
 
   fmt-rust:
-    desc: Format all Rust shell crates with cargo fmt.
+    desc: Format all Rust shell crates (and the rlutter CLI) with cargo fmt.
     dir: '{{.RUST_SHELL_DIR}}'
     cmds:
       - cargo fmt --all
+      - cargo fmt --manifest-path rlutter/Cargo.toml
+
+  build-rlutter:
+    desc: Build the rlutter CLI (create/build/run for Rust shell apps).
+    dir: '{{.RUST_SHELL_DIR}}/rlutter'
+    cmds:
+      - cargo build --release
+
+  install-rlutter:
+    desc: Install the rlutter CLI into ~/.cargo/bin.
+    dir: '{{.RUST_SHELL_DIR}}/rlutter'
+    cmds:
+      - cargo install --path . --locked
+
+  test-rlutter:
+    desc: Run the rlutter unit tests and lints.
+    dir: '{{.RUST_SHELL_DIR}}/rlutter'
+    cmds:
+      - cargo test
+      - cargo clippy --all-targets -- -D warnings
+
+  test-rlutter-e2e:
+    desc: Create a project with rlutter, build it for Linux (debug) and check the bundle layout.
+    deps: [build-rust-shell, build-rlutter]
+    cmds:
+      - |
+        set -e
+        rlutter={{.RUST_SHELL_DIR}}/rlutter/target/release/rlutter
+        dir=$(mktemp -d /tmp/rlutter-e2e.XXXXXX)
+        trap 'rm -rf "$dir"' EXIT
+        cd "$dir"
+        "$rlutter" create smoke_app --flutter-root={{.TASKFILE_DIR}}
+        cd smoke_app
+        "$rlutter" build linux --flutter-root={{.TASKFILE_DIR}}
+        test -x runner-rs/target/debug/smoke_app
+        test -f runner-rs/target/debug/data/flutter_assets/kernel_blob.bin
+        test -f runner-rs/target/debug/data/icudtl.dat
+        test -f runner-rs/target/debug/libs/libflutter_rust_engine.so
+        echo "rlutter end-to-end build OK"
 
   fix-rust-lints:
     desc: Auto-fix cargo clippy lints across all Rust shell packages.

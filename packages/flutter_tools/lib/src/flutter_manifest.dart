@@ -214,9 +214,6 @@ class FlutterManifest {
     return _flutterDescriptor['uses-material-design'] as bool? ?? false;
   }
 
-  /// Whether this application selects the Rust application shell.
-  bool get usesRustShell => _descriptor['rust-shell'] == true;
-
   /// True if this Flutter module should use AndroidX dependencies.
   ///
   /// If false the deprecated Android Support library will be used.
@@ -505,13 +502,6 @@ bool _validate(Object? manifest, Logger logger) {
         case 'name':
           if (kvp.value is! String) {
             errors.add('Expected "${kvp.key}" to be a string, but got ${kvp.value}.');
-          }
-        case 'rust-shell':
-          if (kvp.value is! bool) {
-            errors.add(
-              'Expected "${kvp.key}" to be a bool, but got ${kvp.value} '
-              '(${kvp.value.runtimeType}).',
-            );
           }
         case 'flutter':
           if (kvp.value == null) {
