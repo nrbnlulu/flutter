@@ -13,12 +13,14 @@
 //! with the Dart SDK that matches the engine.
 
 use std::{
-    fs,
+    fs::{self, File},
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
 use flate2::read::GzDecoder;
+use sha2::{Digest, Sha256};
 
 use crate::{
     abi::Abi,
@@ -30,6 +32,10 @@ use crate::{
 
 const BETA_BUNDLE_URL: &str =
     "https://github.com/nrbnlulu/flutter/releases/download/BETA/flutter-rust-linux-x64.tar.gz";
+/// SHA-256 of the archive at [`BETA_BUNDLE_URL`]. The `BETA` tag is mutable, so
+/// the download is verified against this before anything is unpacked; update it
+/// together with the release asset.
+const BETA_BUNDLE_SHA256: &str = "04bdaded0a7a3389fed92ead85036b6e7f36c439a01e9a6e3718f23ef99f530a";
 
 /// What `flutter --local-engine` needs from an engine build, relative to its
 /// output directory. Missing entries are skipped (a host engine has no
@@ -230,11 +236,55 @@ fn download_bundle(sdk: &Path) -> Result<()> {
         .with_context(|| format!("cannot download {BETA_BUNDLE_URL}"))?;
     remove_path(sdk)?;
     fs::create_dir_all(sdk)?;
-    tar::Archive::new(GzDecoder::new(response.into_body().into_reader()))
-        .unpack(sdk)
-        .context("cannot unpack the Rust shell SDK")?;
+    // Next to `sdk`, not inside it: the archive is unpacked into `sdk`.
+    let archive = sdk.with_extension("download");
+    let result = download_verified(
+        response.into_body().into_reader(),
+        &archive,
+        BETA_BUNDLE_SHA256,
+    )
+    .and_then(|()| {
+        let file = File::open(&archive)?;
+        tar::Archive::new(GzDecoder::new(file))
+            .unpack(sdk)
+            .context("cannot unpack the Rust shell SDK")
+    });
+    let _ = fs::remove_file(&archive);
+    result?;
     if !sdk.join("Cargo.toml").is_file() || !sdk.join("crates/flutter-plugin-sdk").is_dir() {
         bail!("the Flutter Rust shell BETA SDK archive is incomplete");
+    }
+    Ok(())
+}
+
+/// Writes `body` to `path` and fails unless its SHA-256 is `expected` (hex).
+fn download_verified(mut body: impl Read, path: &Path, expected: &str) -> Result<()> {
+    let mut file =
+        File::create(path).with_context(|| format!("cannot create {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = body.read(&mut buffer).context("download interrupted")?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        file.write_all(&buffer[..read])?;
+    }
+    file.flush()?;
+    let actual = hasher
+        .finalize()
+        .iter()
+        .fold(String::new(), |mut hex, byte| {
+            hex.push_str(&format!("{byte:02x}"));
+            hex
+        });
+    if !actual.eq_ignore_ascii_case(expected) {
+        bail!(
+            "the downloaded Rust shell SDK does not match the pinned checksum \
+             (expected {expected}, got {actual}); the BETA release may have been \
+             replaced, so update BETA_BUNDLE_SHA256 after checking it"
+        );
     }
     Ok(())
 }
@@ -250,6 +300,18 @@ mod tests {
         for file in ["libflutter_rust_engine.so", "icudtl.dat", "gen_snapshot"] {
             fs::write(dir.join(file), "").unwrap();
         }
+    }
+
+    #[test]
+    fn download_is_kept_only_when_the_checksum_matches() {
+        let root = tempdir("sdk_download");
+        let path = root.join("bundle.tar.gz");
+        // sha256("abc")
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        download_verified(&b"abc"[..], &path, abc).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"abc");
+        let error = download_verified(&b"abd"[..], &path, abc).unwrap_err();
+        assert!(error.to_string().contains("pinned checksum"), "{error}");
     }
 
     #[test]
