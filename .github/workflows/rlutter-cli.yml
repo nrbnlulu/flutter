@@ -80,13 +80,22 @@ jobs:
         run: |
           # Rolling release under its own tag so it doesn't race the BETA
           # SDK release; install.sh downloads from releases/download/rlutter.
+          {
+            echo 'Rolling rlutter CLI binaries built from the latest merged revision.'
+            echo
+            echo 'Install:'
+            echo
+            echo '```bash'
+            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/rust/flutter-rs-shell/engine/src/flutter/shell/platform/rust/install.sh | sh"
+            echo '```'
+          } > notes.md
           if gh release view rlutter --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh api --method PATCH \
               "repos/${GITHUB_REPOSITORY}/git/refs/tags/rlutter" \
               -f sha="${GITHUB_SHA}" -F force=true
+            gh release edit rlutter --repo "$GITHUB_REPOSITORY" --notes-file notes.md
           else
             gh release create rlutter --repo "$GITHUB_REPOSITORY" --prerelease \
-              --title "rlutter CLI" --target "${GITHUB_SHA}" \
-              --notes "Rolling rlutter CLI binaries built from the latest merged revision. Install with: curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/rust/flutter-rs-shell/engine/src/flutter/shell/platform/rust/install.sh | sh"
+              --title "rlutter CLI" --target "${GITHUB_SHA}" --notes-file notes.md
           fi
           gh release upload rlutter dist/* --repo "$GITHUB_REPOSITORY" --clobber
