@@ -16,7 +16,7 @@ use crate::{
     mode::BuildMode,
     plugins::{NativeLibrary, read_native_libraries},
     project::Project,
-    util::run,
+    util::{remove_path, run},
 };
 
 /// A cross-compilation target: the ABI and the NDK that links for it.
@@ -65,6 +65,9 @@ fn cargo_command(
 pub fn build_all(project: &Project, mode: BuildMode, cross: CrossTarget) -> Result<Vec<PathBuf>> {
     let libraries = read_native_libraries(project)?;
     let staging = staging_dir(project, mode, cross.map(|(abi, _)| abi));
+    // Drop libraries staged by an earlier build, including those whose plugin
+    // has since been removed, so only what is built now gets bundled.
+    remove_path(&staging)?;
     if libraries.is_empty() {
         return Ok(Vec::new());
     }
@@ -201,5 +204,24 @@ mod tests {
             staging_dir(&project, BuildMode::Release, Some(Abi::Arm64V8a)),
             PathBuf::from("/p/.dart_tool/flutter_rs/native_libs/arm64-v8a/release")
         );
+    }
+
+    #[test]
+    fn stale_staged_libraries_are_removed_even_without_native_libraries() {
+        let dir = crate::util::testing::tempdir("native_libs_stale");
+        let project = Project {
+            dir: dir.clone(),
+            name: "demo".into(),
+            rust_shell: true,
+        };
+        let staging = staging_dir(&project, BuildMode::Debug, None);
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("libgone.so"), "").unwrap();
+        assert!(
+            build_all(&project, BuildMode::Debug, None)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!staging.join("libgone.so").exists());
     }
 }

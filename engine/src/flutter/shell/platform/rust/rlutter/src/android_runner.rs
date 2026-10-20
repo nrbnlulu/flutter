@@ -55,7 +55,7 @@ pub fn with_android_module(lib_rs: &str) -> String {
         return lib_rs.to_owned();
     }
     let declaration = format!("#[cfg(target_os = \"android\")]\n{MODULE_LINE}\n");
-    match lib_rs.find("mod flutter_plugins;") {
+    match plugins_declaration_start(lib_rs) {
         Some(at) => format!("{}{declaration}{}", &lib_rs[..at], &lib_rs[at..]),
         None => {
             let separator = if lib_rs.ends_with('\n') || lib_rs.is_empty() {
@@ -66,6 +66,58 @@ pub fn with_android_module(lib_rs: &str) -> String {
             format!("{lib_rs}{separator}\n{declaration}")
         }
     }
+}
+
+/// Byte offset of the line where the `flutter_plugins` module declaration
+/// starts: its first outer attribute or doc comment, or the `mod` line itself
+/// (with any visibility) when it has none. Inserting there keeps both intact.
+fn plugins_declaration_start(lib_rs: &str) -> Option<usize> {
+    let lines: Vec<(usize, &str)> = lib_rs
+        .split_inclusive('\n')
+        .scan(0, |offset, line| {
+            let start = *offset;
+            *offset += line.len();
+            Some((start, line))
+        })
+        .collect();
+    let declaration = lines
+        .iter()
+        .position(|(_, line)| is_plugins_declaration(line))?;
+    let mut first = declaration;
+    // Walk up over the attributes and doc comments that belong to the `mod`.
+    // A multi-line attribute is recognised from its closing `]` line.
+    while first > 0 {
+        let line = lines[first - 1].1.trim();
+        if line.starts_with("#[") || line.starts_with("///") {
+            first -= 1;
+        } else if line.ends_with(']') || line.ends_with(")]") {
+            match lines[..first]
+                .iter()
+                .rposition(|(_, l)| l.trim_start().starts_with("#["))
+            {
+                Some(start) => first = start,
+                None => break,
+            }
+        } else {
+            break;
+        }
+    }
+    Some(lines[first].0)
+}
+
+/// `[pub[(..)]] mod flutter_plugins;` on its own line.
+fn is_plugins_declaration(line: &str) -> bool {
+    let mut rest = line.trim();
+    if let Some(after_pub) = rest.strip_prefix("pub") {
+        rest = after_pub.trim_start();
+        if rest.starts_with('(') {
+            match rest.find(')') {
+                Some(close) => rest = rest[close + 1..].trim_start(),
+                None => return false,
+            }
+        }
+    }
+    rest == "mod flutter_plugins;"
 }
 
 /// Brings the runner up to date for Android builds.
@@ -134,6 +186,40 @@ mod tests {
             "// header\n\n#[cfg(target_os = \"android\")]\nmod flutter_android;\nmod flutter_plugins;\n\npub fn x() {}\n"
         );
         assert_eq!(with_android_module(&updated), updated);
+    }
+
+    #[test]
+    fn module_is_declared_before_the_whole_plugins_declaration() {
+        let declaration = |lib: &str| {
+            let updated = with_android_module(lib);
+            assert_eq!(with_android_module(&updated), updated, "idempotent");
+            updated
+        };
+        let cfg = "#[cfg(target_os = \"android\")]\nmod flutter_android;\n";
+        // Visibility must not be split from `mod`.
+        assert_eq!(
+            declaration("pub mod flutter_plugins;\n"),
+            format!("{cfg}pub mod flutter_plugins;\n")
+        );
+        assert_eq!(
+            declaration("pub(crate) mod flutter_plugins;\n"),
+            format!("{cfg}pub(crate) mod flutter_plugins;\n")
+        );
+        // Attributes and docs stay attached to the plugins module.
+        assert_eq!(
+            declaration("use a;\n/// Plugins.\n#[allow(dead_code)]\npub mod flutter_plugins;\n"),
+            format!("use a;\n{cfg}/// Plugins.\n#[allow(dead_code)]\npub mod flutter_plugins;\n")
+        );
+        assert_eq!(
+            declaration(
+                "#[cfg_attr(\n    feature = \"x\",\n    allow(dead_code)\n)]\nmod flutter_plugins;\n"
+            ),
+            format!(
+                "{cfg}#[cfg_attr(\n    feature = \"x\",\n    allow(dead_code)\n)]\nmod flutter_plugins;\n"
+            )
+        );
+        // A similarly named module is not the plugins module.
+        assert!(declaration("mod flutter_plugins_extra;\n").ends_with(&format!("\n{cfg}")));
     }
 
     #[test]

@@ -25,7 +25,11 @@ pub fn run_app(ctx: &Ctx, args: &RunArgs) -> Result<i32> {
         (app.stop)();
         result?
     } else {
-        (app.wait)().unwrap_or(0)
+        let code = (app.wait)().unwrap_or(0);
+        // The app has exited; stop is idempotent and also releases the
+        // device-side helpers (e.g. the adb logcat process on Android).
+        (app.stop)();
+        code
     };
     Ok(code)
 }
