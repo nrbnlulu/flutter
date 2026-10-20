@@ -29,6 +29,7 @@ debug = true
 
 [patch.crates-io]
 winit-wayland = { path = "../../../third_party/winit-wayland" }
+android-activity = { git = "https://github.com/nrbnlulu/android-activity", rev = "10cf552eba323e5c9cd26f6e2619d62050f2395c" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(frb_expand)"] }
