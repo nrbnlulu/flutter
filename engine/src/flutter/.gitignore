@@ -30,6 +30,7 @@ xcuserdata
 # Miscellaneous
 *.class
 *.lock
+!/shell/platform/rust/rlutter/Cargo.lock
 *.log
 *.pyc
 *.swp
