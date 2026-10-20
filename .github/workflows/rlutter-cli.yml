@@ -1,0 +1,92 @@
+name: rlutter CLI
+
+on:
+  push:
+    branches: [master, rust/flutter-rs-shell]
+    paths:
+      - engine/src/flutter/shell/platform/rust/rlutter/**
+      - .github/workflows/rlutter-cli.yml
+  pull_request:
+    paths:
+      - engine/src/flutter/shell/platform/rust/rlutter/**
+      - .github/workflows/rlutter-cli.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rlutter-cli-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RLUTTER_DIR: engine/src/flutter/shell/platform/rust/rlutter
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: rlutter-linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.93.1 --profile minimal --target ${{ matrix.target }}
+
+      - name: Test
+        working-directory: ${{ env.RLUTTER_DIR }}
+        run: cargo +1.93.1 test --locked --target ${{ matrix.target }}
+
+      - name: Build
+        working-directory: ${{ env.RLUTTER_DIR }}
+        run: cargo +1.93.1 build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp "$RLUTTER_DIR/target/${{ matrix.target }}/release/rlutter" "dist/${{ matrix.asset }}"
+          tar -C dist -czf "dist/${{ matrix.asset }}.tar.gz" "${{ matrix.asset }}"
+          rm "dist/${{ matrix.asset }}"
+          (cd dist && sha256sum "${{ matrix.asset }}.tar.gz" > "${{ matrix.asset }}.tar.gz.sha256")
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/
+          retention-days: 1
+
+  publish:
+    # Only publish from pushes to the long-lived branches, not PRs.
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: rlutter-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish rolling rlutter release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Rolling release under its own tag so it doesn't race the BETA
+          # SDK release; install.sh downloads from releases/download/rlutter.
+          if gh release view rlutter --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh api --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/git/refs/tags/rlutter" \
+              -f sha="${GITHUB_SHA}" -F force=true
+          else
+            gh release create rlutter --repo "$GITHUB_REPOSITORY" --prerelease \
+              --title "rlutter CLI" --target "${GITHUB_SHA}" \
+              --notes "Rolling rlutter CLI binaries built from the latest merged revision. Install with: curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/rust/flutter-rs-shell/rust/install.sh | sh"
+          fi
+          gh release upload rlutter dist/* --repo "$GITHUB_REPOSITORY" --clobber
