@@ -9,6 +9,11 @@ use anyhow::{Context, Result, bail};
 
 use crate::{flutter::Flutter, mode::BuildMode, project::Project, sdk::Engine, util::run};
 
+// `flutter assemble` bypasses FlutterCommand.getBuildInfo(), which normally
+// adds enabled framework features to the Dart defines. The Rust shell exposes
+// Flutter's windowing backend, so its bundles must always enable that API.
+const WINDOWING_DART_DEFINES: &str = "RkxVVFRFUl9FTkFCTEVEX0ZFQVRVUkVfRkxBR1M9d2luZG93aW5n";
+
 pub struct Bundle {
     /// Directory holding the app's assets (`AssetManifest.bin`, fonts, and
     /// `kernel_blob.bin` in debug).
@@ -28,6 +33,7 @@ fn assemble_args(mode: BuildMode, platform: &str, target: &str, output: &Path) -
         format!("-dTargetPlatform={platform}"),
         format!("-dBuildMode={}", mode.name()),
         format!("-dTargetFile={target}"),
+        format!("-dDartDefines={WINDOWING_DART_DEFINES}"),
         "copy_flutter_bundle".to_owned(),
     ];
     if mode.config().dart_aot {
@@ -105,6 +111,7 @@ mod tests {
                 "-dTargetPlatform=linux-x64",
                 "-dBuildMode=debug",
                 "-dTargetFile=lib/main.dart",
+                "-dDartDefines=RkxVVFRFUl9FTkFCTEVEX0ZFQVRVUkVfRkxBR1M9d2luZG93aW5n",
                 "copy_flutter_bundle"
             ]
         );

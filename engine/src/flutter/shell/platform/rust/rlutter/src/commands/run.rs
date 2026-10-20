@@ -40,6 +40,9 @@ fn attach(ctx: &Ctx, device: &dyn device::Device, app: &RunningApp, target: &str
     };
     let mut command = ctx.flutter.command(Some(&app.engine));
     command
+        // Attach builds hot-reload and hot-restart kernels through the normal
+        // Flutter command path, where this enables the matching Dart feature.
+        .env("FLUTTER_WINDOWING", "true")
         .args(["attach", "-d"])
         .arg(device.flutter_device_id())
         .arg("--debug-url")
