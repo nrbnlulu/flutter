@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs the rlutter CLI from GitHub releases.
 #
-#   curl -fsSL https://raw.githubusercontent.com/nrbnlulu/flutter/rust/flutter-rs-shell/rust/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/nrbnlulu/flutter/rust/flutter-rs-shell/engine/src/flutter/shell/platform/rust/install.sh | sh
 #
 # Environment:
 #   RLUTTER_VERSION      release tag to install (default: rlutter, the rolling build)

@@ -87,6 +87,6 @@ jobs:
           else
             gh release create rlutter --repo "$GITHUB_REPOSITORY" --prerelease \
               --title "rlutter CLI" --target "${GITHUB_SHA}" \
-              --notes "Rolling rlutter CLI binaries built from the latest merged revision. Install with: curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/rust/flutter-rs-shell/rust/install.sh | sh"
+              --notes "Rolling rlutter CLI binaries built from the latest merged revision. Install with: curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/rust/flutter-rs-shell/engine/src/flutter/shell/platform/rust/install.sh | sh"
           fi
           gh release upload rlutter dist/* --repo "$GITHUB_REPOSITORY" --clobber
