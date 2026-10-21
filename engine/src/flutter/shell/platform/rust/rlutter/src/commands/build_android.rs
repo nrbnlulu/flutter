@@ -189,9 +189,7 @@ fn runner_cargo_command(
         "--target",
         abi.rust_triple(),
     ]);
-    if mode.config().cargo_release {
-        command.arg("--release");
-    }
+    command.args(mode.cargo_args());
     command.envs(toolchain.cargo_env(abi));
     command.current_dir(project.runner_dir());
     command

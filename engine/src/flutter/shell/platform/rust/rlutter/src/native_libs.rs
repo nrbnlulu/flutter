@@ -39,9 +39,7 @@ fn cargo_command(
 ) -> Command {
     let mut command = Command::new("cargo");
     command.arg("build");
-    if mode.config().cargo_release {
-        command.arg("--release");
-    }
+    command.args(mode.cargo_args());
     if let Some((abi, toolchain)) = cross {
         command.arg("--target").arg(abi.rust_triple());
         command.envs(toolchain.cargo_env(abi));

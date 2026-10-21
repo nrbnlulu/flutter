@@ -1186,3 +1186,27 @@ hot reload, and clean quit. All 90 CLI unit tests and workflow actionlint pass.
 Strict Clippy reports two pre-existing argument-count warnings in unchanged
 functions; all other lints pass. CLI publication now follows a successful BETA
 build and verifies that the SDK release SHA matches the CLI revision.
+
+## Optimized Rust code for rlutter debug builds
+
+Generated `runner-rs` projects are independent Cargo workspaces. They do not
+inherit the engine workspace's optimized dev profile, so `rlutter run` was
+compiling the Rust shell and wgpu at optimization level zero. The CLI now
+passes the dev-profile optimization settings directly to Cargo for Linux
+runners, Android runners, and separately built native plugin libraries. The
+application crate uses optimization level 1 and dependencies use level 3. This
+also applies to existing projects without rewriting their Cargo manifests.
+Debug assertions, debug information, debug artifact paths, the JIT engine,
+and Dart hot reload remain enabled. Release builds keep their release profile.
+
+Verification: all 91 CLI tests pass; Clippy passes with only the existing
+`too_many_arguments` lint suppressed. A generated Linux debug runner compiles
+its dependencies with `-C opt-level=3 -C debug-assertions=on` and stays on the
+JIT engine. A local 512-rectangle animation comparison did not show a clear
+frame-time improvement (roughly 7–9 ms median raster time before and 8–9 ms
+after). The configuration fix alone does not establish the cause of a user's
+reported severe debug/release performance gap; that still needs an app
+reproduction and the user's platform/workload.
+
+The optimized debug runner also passed debugger attach and a real one-library
+hot reload (115 ms), then quit cleanly.

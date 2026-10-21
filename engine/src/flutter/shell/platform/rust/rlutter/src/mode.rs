@@ -54,6 +54,23 @@ impl BuildMode {
         }
     }
 
+    /// Keep the debug runtime and debug assertions, but optimize native code.
+    /// The generated runner is a workspace root: profiles from its shell SDK
+    /// dependency are ignored by Cargo. Command-line config also fixes existing
+    /// projects and independently built native plugin workspaces.
+    pub fn cargo_args(self) -> &'static [&'static str] {
+        if self.config().cargo_release {
+            &["--release"]
+        } else {
+            &[
+                "--config",
+                "profile.dev.opt-level=1",
+                "--config",
+                "profile.dev.package.\"*\".opt-level=3",
+            ]
+        }
+    }
+
     /// Directory Cargo puts artifacts in (`target/<this>/`).
     pub fn cargo_profile_dir(self) -> &'static str {
         self.name()
@@ -117,6 +134,24 @@ mod tests {
         let config = mode.config();
         assert!(config.cargo_release && config.dart_aot && !config.hot_reload);
         assert!(!config.plugins_include_dev);
+    }
+
+    #[test]
+    fn debug_optimizes_native_code_without_switching_to_aot() {
+        let mode = BuildMode::Debug;
+        let config = mode.config();
+        assert!(!config.cargo_release && !config.dart_aot && config.hot_reload);
+        assert_eq!(mode.cargo_profile_dir(), "debug");
+        assert_eq!(
+            mode.cargo_args(),
+            [
+                "--config",
+                "profile.dev.opt-level=1",
+                "--config",
+                "profile.dev.package.\"*\".opt-level=3",
+            ]
+        );
+        assert_eq!(BuildMode::Release.cargo_args(), ["--release"]);
     }
 
     #[test]

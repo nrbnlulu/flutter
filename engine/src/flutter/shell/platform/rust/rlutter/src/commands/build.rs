@@ -77,9 +77,7 @@ pub fn build_linux(
 fn runner_cargo_command(project: &Project, mode: BuildMode) -> Command {
     let mut command = Command::new("cargo");
     command.arg("build");
-    if mode.config().cargo_release {
-        command.arg("--release");
-    }
+    command.args(mode.cargo_args());
     if project.runner_dir().join("Cargo.lock").is_file() {
         command.arg("--locked");
     }
@@ -176,10 +174,10 @@ mod tests {
             ["build", "--release"]
         );
         fs::write(p.runner_dir().join("Cargo.lock"), "").unwrap();
-        assert_eq!(
-            args(&runner_cargo_command(&p, BuildMode::Debug)),
-            ["build", "--locked"]
-        );
+        let mut expected = vec!["build"];
+        expected.extend(BuildMode::Debug.cargo_args());
+        expected.push("--locked");
+        assert_eq!(args(&runner_cargo_command(&p, BuildMode::Debug)), expected);
     }
 
     #[test]
