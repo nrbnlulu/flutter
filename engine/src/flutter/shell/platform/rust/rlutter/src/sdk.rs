@@ -40,6 +40,11 @@ const ENGINE_ENTRIES: &[&str] = &[
     "flutter_patched_sdk",
     "frontend_server_aot.dart.snapshot",
     "gen_snapshot",
+    "font-subset",
+    "impellerc",
+    "shader_lib",
+    "libtessellator.so",
+    "gen/dart-pkg",
     // Android engines keep the host-run AOT compiler here.
     "clang_x64/gen_snapshot",
     "icudtl.dat",
@@ -270,7 +275,7 @@ fn ensure_android_bundle(sdk: &Path, abi: Abi, mode: BuildMode) -> Result<PathBu
     Ok(engine)
 }
 
-fn download_and_unpack(url: &str, dest: &Path) -> Result<()> {
+pub(crate) fn download_and_unpack(url: &str, dest: &Path) -> Result<()> {
     let response = ureq::get(url)
         .call()
         .with_context(|| format!("cannot download {url}"))?;
@@ -288,7 +293,13 @@ mod tests {
     fn fake_engine(dir: &Path) {
         fs::create_dir_all(dir.join("gen/flutter/lib/snapshot")).unwrap();
         fs::create_dir_all(dir.join("flutter_patched_sdk")).unwrap();
-        for file in ["libflutter_rust_engine.so", "icudtl.dat", "gen_snapshot"] {
+        for file in [
+            "libflutter_rust_engine.so",
+            "icudtl.dat",
+            "gen_snapshot",
+            "font-subset",
+            "impellerc",
+        ] {
             fs::write(dir.join(file), "").unwrap();
         }
     }
@@ -322,6 +333,8 @@ mod tests {
             "libflutter_rust_engine.so",
             "icudtl.dat",
             "gen_snapshot",
+            "font-subset",
+            "impellerc",
             "flutter_patched_sdk",
             "gen/flutter/lib/snapshot",
         ] {

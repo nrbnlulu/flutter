@@ -57,6 +57,8 @@ mv "$tmp/$asset" "$INSTALL_DIR/rlutter"
 chmod +x "$INSTALL_DIR/rlutter"
 
 say "installed $INSTALL_DIR/rlutter"
+say "the first command downloads its Flutter SDK and engine from GitHub releases; no Flutter or FVM install is needed"
+say "building apps requires Rust/Cargo and the platform native build dependencies"
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) say "add it to your PATH:  export PATH=\"$INSTALL_DIR:\$PATH\"" ;;

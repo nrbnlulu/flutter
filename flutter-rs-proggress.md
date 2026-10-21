@@ -1165,3 +1165,24 @@ ships fontconfig), `task build-rust-shell`/`build-rust-shell-release` flip fontc
 and a Linux engine built without it prints a warning at startup. Verified with a probe app rasterizing 😀 through
 `Picture.toImage`: release without fontconfig produced 0 colored pixels plus the warning; after enabling it, both debug
 and release produced 3084 colored pixels (Noto Color Emoji).
+
+## Standalone rlutter installation
+
+`install.sh` installs the CLI; its first command downloads the framework, Flutter
+tool, and full tool Dart SDK from the BETA GitHub release into
+`$XDG_CACHE_HOME/rlutter/flutter-BETA` (default `~/.cache/rlutter/flutter-BETA`).
+Default SDK discovery no longer uses PATH, FVM, or the CLI's build-time checkout.
+`--flutter-root` / `FLUTTER_ROOT` remain explicit development overrides. The
+matching engine compilers, full engine Dart SDK, shader tools, fonts tool,
+`dart:ui` package and Rust shell sources come from the engine release archives.
+The BETA publish job verifies packaged debug and release application builds
+with a failing global `flutter` on PATH before uploading the assets. Rust/Cargo
+and native platform dependencies are still needed; Android also needs the
+Android SDK/NDK and JDK.
+
+Verified locally with a copied release layout and a failing `flutter` on PATH:
+project preparation, debug and AOT release builds, `rlutter run`, debugger attach,
+hot reload, and clean quit. All 90 CLI unit tests and workflow actionlint pass.
+Strict Clippy reports two pre-existing argument-count warnings in unchanged
+functions; all other lints pass. CLI publication now follows a successful BETA
+build and verifies that the SDK release SHA matches the CLI revision.

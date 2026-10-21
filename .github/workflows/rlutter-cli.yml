@@ -5,12 +5,18 @@ on:
     branches: [master, rust/flutter-rs-shell]
     paths:
       - engine/src/flutter/shell/platform/rust/rlutter/**
+      - engine/src/flutter/shell/platform/rust/install.sh
       - .github/workflows/rlutter-cli.yml
   pull_request:
     paths:
       - engine/src/flutter/shell/platform/rust/rlutter/**
+      - engine/src/flutter/shell/platform/rust/install.sh
       - .github/workflows/rlutter-cli.yml
   workflow_dispatch:
+  workflow_run:
+    workflows: [Flutter Rust BETA artifacts]
+    types: [completed]
+    branches: [master, rust/flutter-rs-shell]
 
 permissions:
   contents: write
@@ -24,6 +30,7 @@ env:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -36,6 +43,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.93.1 --profile minimal --target ${{ matrix.target }}
@@ -63,8 +71,8 @@ jobs:
           retention-days: 1
 
   publish:
-    # Only publish from pushes to the long-lived branches, not PRs.
-    if: github.event_name != 'pull_request'
+    # Publish only after the matching SDK passed its packaged app builds.
+    if: github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -77,7 +85,16 @@ jobs:
       - name: Publish rolling rlutter release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
+          sdk_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/BETA" --jq .object.sha)
+          if [[ "$sdk_sha" != "$RELEASE_SHA" ]]; then
+            echo "BETA SDK does not match $RELEASE_SHA; wait for its successful SDK build." >&2
+            exit 1
+          fi
+          gh release view BETA --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' | grep -Fx 'rlutter-flutter-linux-x64.tar.gz'
+
           # Rolling release under its own tag so it doesn't race the BETA
           # SDK release; install.sh downloads from releases/download/rlutter.
           {
@@ -92,10 +109,10 @@ jobs:
           if gh release view rlutter --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh api --method PATCH \
               "repos/${GITHUB_REPOSITORY}/git/refs/tags/rlutter" \
-              -f sha="${GITHUB_SHA}" -F force=true
+              -f sha="${RELEASE_SHA}" -F force=true
             gh release edit rlutter --repo "$GITHUB_REPOSITORY" --notes-file notes.md
           else
             gh release create rlutter --repo "$GITHUB_REPOSITORY" --prerelease \
-              --title "rlutter CLI" --target "${GITHUB_SHA}" --notes-file notes.md
+              --title "rlutter CLI" --target "${RELEASE_SHA}" --notes-file notes.md
           fi
           gh release upload rlutter dist/* --repo "$GITHUB_REPOSITORY" --clobber

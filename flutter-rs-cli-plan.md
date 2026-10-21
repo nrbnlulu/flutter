@@ -146,7 +146,7 @@ rlutter clean
 ```
 
 Global: `--verbose`, `--flutter-root <path>` (default: `$FLUTTER_ROOT`, else
-the `flutter` on `PATH` resolved to its root), `--local-engine-src <path>`
+the release-managed SDK under `~/.cache/rlutter`), `--local-engine-src <path>`
 (override auto-detection of a local checkout).
 
 ### Build modes

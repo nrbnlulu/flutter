@@ -11,7 +11,7 @@ use crate::{abi::Abi, mode::ModeArgs};
     about = "Build and run Flutter apps on the Rust shell"
 )]
 pub struct Cli {
-    /// Flutter SDK to delegate Dart tooling to [default: `flutter` on PATH].
+    /// Override the release-managed Flutter SDK.
     #[arg(long, global = true, env = "FLUTTER_ROOT", value_name = "DIR")]
     pub flutter_root: Option<PathBuf>,
 

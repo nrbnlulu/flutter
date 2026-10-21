@@ -96,11 +96,34 @@ jobs:
       - name: Build Flutter tool
         run: |
           bin/flutter --version
+          bin/flutter precache --linux
           if grep -q '"frameworkVersion": "0.0.0-unknown"' bin/cache/flutter.version.json; then
             echo 'Flutter could not derive a version from the imported tag.' >&2
             exit 1
           fi
           bin/cache/dart-sdk/bin/dart .agents/skills/rebuilding-flutter-tool/scripts/rebuild.dart
+
+      - name: Package standalone Flutter SDK
+        run: |
+          # Preserve git metadata for bin/flutter's revision checks, and the
+          # bootstrapped tool + full Dart SDK. No FVM or global Flutter needed.
+          sdk="$RUNNER_TEMP/rlutter-flutter"
+          git clone --no-local --single-branch "$GITHUB_WORKSPACE" "$sdk"
+          git -C "$sdk" fetch --depth 1 "$GITHUB_WORKSPACE" \
+            "refs/tags/$FLUTTER_VERSION_TAG:refs/tags/$FLUTTER_VERSION_TAG"
+          git -C "$sdk" remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          rm -rf "$sdk/engine"
+          cp -a bin/cache "$sdk/bin/"
+          # Avoid recompiling the tool just because extraction reorders mtimes.
+          touch "$sdk/packages/flutter_tools/pubspec.lock"
+          tar -C "$sdk" -czf "$RUNNER_TEMP/rlutter-flutter-linux-x64.tar.gz" .
+
+      - name: Upload standalone Flutter SDK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: rlutter-flutter-sdk
+          path: ${{ runner.temp }}/rlutter-flutter-linux-x64.tar.gz
+          retention-days: 1
 
       - name: Upload Flutter tool snapshot
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
@@ -155,7 +178,8 @@ jobs:
           # engine, and ship them with it.
           ninja -C out/host_${{ matrix.runtime_mode }} \
             flutter_rust_shell_runner libflutter_rust_engine.so \
-            flutter_patched_sdk dart-sdk gen_snapshot font-subset \
+            flutter_patched_sdk dart-sdk gen_snapshot font-subset impellerc libtessellator.so \
+            flutter/sky/packages/sky_engine:sky_engine \
             flutter/flutter_frontend_server:frontend_server
 
       - name: Package engine artifacts (${{ matrix.runtime_mode }})
@@ -266,6 +290,12 @@ jobs:
           name: flutter-tools-snapshot
           path: build
 
+      - name: Download standalone Flutter SDK
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: rlutter-flutter-sdk
+          path: build
+
       - name: Download debug engine build
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -294,7 +324,8 @@ jobs:
           for mode in debug release; do
             lib="build/flutter-rust-sdk/lib/$mode"
             chmod +x "$lib/flutter_rust_shell_runner" "$lib/gen_snapshot" "$lib/font-subset" \
-              "$lib/dart-sdk/bin/dart" "$lib/dart-sdk/bin/dartaotruntime"
+              "$lib/dart-sdk/bin/dart" "$lib/dart-sdk/bin/dartaotruntime" "$lib/impellerc"
+            find "$lib/dart-sdk/bin" -type f ! -path '*/snapshots/*' -exec chmod +x {} +
           done
           tar -C build/flutter-rust-sdk -czf build/flutter-rust-linux-x64.tar.gz .
           # One archive per Android ABI, laid out as <mode>/ like the Linux
@@ -313,7 +344,38 @@ jobs:
             tar -C "$dir" -czf "build/flutter-rust-$cpu.tar.gz" .
           done
           mv build/flutter_tools.snapshot build/flutter-tools.snapshot
-          sha256sum build/flutter-rust-*.tar.gz build/flutter-tools.snapshot > build/SHA256SUMS
+          sha256sum build/flutter-rust-*.tar.gz build/rlutter-flutter-linux-x64.tar.gz build/flutter-tools.snapshot > build/SHA256SUMS
+
+      - name: Verify standalone SDK without a Flutter installation
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libvulkan-dev libwayland-dev libxkbcommon-dev
+          rustup toolchain install 1.93.1 --profile minimal
+          cargo +1.93.1 build --release --locked \
+            --manifest-path engine/src/flutter/shell/platform/rust/rlutter/Cargo.toml
+          rlutter="$GITHUB_WORKSPACE/engine/src/flutter/shell/platform/rust/rlutter/target/release/rlutter"
+          export XDG_CACHE_HOME="$RUNNER_TEMP/standalone-cache"
+          unset FLUTTER_ROOT
+          mkdir -p "$XDG_CACHE_HOME/rlutter/flutter-BETA"
+          tar -xzf build/rlutter-flutter-linux-x64.tar.gz -C "$XDG_CACHE_HOME/rlutter/flutter-BETA"
+          touch "$XDG_CACHE_HOME/rlutter/flutter-BETA/.rlutter-complete"
+          # Fail if rlutter ever tries PATH discovery again.
+          mkdir -p "$RUNNER_TEMP/no-flutter"
+          printf '#!/bin/sh\necho "Unexpected global Flutter invocation" >&2\nexit 1\n' > "$RUNNER_TEMP/no-flutter/flutter"
+          chmod +x "$RUNNER_TEMP/no-flutter/flutter"
+          export PATH="$RUNNER_TEMP/no-flutter:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          cd "$RUNNER_TEMP"
+          mkdir -p standalone_smoke
+          cd standalone_smoke
+          # Test the exact packaged sources/engines, without a network download
+          # of the previous rolling release or a link into the CI checkout.
+          mkdir -p .dart_tool/flutter_rs/sdk
+          tar -xzf "$GITHUB_WORKSPACE/build/flutter-rust-linux-x64.tar.gz" -C .dart_tool/flutter_rs/sdk
+          "$rlutter" create . --project-name standalone_smoke
+          "$rlutter" build linux
+          test -f runner-rs/target/debug/data/flutter_assets/kernel_blob.bin
+          "$rlutter" build linux --release
+          test -f runner-rs/target/release/data/flutter_assets/app.so
 
       - name: Publish rolling BETA release
         env:
@@ -335,5 +397,6 @@ jobs:
           gh release upload BETA \
             build/flutter-rust-*.tar.gz \
             build/flutter-tools.snapshot \
+            build/rlutter-flutter-linux-x64.tar.gz \
             build/SHA256SUMS \
             --clobber

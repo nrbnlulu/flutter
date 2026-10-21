@@ -6,7 +6,7 @@ use std::{
     process::Command,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use crate::sdk::Engine;
 
@@ -15,25 +15,64 @@ pub struct Flutter {
 }
 
 impl Flutter {
-    /// Finds the Flutter SDK: `--flutter-root` / `$FLUTTER_ROOT`, else the
-    /// `flutter` on `PATH`, else the checkout this tool was built from.
+    /// Uses an explicit SDK override, or downloads our release SDK. Never
+    /// discovers Flutter through PATH, FVM, or a build-time checkout path.
     pub fn discover(explicit: Option<&Path>) -> Result<Self> {
         if let Some(root) = explicit {
             return Self::at(root);
         }
-        if let Ok(binary) = which::which("flutter")
-            && let Some(root) = binary.canonicalize()?.parent().and_then(Path::parent)
-            && let Ok(flutter) = Self::at(root)
-        {
-            return Ok(flutter);
+        let cache = env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+            .context("set HOME or XDG_CACHE_HOME for the rlutter SDK cache")?;
+        Self::managed(&cache.join("rlutter"))
+    }
+
+    fn managed(cache: &Path) -> Result<Self> {
+        if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            bail!(
+                "the release Flutter SDK is only available for Linux x86_64; pass --flutter-root"
+            );
         }
-        // <root>/engine/src/flutter/shell/platform/rust/rlutter
-        if let Some(root) = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(7)
-            && let Ok(flutter) = Self::at(root)
-        {
-            return Ok(flutter);
+        let root = cache.join("flutter-BETA");
+        if root.join(".rlutter-complete").is_file() {
+            return Self::at(&root);
         }
-        bail!("cannot find the Flutter SDK; pass --flutter-root or set FLUTTER_ROOT")
+        std::fs::create_dir_all(cache)?;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(cache.join("flutter.lock"))?;
+        lock.lock()?;
+        if root.join(".rlutter-complete").is_file() {
+            return Self::at(&root);
+        }
+        let staging = cache.join(format!(".flutter-download-{}", std::process::id()));
+        crate::util::remove_path(&staging)?;
+        eprintln!("Downloading the rlutter Flutter SDK from the BETA release...");
+        let result = (|| {
+            crate::sdk::download_and_unpack(
+                "https://github.com/nrbnlulu/flutter/releases/download/BETA/rlutter-flutter-linux-x64.tar.gz",
+                &staging,
+            )?;
+            Self::at(&staging)?;
+            for entry in [
+                "bin/cache/dart-sdk/bin/dart",
+                "bin/cache/flutter_tools.snapshot",
+                ".git/HEAD",
+            ] {
+                if !staging.join(entry).is_file() {
+                    bail!("the release Flutter SDK is incomplete (missing {entry})");
+                }
+            }
+            std::fs::write(staging.join(".rlutter-complete"), "BETA\n")?;
+            crate::util::remove_path(&root)?;
+            std::fs::rename(&staging, &root)?;
+            Self::at(&root)
+        })();
+        let _ = crate::util::remove_path(&staging);
+        result
     }
 
     fn at(root: &Path) -> Result<Self> {
@@ -58,6 +97,12 @@ impl Flutter {
     /// engine (anything else fails at launch with "Invalid SDK hash").
     pub fn command(&self, engine: Option<&Engine>) -> Command {
         let mut command = Command::new(self.root.join("bin").join("flutter"));
+        command.env_remove("FLUTTER_ROOT");
+        if self.root.join(".rlutter-complete").is_file() {
+            // Flutter otherwise treats a fork's cached release version as
+            // suspicious and recomputes it on every command.
+            command.env("FLUTTER_GIT_URL", "https://github.com/nrbnlulu/flutter.git");
+        }
         if let Some(engine) = engine {
             command
                 .arg(format!("--local-engine={}", engine.target.display()))
@@ -83,6 +128,25 @@ mod tests {
     fn rejects_directories_without_a_flutter_binary() {
         let dir = tempdir("flutter_missing");
         assert!(Flutter::at(&dir).is_err());
+    }
+
+    #[test]
+    fn completed_managed_sdk_is_reused_without_discovery_or_network() {
+        let cache = tempdir("flutter_managed");
+        let root = cache.join("flutter-BETA");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join("bin/flutter"), "").unwrap();
+        fs::write(root.join(".rlutter-complete"), "BETA\n").unwrap();
+        let flutter = Flutter::managed(&cache).unwrap();
+        assert_eq!(flutter.root(), root);
+        let command = flutter.command(None);
+        assert!(command.get_envs().any(|(key, value)| {
+            key == "FLUTTER_GIT_URL"
+                && value
+                    == Some(std::ffi::OsStr::new(
+                        "https://github.com/nrbnlulu/flutter.git",
+                    ))
+        }));
     }
 
     #[test]
