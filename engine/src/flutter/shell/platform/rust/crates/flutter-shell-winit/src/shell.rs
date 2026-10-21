@@ -1430,6 +1430,60 @@ impl TextEditingState {
     }
 }
 
+/// The single replacement turning one text into another, as the framework's
+/// `TextEditingDelta` fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextDelta {
+    /// UTF-16 start of the replaced range in the old text.
+    start: i64,
+    /// UTF-16 end of the replaced range in the old text.
+    end: i64,
+    /// Text that replaces the range.
+    text: String,
+}
+
+impl TextDelta {
+    /// Encoding the framework reads as a selection-only (non-text) delta.
+    fn non_text() -> Self {
+        Self {
+            start: -1,
+            end: -1,
+            text: String::new(),
+        }
+    }
+}
+
+fn text_delta(old: &str, new: &str) -> TextDelta {
+    if old == new {
+        return TextDelta::non_text();
+    }
+    let old: Vec<u16> = old.encode_utf16().collect();
+    let new: Vec<u16> = new.encode_utf16().collect();
+    let max_common = old.len().min(new.len());
+    let mut prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let mut suffix = old
+        .iter()
+        .rev()
+        .zip(new.iter().rev())
+        .take(max_common - prefix)
+        .take_while(|(a, b)| a == b)
+        .count();
+    // Never split a surrogate pair between the unchanged and replaced parts.
+    if prefix > 0 && (0xD800..0xDC00).contains(&old[prefix - 1]) {
+        prefix -= 1;
+        suffix = suffix.min(max_common - prefix);
+    }
+    if suffix > 0 && (0xDC00..0xE000).contains(&old[old.len() - suffix]) {
+        suffix -= 1;
+    }
+    let delta_text = String::from_utf16_lossy(&new[prefix..new.len() - suffix]);
+    TextDelta {
+        start: prefix as i64,
+        end: (old.len() - suffix) as i64,
+        text: delta_text,
+    }
+}
+
 fn valid_text_range(base: i64, extent: i64, length: i64, allow_absent: bool) -> bool {
     (allow_absent && base == -1 && extent == -1)
         || (base >= 0 && extent >= 0 && base <= length && extent <= length)
@@ -1663,6 +1717,8 @@ impl<'a> StandardCodecDecoder<'a> {
 #[serde(rename_all = "camelCase")]
 struct TextInputConfiguration {
     input_action: String,
+    #[serde(default)]
+    enable_delta_model: bool,
 }
 
 #[derive(Deserialize)]
@@ -1678,7 +1734,7 @@ struct RectArguments {
 
 #[derive(Debug, Clone, PartialEq)]
 enum TextInputCommand {
-    SetClient(TextInputClientId, String),
+    SetClient(TextInputClientId, String, bool),
     SetEditingState(TextEditingState),
     Show,
     Hide,
@@ -1761,7 +1817,11 @@ impl TextInputCommand {
             "TextInput.setClient" => {
                 let SetClientArguments(client_id, configuration) =
                     serde_json::from_value(call.args).ok()?;
-                Some(Self::SetClient(client_id, configuration.input_action))
+                Some(Self::SetClient(
+                    client_id,
+                    configuration.input_action,
+                    configuration.enable_delta_model,
+                ))
             }
             "TextInput.setEditingState" => {
                 let state: TextEditingState = serde_json::from_value(call.args).ok()?;
@@ -2075,6 +2135,10 @@ fn send_cancelable_exit_request(
 struct TextInputSession {
     active_client: Option<TextInputClientId>,
     input_action: String,
+    /// Client asked for `TextInputClient.updateEditingStateWithDeltas`
+    /// (`TextInputConfiguration.enableDeltaModel`) instead of full-state
+    /// `updateEditingState` messages.
+    enable_delta_model: bool,
     editing_state: TextEditingState,
     ime_allowed: bool,
     cursor_rect: Option<TextInputRect>,
@@ -2128,9 +2192,10 @@ impl TextInputSession {
 
     fn apply(&mut self, command: TextInputCommand) -> Option<TextInputEffect> {
         match command {
-            TextInputCommand::SetClient(client, input_action) => {
+            TextInputCommand::SetClient(client, input_action, enable_delta_model) => {
                 self.active_client = Some(client);
                 self.input_action = input_action;
+                self.enable_delta_model = enable_delta_model;
                 None
             }
             TextInputCommand::SetEditingState(state) => {
@@ -2152,6 +2217,7 @@ impl TextInputSession {
             TextInputCommand::ClearClient => {
                 self.active_client = None;
                 self.input_action.clear();
+                self.enable_delta_model = false;
                 self.editing_state = TextEditingState::default();
                 self.ime_allowed = false;
                 Some(TextInputEffect::SetImeAllowed(false))
@@ -2166,6 +2232,7 @@ impl TextInputSession {
 
     fn ime(&mut self, event: Ime) -> Option<Vec<u8>> {
         let client = self.active_client?;
+        let previous = self.editing_state.clone();
         let changed = match event {
             Ime::Preedit(text, cursor) => {
                 self.editing_state
@@ -2174,7 +2241,7 @@ impl TextInputSession {
             Ime::Commit(text) => self.editing_state.replace_for_ime(&text, false, None),
             Ime::Enabled | Ime::Disabled | Ime::DeleteSurrounding { .. } => false,
         };
-        changed.then(|| self.encode_update(client))
+        changed.then(|| self.encode_update(client, &previous))
     }
 
     fn keyboard_text(&mut self, text: &str) -> Option<Vec<u8>> {
@@ -2185,9 +2252,10 @@ impl TextInputSession {
         if self.editing_state.composing_base >= 0 || self.editing_state.composing_extent >= 0 {
             return None;
         }
+        let previous = self.editing_state.clone();
         self.editing_state
             .replace_for_ime(text, false, None)
-            .then(|| self.encode_update(client))
+            .then(|| self.encode_update(client, &previous))
     }
 
     #[cfg(target_os = "android")]
@@ -2262,11 +2330,18 @@ impl TextInputSession {
             // their boundaries rather than forwarding a corrupt range.
             return None;
         }
-        self.editing_state = candidate;
-        Some(self.encode_update(client))
+        let previous = std::mem::replace(&mut self.editing_state, candidate);
+        Some(self.encode_update(client, &previous))
     }
 
-    fn encode_update(&self, client: TextInputClientId) -> Vec<u8> {
+    /// Serializes `self.editing_state` for the framework. `previous` is the
+    /// state the framework last saw; delta-model clients (e.g. Fleather) only
+    /// understand `updateEditingStateWithDeltas` and get the difference
+    /// between it and the current state.
+    fn encode_update(&self, client: TextInputClientId, previous: &TextEditingState) -> Vec<u8> {
+        if self.enable_delta_model {
+            return self.encode_delta_update(client, previous);
+        }
         #[derive(Serialize)]
         struct UpdateEditingState<'a> {
             method: &'static str,
@@ -2277,6 +2352,59 @@ impl TextInputSession {
             args: (client, &self.editing_state),
         })
         .expect("typed text editing state must serialize")
+    }
+
+    fn encode_delta_update(
+        &self,
+        client: TextInputClientId,
+        previous: &TextEditingState,
+    ) -> Vec<u8> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Delta<'a> {
+            old_text: &'a str,
+            delta_text: String,
+            delta_start: i64,
+            delta_end: i64,
+            selection_base: i64,
+            selection_extent: i64,
+            selection_affinity: TextAffinity,
+            selection_is_directional: bool,
+            composing_base: i64,
+            composing_extent: i64,
+        }
+        #[derive(Serialize)]
+        struct Deltas<'a> {
+            deltas: [Delta<'a>; 1],
+        }
+        #[derive(Serialize)]
+        struct UpdateWithDeltas<'a> {
+            method: &'static str,
+            args: (TextInputClientId, Deltas<'a>),
+        }
+        let state = &self.editing_state;
+        let text_delta = text_delta(&previous.text, &state.text);
+        serde_json::to_vec(&UpdateWithDeltas {
+            method: "TextInputClient.updateEditingStateWithDeltas",
+            args: (
+                client,
+                Deltas {
+                    deltas: [Delta {
+                        old_text: &previous.text,
+                        delta_text: text_delta.text,
+                        delta_start: text_delta.start,
+                        delta_end: text_delta.end,
+                        selection_base: state.selection_base,
+                        selection_extent: state.selection_extent,
+                        selection_affinity: state.selection_affinity,
+                        selection_is_directional: state.selection_is_directional,
+                        composing_base: state.composing_base,
+                        composing_extent: state.composing_extent,
+                    }],
+                },
+            ),
+        })
+        .expect("typed text editing delta must serialize")
     }
 
     fn encode_action(&self, client: TextInputClientId) -> Vec<u8> {

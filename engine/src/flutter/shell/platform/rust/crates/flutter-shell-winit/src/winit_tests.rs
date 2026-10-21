@@ -432,6 +432,7 @@ fn decodes_typed_text_input_commands() {
             Some(TextInputCommand::SetClient(
                 TextInputClientId(42),
                 "TextInputAction.done".to_owned(),
+                false,
             ))
         );
     assert_eq!(
@@ -543,6 +544,7 @@ fn ime_replaces_utf16_selection_and_serializes_framework_update() {
     session.apply(TextInputCommand::SetClient(
         TextInputClientId(7),
         "TextInputAction.newline".to_owned(),
+        false,
     ));
     session.apply(TextInputCommand::SetEditingState(TextEditingState {
         text: "A🙂B".to_owned(),
@@ -580,6 +582,7 @@ fn preedit_with_hidden_cursor_remains_composing() {
     session.apply(TextInputCommand::SetClient(
         TextInputClientId(9),
         "TextInputAction.newline".to_owned(),
+        false,
     ));
     session.apply(TextInputCommand::SetEditingState(
         TextEditingState::default(),
@@ -619,6 +622,7 @@ fn keyboard_text_commits_without_turning_shortcuts_into_text() {
     session.apply(TextInputCommand::SetClient(
         TextInputClientId(10),
         "TextInputAction.newline".to_owned(),
+        false,
     ));
     session.apply(TextInputCommand::SetEditingState(TextEditingState {
         text: "A🙂B".to_owned(),
@@ -656,6 +660,7 @@ fn enter_performs_the_configured_action_for_single_line_input() {
     session.apply(TextInputCommand::SetClient(
         TextInputClientId(11),
         "TextInputAction.done".to_owned(),
+        false,
     ));
 
     let message = session
@@ -948,4 +953,55 @@ fn empty_or_unrelated_calls_do_not_change_the_title() {
     assert_eq!(decode_application_title(b"not json"), None);
     let no_label = br#"{"method":"SystemChrome.setApplicationSwitcherDescription","args":{}}"#;
     assert_eq!(decode_application_title(no_label), None);
+}
+
+#[test]
+fn delta_model_client_receives_editing_deltas() {
+    let mut session = TextInputSession::default();
+    session.apply(TextInputCommand::decode(
+        br#"{"method":"TextInput.setClient","args":[5,{"inputAction":"TextInputAction.newline","enableDeltaModel":true}]}"#,
+    ).expect("setClient decodes"));
+    session.apply(TextInputCommand::SetEditingState(TextEditingState {
+        text: "A🙂B".to_owned(),
+        selection_base: 3,
+        selection_extent: 3,
+        selection_affinity: TextAffinity::Downstream,
+        selection_is_directional: false,
+        composing_base: -1,
+        composing_extent: -1,
+    }));
+
+    let message = session
+        .keyboard_text("x")
+        .expect("typing should update the framework");
+    let update: Value = serde_json::from_slice(&message).expect("valid update JSON");
+    assert_eq!(
+        update["method"],
+        "TextInputClient.updateEditingStateWithDeltas"
+    );
+    assert_eq!(update["args"][0], 5);
+    let delta = &update["args"][1]["deltas"][0];
+    assert_eq!(delta["oldText"], "A🙂B");
+    assert_eq!(delta["deltaText"], "x");
+    assert_eq!(delta["deltaStart"], 3);
+    assert_eq!(delta["deltaEnd"], 3);
+    assert_eq!(delta["selectionBase"], 4);
+
+    assert_eq!(
+        text_delta("A🙂B", "A🙃B"),
+        TextDelta {
+            start: 1,
+            end: 3,
+            text: "🙃".to_owned(),
+        }
+    );
+    assert_eq!(text_delta("abc", "abc"), TextDelta::non_text());
+    assert_eq!(
+        text_delta("abc", "ac"),
+        TextDelta {
+            start: 1,
+            end: 2,
+            text: String::new(),
+        }
+    );
 }
