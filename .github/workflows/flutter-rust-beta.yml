@@ -139,7 +139,9 @@ jobs:
         working-directory: engine/src
         env:
           VPYTHON_BYPASS: manually managed python not supported by chrome operations
-        run: flutter/tools/gn --runtime-mode ${{ matrix.runtime_mode }} --no-goma
+        # --enable-fontconfig: without it Skia's directory font manager has no
+        # per-character fallback, so emoji and CJK render as missing glyphs.
+        run: flutter/tools/gn --runtime-mode ${{ matrix.runtime_mode }} --no-goma --enable-fontconfig
 
       - name: Build Rust shell (${{ matrix.runtime_mode }})
         working-directory: engine/src

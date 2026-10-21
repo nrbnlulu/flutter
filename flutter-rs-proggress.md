@@ -1153,3 +1153,15 @@ The Rust-shell code that lived in `packages/flutter_tools` (`flutter create --sh
 `engine/src/flutter/shell/platform/rust/rlutter`, which delegates the Dart side to the unmodified `flutter` tool. Earlier
 entries in this log that mention those tool commands describe the previous implementation. Plan, decisions and what is
 and is not verified (notably Android release and anything on a device): `flutter-rs-cli-plan.md`.
+
+## Linux font fallback (emoji) requires fontconfig
+
+Emoji (and any script missing from the app's fonts) rendered as missing-glyph boxes on Linux because the engine was
+configured without `--enable-fontconfig`. txt then uses Skia's directory font manager, whose
+`onMatchFamilyStyleCharacter` always returns `nullptr`, so there is no per-character fallback at all. Only the local
+`host_debug` output had been switched to fontconfig (by the Hebrew task); `host_release` and the BETA CI artifacts that
+`rlutter` downloads were not. The BETA workflow now configures with `--enable-fontconfig` (the bullseye sysroot already
+ships fontconfig), `task build-rust-shell`/`build-rust-shell-release` flip fontconfig on for their output directories,
+and a Linux engine built without it prints a warning at startup. Verified with a probe app rasterizing 😀 through
+`Picture.toImage`: release without fontconfig produced 0 colored pixels plus the warning; after enabling it, both debug
+and release produced 3084 colored pixels (Noto Color Emoji).

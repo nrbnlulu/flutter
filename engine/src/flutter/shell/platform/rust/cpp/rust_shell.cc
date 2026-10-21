@@ -9,6 +9,7 @@
 
 #include "flutter/common/constants.h"
 #include "flutter/common/task_runners.h"
+#include "flutter/fml/build_config.h"
 #include "flutter/fml/command_line.h"
 #include "flutter/fml/mapping.h"
 #include "flutter/fml/memory/ref_ptr.h"
@@ -100,6 +101,15 @@ std::unique_ptr<RustShell> RustShell::Create(
   if (!main_task_runner) {
     return nullptr;
   }
+#if defined(FML_OS_LINUX) && !defined(SK_FONTMGR_FONTCONFIG_AVAILABLE)
+  // Without fontconfig, txt falls back to Skia's directory font manager,
+  // which never answers per-character fallback queries: emoji and any script
+  // missing from the app's fonts render as missing-glyph boxes.
+  std::fprintf(stderr,
+               "Flutter Rust shell: engine built without fontconfig; system "
+               "font fallback (emoji, CJK, ...) is unavailable. Configure "
+               "with flutter/tools/gn --enable-fontconfig.\n");
+#endif
   // The winit-owned UI thread never installs an fml::MessageLoop, so
   // UIDartState's task-observer registration (used to flush the root
   // isolate's microtask queue after each task) has nowhere to go by default.
