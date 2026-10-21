@@ -40,8 +40,14 @@ impl Device for LinuxHost {
         "linux".to_owned()
     }
 
-    fn launch(&self, ctx: &Ctx, mode: BuildMode, target: &str) -> Result<RunningApp> {
-        let build = build_linux(ctx, mode, target)?;
+    fn launch(
+        &self,
+        ctx: &Ctx,
+        mode: BuildMode,
+        target: &str,
+        dart_defines: &[String],
+    ) -> Result<RunningApp> {
+        let build = build_linux(ctx, mode, target, dart_defines)?;
         eprintln!("Launching {}...", build.runner.display());
         let mut child = Command::new(&build.runner)
             .current_dir(&build.project.dir)

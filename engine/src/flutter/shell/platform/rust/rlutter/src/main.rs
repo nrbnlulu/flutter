@@ -45,13 +45,18 @@ fn run() -> Result<()> {
         Command::Create(args) => commands::create::run_create(&ctx, &args),
         Command::Clean(args) => commands::clean::run_clean(&ctx, &args),
         Command::Build { target } => match target {
-            BuildTarget::Linux(args) => {
-                commands::build::build_linux(&ctx, args.mode.resolve()?, &args.target).map(drop)
-            }
+            BuildTarget::Linux(args) => commands::build::build_linux(
+                &ctx,
+                args.mode.resolve()?,
+                &args.target,
+                &args.defines.dart_defines,
+            )
+            .map(drop),
             BuildTarget::Android(args) => commands::build_android::build_android(
                 &ctx,
                 args.build.mode.resolve()?,
                 &args.build.target,
+                &args.build.defines.dart_defines,
                 &args.target_platform,
                 &args.org,
             )

@@ -77,10 +77,22 @@ pub enum BuildTarget {
     Android(AndroidBuildArgs),
 }
 
+/// `--dart-define`, as accepted by `flutter build` and `flutter run`.
+#[derive(Args, Debug, Default, Clone)]
+pub struct DartDefineArgs {
+    /// Defines a compile-time Dart constant (`String.fromEnvironment`), as
+    /// `KEY=VALUE`. May be repeated.
+    #[arg(long = "dart-define", value_name = "KEY=VALUE")]
+    pub dart_defines: Vec<String>,
+}
+
 #[derive(Args, Debug)]
 pub struct BuildArgs {
     #[command(flatten)]
     pub mode: ModeArgs,
+
+    #[command(flatten)]
+    pub defines: DartDefineArgs,
 
     /// Dart entrypoint.
     #[arg(short = 't', long, default_value = "lib/main.dart")]
@@ -110,6 +122,9 @@ pub struct AndroidBuildArgs {
 pub struct RunArgs {
     #[command(flatten)]
     pub mode: ModeArgs,
+
+    #[command(flatten)]
+    pub defines: DartDefineArgs,
 
     /// Dart entrypoint.
     #[arg(short = 't', long, default_value = "lib/main.dart")]
@@ -161,6 +176,17 @@ mod tests {
         assert_eq!(args.flutter_args, ["--platforms=android", "--empty"]);
         assert_eq!(args.org.as_deref(), Some("com.x"));
         assert_eq!(args.rust_platforms, [RustPlatform::Linux]);
+    }
+
+    #[test]
+    fn dart_defines_can_be_repeated() {
+        let Command::Run(args) = parse(&["run", "--dart-define=A=1", "--dart-define", "B=x=y"])
+            .unwrap()
+            .command
+        else {
+            panic!("not run")
+        };
+        assert_eq!(args.defines.dart_defines, ["A=1", "B=x=y"]);
     }
 
     #[test]

@@ -24,7 +24,12 @@ pub struct LinuxBuild {
 
 /// Builds the app for the Linux host: the Dart bundle, the runner, and the
 /// native plugin libraries, staged next to the runner so it is relocatable.
-pub fn build_linux(ctx: &Ctx, mode: BuildMode, target: &str) -> Result<LinuxBuild> {
+pub fn build_linux(
+    ctx: &Ctx,
+    mode: BuildMode,
+    target: &str,
+    dart_defines: &[String],
+) -> Result<LinuxBuild> {
     let project = Project::discover()?;
     project.require_rust_shell()?;
     let engine = prepare(ctx, &project, mode)?;
@@ -41,6 +46,7 @@ pub fn build_linux(ctx: &Ctx, mode: BuildMode, target: &str) -> Result<LinuxBuil
         mode,
         "linux-x64",
         target,
+        dart_defines,
         &output,
     )?;
     if let Some(app_so) = &bundle.app_so {

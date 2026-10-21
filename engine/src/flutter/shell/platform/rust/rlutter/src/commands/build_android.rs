@@ -44,6 +44,7 @@ pub fn build_android(
     ctx: &Ctx,
     mode: BuildMode,
     target: &str,
+    dart_defines: &[String],
     abis: &[Abi],
     org: &str,
 ) -> Result<AndroidBuild> {
@@ -63,7 +64,14 @@ pub fn build_android(
     for &abi in abis {
         let engine = sdk::link_android(&project, &ctx.flutter, &ctx.sources, mode, abi, &host)?;
         outputs.push(build_abi(
-            ctx, &project, &toolchain, mode, target, abi, engine,
+            ctx,
+            &project,
+            &toolchain,
+            mode,
+            target,
+            dart_defines,
+            abi,
+            engine,
         )?);
     }
 
@@ -120,6 +128,7 @@ fn build_abi(
     toolchain: &Toolchain,
     mode: BuildMode,
     target: &str,
+    dart_defines: &[String],
     abi: Abi,
     engine: Engine,
 ) -> Result<AbiOutput> {
@@ -137,6 +146,7 @@ fn build_abi(
         mode,
         abi.flutter_platform(),
         target,
+        dart_defines,
         &bundle_dir.join("flutter_assets"),
     )?;
 

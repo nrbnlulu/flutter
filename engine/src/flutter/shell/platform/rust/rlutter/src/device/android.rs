@@ -97,9 +97,15 @@ impl Device for AndroidDevice {
         self.serial.clone()
     }
 
-    fn launch(&self, ctx: &Ctx, mode: BuildMode, target: &str) -> Result<RunningApp> {
+    fn launch(
+        &self,
+        ctx: &Ctx,
+        mode: BuildMode,
+        target: &str,
+        dart_defines: &[String],
+    ) -> Result<RunningApp> {
         let abi = self.abi()?;
-        let build = build_android(ctx, mode, target, &[abi], DEFAULT_ORG)?;
+        let build = build_android(ctx, mode, target, dart_defines, &[abi], DEFAULT_ORG)?;
         let (adb, serial, app_id) = (self.adb.clone(), self.serial.clone(), build.application_id);
 
         eprintln!("Installing {}...", build.apk.display());

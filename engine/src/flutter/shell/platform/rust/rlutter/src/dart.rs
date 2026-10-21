@@ -12,7 +12,36 @@ use crate::{flutter::Flutter, mode::BuildMode, project::Project, sdk::Engine, ut
 // `flutter assemble` bypasses FlutterCommand.getBuildInfo(), which normally
 // adds enabled framework features to the Dart defines. The Rust shell exposes
 // Flutter's windowing backend, so its bundles must always enable that API.
-const WINDOWING_DART_DEFINES: &str = "RkxVVFRFUl9FTkFCTEVEX0ZFQVRVUkVfRkxBR1M9d2luZG93aW5n";
+const WINDOWING_DEFINE: &str = "FLUTTER_ENABLED_FEATURE_FLAGS=windowing";
+
+/// Standard base64 with padding, which is how the tool packs each Dart define.
+fn base64(input: &str) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in input.as_bytes().chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// The `DartDefines` build value: comma separated, each define base64 encoded.
+fn encode_dart_defines(user: &[String]) -> String {
+    std::iter::once(WINDOWING_DEFINE)
+        .chain(user.iter().map(String::as_str))
+        .map(base64)
+        .collect::<Vec<_>>()
+        .join(",")
+}
 
 pub struct Bundle {
     /// Directory holding the app's assets (`AssetManifest.bin`, fonts, and
@@ -25,7 +54,13 @@ pub struct Bundle {
 /// `flutter assemble` arguments after the global flags. Debug ships a kernel;
 /// release also AOT-compiles it. The generic `copy_flutter_bundle` is used
 /// instead of the platform asset targets, which unpack the stock GTK embedder.
-fn assemble_args(mode: BuildMode, platform: &str, target: &str, output: &Path) -> Vec<String> {
+fn assemble_args(
+    mode: BuildMode,
+    platform: &str,
+    target: &str,
+    dart_defines: &[String],
+    output: &Path,
+) -> Vec<String> {
     let mut args = vec![
         "assemble".to_owned(),
         "--output".to_owned(),
@@ -33,7 +68,7 @@ fn assemble_args(mode: BuildMode, platform: &str, target: &str, output: &Path) -
         format!("-dTargetPlatform={platform}"),
         format!("-dBuildMode={}", mode.name()),
         format!("-dTargetFile={target}"),
-        format!("-dDartDefines={WINDOWING_DART_DEFINES}"),
+        format!("-dDartDefines={}", encode_dart_defines(dart_defines)),
         "copy_flutter_bundle".to_owned(),
     ];
     if mode.config().dart_aot {
@@ -51,12 +86,13 @@ pub fn assemble_bundle(
     mode: BuildMode,
     platform: &str,
     target: &str,
+    dart_defines: &[String],
     output: &Path,
 ) -> Result<Bundle> {
     fs::create_dir_all(output)?;
     let mut command = flutter.command(Some(engine));
     command
-        .args(assemble_args(mode, platform, target, output))
+        .args(assemble_args(mode, platform, target, dart_defines, output))
         .current_dir(&project.dir);
     run(&mut command)?;
 
@@ -100,6 +136,7 @@ mod tests {
             BuildMode::Debug,
             "linux-x64",
             "lib/main.dart",
+            &[],
             Path::new("/o"),
         );
         assert_eq!(
@@ -118,11 +155,36 @@ mod tests {
     }
 
     #[test]
+    fn base64_matches_the_known_windowing_value() {
+        assert_eq!(
+            base64(WINDOWING_DEFINE),
+            "RkxVVFRFUl9FTkFCTEVEX0ZFQVRVUkVfRkxBR1M9d2luZG93aW5n"
+        );
+        assert_eq!(base64("a"), "YQ==");
+        assert_eq!(base64("ab"), "YWI=");
+    }
+
+    #[test]
+    fn user_defines_follow_the_windowing_define() {
+        let args = assemble_args(
+            BuildMode::Debug,
+            "linux-x64",
+            "lib/main.dart",
+            &["A=1".to_owned()],
+            Path::new("/o"),
+        );
+        assert!(args.contains(
+            &"-dDartDefines=RkxVVFRFUl9FTkFCTEVEX0ZFQVRVUkVfRkxBR1M9d2luZG93aW5n,QT0x".to_owned()
+        ));
+    }
+
+    #[test]
     fn release_adds_the_aot_target() {
         let args = assemble_args(
             BuildMode::Release,
             "linux-x64",
             "lib/a.dart",
+            &[],
             Path::new("/o"),
         );
         assert!(args.contains(&"-dBuildMode=release".to_owned()));

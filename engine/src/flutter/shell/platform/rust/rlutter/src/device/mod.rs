@@ -37,7 +37,13 @@ pub trait Device {
     fn flutter_device_id(&self) -> String;
     /// Builds the app for this device and starts it. In debug mode this
     /// returns once the Dart VM service is known.
-    fn launch(&self, ctx: &Ctx, mode: BuildMode, target: &str) -> Result<RunningApp>;
+    fn launch(
+        &self,
+        ctx: &Ctx,
+        mode: BuildMode,
+        target: &str,
+        dart_defines: &[String],
+    ) -> Result<RunningApp>;
 }
 
 pub fn discover() -> Vec<Box<dyn Device>> {
