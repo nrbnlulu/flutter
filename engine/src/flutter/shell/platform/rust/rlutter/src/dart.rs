@@ -72,7 +72,7 @@ fn assemble_args(
         "copy_flutter_bundle".to_owned(),
     ];
     if mode.config().dart_aot {
-        args.push("aot_elf_release".to_owned());
+        args.push("aot_snapshot_release".to_owned());
     }
     args
 }
@@ -107,7 +107,7 @@ pub fn assemble_bundle(
     })
 }
 
-/// `aot_elf_release` writes `app.so` into a build directory named by the
+/// `aot_snapshot_release` writes `app.so` into a build directory named by the
 /// build id that assemble records in the output directory.
 fn find_app_so(project: &Project, output: &Path) -> Result<PathBuf> {
     let id_file = output.join(".last_build_id");
@@ -190,7 +190,7 @@ mod tests {
         assert!(args.contains(&"-dBuildMode=release".to_owned()));
         assert_eq!(
             &args[args.len() - 2..],
-            ["copy_flutter_bundle", "aot_elf_release"]
+            ["copy_flutter_bundle", "aot_snapshot_release"]
         );
     }
 
