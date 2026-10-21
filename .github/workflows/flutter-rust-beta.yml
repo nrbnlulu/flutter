@@ -172,8 +172,77 @@ jobs:
           path: ${{ runner.temp }}/engine-package
           retention-days: 1
 
+  build-android-engine:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime_mode: [debug, release]
+        # One entry per ABI in rlutter's SUPPORTED_ABIS (abi.rs).
+        android_cpu: [arm64]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libvulkan-dev libwayland-dev libxkbcommon-dev ninja-build
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+
+      - name: Fetch engine dependencies (with the Android NDK and sysroot)
+        run: |
+          sed 's/"download_android_deps": False/"download_android_deps": True/' engine.gclient > .gclient
+          grep -q '"download_android_deps": True' .gclient
+          "$RUNNER_TEMP/depot_tools/gclient" sync --no-history
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.93.1 --profile minimal
+
+      - name: Configure Android engine (${{ matrix.runtime_mode }}, ${{ matrix.android_cpu }})
+        working-directory: engine/src
+        env:
+          VPYTHON_BYPASS: manually managed python not supported by chrome operations
+        # Debug is unoptimized, like the local android_debug_unopt_* builds
+        # rlutter already supports.
+        run: |
+          flags=()
+          if [[ "${{ matrix.runtime_mode }}" == debug ]]; then flags+=(--unoptimized); fi
+          flutter/tools/gn --android --android-cpu ${{ matrix.android_cpu }} \
+            --runtime-mode ${{ matrix.runtime_mode }} --no-goma "${flags[@]}"
+
+      - name: Build Android engine (${{ matrix.runtime_mode }}, ${{ matrix.android_cpu }})
+        working-directory: engine/src
+        env:
+          VPYTHON_BYPASS: manually managed python not supported by chrome operations
+        run: |
+          out="$(ls -d out/android_${{ matrix.runtime_mode }}*_${{ matrix.android_cpu }})"
+          echo "ANDROID_OUT=$out" >> "$GITHUB_ENV"
+          targets=(libflutter_rust_engine.so flutter_patched_sdk)
+          # Release apps are AOT-compiled by the host-run gen_snapshot for
+          # this target; debug ones use the snapshots linked into the engine.
+          if [[ "${{ matrix.runtime_mode }}" == release ]]; then
+            targets+=(clang_x64/gen_snapshot)
+          fi
+          ninja -C "$out" "${targets[@]}"
+
+      - name: Package Android engine artifacts (${{ matrix.runtime_mode }}, ${{ matrix.android_cpu }})
+        working-directory: engine/src
+        run: |
+          flutter/shell/platform/rust/tools/package_android_engine_artifacts.sh \
+            "$ANDROID_OUT" "$RUNNER_TEMP/android-engine-package"
+
+      - name: Upload Android engine build (${{ matrix.runtime_mode }}, ${{ matrix.android_cpu }})
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: rust-engine-android-${{ matrix.android_cpu }}-${{ matrix.runtime_mode }}
+          path: ${{ runner.temp }}/android-engine-package
+          retention-days: 1
+
   publish:
-    needs: [build-tool, build-engine]
+    needs: [build-tool, build-engine, build-android-engine]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -207,6 +276,12 @@ jobs:
           name: rust-engine-release
           path: build/flutter-rust-sdk/lib/release
 
+      - name: Download Android engine builds
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: rust-engine-android-*
+          path: build/downloaded-android-engines
+
       - name: Package BETA assets
         run: |
           mkdir -p build/flutter-rust-sdk/crates build/flutter-rust-sdk/third_party
@@ -220,8 +295,23 @@ jobs:
               "$lib/dart-sdk/bin/dart" "$lib/dart-sdk/bin/dartaotruntime"
           done
           tar -C build/flutter-rust-sdk -czf build/flutter-rust-linux-x64.tar.gz .
+          # One archive per Android ABI, laid out as <mode>/ like the Linux
+          # bundle's lib/<mode>/. rlutter downloads
+          # flutter-rust-<flutter TargetPlatform>.tar.gz on demand.
+          for dir in build/downloaded-android-engines/rust-engine-android-*-*; do
+            name="$(basename "$dir")"   # rust-engine-android-<cpu>-<mode>
+            mode="${name##*-}"
+            cpu="${name#rust-engine-android-}"; cpu="${cpu%-*}"
+            mkdir -p "build/android-$cpu/$mode"
+            cp -R "$dir/." "build/android-$cpu/$mode/"
+            chmod +x "build/android-$cpu/$mode/clang_x64/gen_snapshot" 2>/dev/null || true
+          done
+          for dir in build/android-*/; do
+            cpu="$(basename "$dir")"    # android-<cpu>
+            tar -C "$dir" -czf "build/flutter-rust-$cpu.tar.gz" .
+          done
           mv build/flutter_tools.snapshot build/flutter-tools.snapshot
-          sha256sum build/flutter-rust-linux-x64.tar.gz build/flutter-tools.snapshot > build/SHA256SUMS
+          sha256sum build/flutter-rust-*.tar.gz build/flutter-tools.snapshot > build/SHA256SUMS
 
       - name: Publish rolling BETA release
         env:
@@ -241,7 +331,7 @@ jobs:
               --notes "Rolling artifacts built from the latest merged revision on master."
           fi
           gh release upload BETA \
-            build/flutter-rust-linux-x64.tar.gz \
+            build/flutter-rust-*.tar.gz \
             build/flutter-tools.snapshot \
             build/SHA256SUMS \
             --clobber

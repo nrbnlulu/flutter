@@ -28,6 +28,7 @@ use crate::{
     util::{copy_if_changed, remove_path, replace_link},
 };
 
+const BETA_RELEASE_URL: &str = "https://github.com/nrbnlulu/flutter/releases/download/BETA";
 const BETA_BUNDLE_URL: &str =
     "https://github.com/nrbnlulu/flutter/releases/download/BETA/flutter-rust-linux-x64.tar.gz";
 
@@ -109,13 +110,19 @@ pub fn link_android(
     if mode == BuildMode::Debug {
         candidates.push(format!("android_debug_unopt_{suffix}"));
     }
+    // Without a local build, use the prebuilt engine from the BETA release.
+    let fallback = if find_engine_build(&candidates, None, flutter, sources).is_some() {
+        None
+    } else {
+        Some(ensure_android_bundle(&project.sdk_dir(), abi, mode)?)
+    };
     let target = link_variant(
         project,
         flutter,
         sources,
         &variant,
         &candidates,
-        None,
+        fallback,
         &format!("{}-{}", abi.flutter_platform(), mode.name()),
     )?;
     Ok(Engine {
@@ -225,18 +232,52 @@ fn ensure_shell_sources(sdk: &Path, flutter: &Flutter, sources: &EngineSources) 
 
 fn download_bundle(sdk: &Path) -> Result<()> {
     eprintln!("Downloading the Flutter Rust shell BETA SDK...");
-    let response = ureq::get(BETA_BUNDLE_URL)
-        .call()
-        .with_context(|| format!("cannot download {BETA_BUNDLE_URL}"))?;
     remove_path(sdk)?;
-    fs::create_dir_all(sdk)?;
-    tar::Archive::new(GzDecoder::new(response.into_body().into_reader()))
-        .unpack(sdk)
-        .context("cannot unpack the Rust shell SDK")?;
+    download_and_unpack(BETA_BUNDLE_URL, sdk)?;
     if !sdk.join("Cargo.toml").is_file() || !sdk.join("crates/flutter-plugin-sdk").is_dir() {
         bail!("the Flutter Rust shell BETA SDK archive is incomplete");
     }
     Ok(())
+}
+
+/// The release asset holding the engine builds of one Android ABI: a
+/// `<mode>/` directory per build mode, each shaped like an engine out dir.
+fn android_bundle_url(abi: Abi) -> String {
+    format!(
+        "{BETA_RELEASE_URL}/flutter-rust-{}.tar.gz",
+        abi.flutter_platform()
+    )
+}
+
+/// Returns `<sdk>/lib/<platform>/<mode>`, the prebuilt Android engine,
+/// downloading the ABI's bundle first unless it is already there.
+fn ensure_android_bundle(sdk: &Path, abi: Abi, mode: BuildMode) -> Result<PathBuf> {
+    let bundle = sdk.join("lib").join(abi.flutter_platform());
+    let engine = bundle.join(mode.name());
+    if engine.join("libflutter_rust_engine.so").is_file() {
+        return Ok(engine);
+    }
+    let url = android_bundle_url(abi);
+    eprintln!(
+        "Downloading the {} engine from the BETA release...",
+        abi.flutter_platform()
+    );
+    remove_path(&bundle)?;
+    download_and_unpack(&url, &bundle)?;
+    if !engine.join("libflutter_rust_engine.so").is_file() {
+        bail!("{url} has no {} engine", mode.name());
+    }
+    Ok(engine)
+}
+
+fn download_and_unpack(url: &str, dest: &Path) -> Result<()> {
+    let response = ureq::get(url)
+        .call()
+        .with_context(|| format!("cannot download {url}"))?;
+    fs::create_dir_all(dest)?;
+    tar::Archive::new(GzDecoder::new(response.into_body().into_reader()))
+        .unpack(dest)
+        .with_context(|| format!("cannot unpack {url}"))
 }
 
 #[cfg(test)]
@@ -250,6 +291,25 @@ mod tests {
         for file in ["libflutter_rust_engine.so", "icudtl.dat", "gen_snapshot"] {
             fs::write(dir.join(file), "").unwrap();
         }
+    }
+
+    #[test]
+    fn android_bundles_are_named_after_the_target_platform() {
+        assert_eq!(
+            android_bundle_url(Abi::Arm64V8a),
+            "https://github.com/nrbnlulu/flutter/releases/download/BETA/flutter-rust-android-arm64.tar.gz"
+        );
+    }
+
+    #[test]
+    fn a_present_android_bundle_is_not_downloaded_again() {
+        let root = tempdir("sdk_android_bundle");
+        let engine = root.join("lib/android-arm64/release");
+        fake_engine(&engine);
+        assert_eq!(
+            ensure_android_bundle(&root, Abi::Arm64V8a, BuildMode::Release).unwrap(),
+            engine
+        );
     }
 
     #[test]
