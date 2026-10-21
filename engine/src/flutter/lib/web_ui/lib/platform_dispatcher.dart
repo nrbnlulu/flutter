@@ -101,6 +101,8 @@ abstract class PlatformDispatcher {
 
   void setApplicationLocale(Locale locale) {}
 
+  void resetInternalState() {}
+
   double? get lineHeightScaleFactorOverride;
 
   double? get letterSpacingOverride;

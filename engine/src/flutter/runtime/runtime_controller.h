@@ -826,6 +826,9 @@ class RuntimeController : public PlatformConfigurationClient,
   void SetNeedsReportTimings(bool value) override;
 
   // |PlatformConfigurationClient|
+  void ResetInternalState() override;
+
+  // |PlatformConfigurationClient|
   std::unique_ptr<std::vector<std::string>> ComputePlatformResolvedLocale(
       const std::vector<std::string>& supported_locale_data) override;
 
