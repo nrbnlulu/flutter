@@ -1210,3 +1210,19 @@ reproduction and the user's platform/workload.
 
 The optimized debug runner also passed debugger attach and a real one-library
 hot reload (115 ms), then quit cleanly.
+
+## Repair incomplete rlutter release caches
+
+Standalone SDK preparation now checks for both host engine modes and their
+compiler artifacts, rather than accepting Rust sources alone. This repairs
+older per-project caches that otherwise fail Android builds with “no
+host_debug engine build found”. Source links left by a local checkout also
+trigger a fresh release bundle when switching to the managed Flutter SDK,
+so sources and engine libraries stay paired. Explicit local checkout
+preparation retains its existing behavior. Downloaded archives receive the
+same completeness check before use.
+
+Verification: all 93 CLI tests pass, including incomplete-cache repair, host
+layout linking after repair, cache reuse, and stale-source-link rejection.
+Clippy passes with the existing argument-count lint suppressed. This verifies
+the reported preparation failure; an Android device build was not run.

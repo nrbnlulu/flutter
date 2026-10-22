@@ -18,8 +18,8 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use indicatif::{ProgressBar, ProgressStyle};
 use flate2::read::GzDecoder;
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     abi::Abi,
@@ -218,6 +218,15 @@ fn link_engine_build(source: &Path, layout: &Path) -> Result<()> {
 /// Makes `sdk` contain the shell crates, from the local checkout when there is
 /// one and otherwise from the downloaded bundle.
 fn ensure_shell_sources(sdk: &Path, flutter: &Flutter, sources: &EngineSources) -> Result<()> {
+    ensure_shell_sources_with(sdk, flutter, sources, download_bundle)
+}
+
+fn ensure_shell_sources_with(
+    sdk: &Path,
+    flutter: &Flutter,
+    sources: &EngineSources,
+    download: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
     let local = local_shell_dir(flutter, sources);
     if local.join("crates").is_dir() {
         // Always re-sync: crates from another checkout or bundle would not
@@ -228,19 +237,35 @@ fn ensure_shell_sources(sdk: &Path, flutter: &Flutter, sources: &EngineSources) 
         replace_link(&sdk.join("third_party"), &local.join("third_party"))?;
         return Ok(());
     }
-    let complete = sdk.join("Cargo.toml").is_file()
-        && sdk.join("crates/flutter-plugin-sdk/Cargo.toml").is_file();
-    if complete {
+    if release_bundle_complete(sdk) {
         return Ok(());
     }
-    download_bundle(sdk)
+    download(sdk)
+}
+
+// Sources alone may belong to a previous local-checkout setup or an interrupted
+// download. Android also needs the Linux host compiler, in both build modes.
+fn release_bundle_complete(sdk: &Path) -> bool {
+    sdk.join("Cargo.toml").is_file()
+        && sdk.join("crates/flutter-plugin-sdk/Cargo.toml").is_file()
+        && !sdk.join("crates").is_symlink()
+        && !sdk.join("third_party").is_symlink()
+        && ["debug", "release"].iter().all(|mode| {
+            let engine = sdk.join("lib").join(mode);
+            ENGINE_REQUIRED
+                .iter()
+                .all(|entry| engine.join(entry).is_file())
+                && engine.join("dart-sdk/bin/dart").is_file()
+                && engine.join("flutter_patched_sdk").is_dir()
+                && engine.join("gen/dart-pkg/sky_engine").is_dir()
+        })
 }
 
 fn download_bundle(sdk: &Path) -> Result<()> {
     eprintln!("Downloading the Flutter Rust shell BETA SDK...");
     remove_path(sdk)?;
     download_and_unpack(BETA_BUNDLE_URL, sdk)?;
-    if !sdk.join("Cargo.toml").is_file() || !sdk.join("crates/flutter-plugin-sdk").is_dir() {
+    if !release_bundle_complete(sdk) {
         bail!("the Flutter Rust shell BETA SDK archive is incomplete");
     }
     Ok(())
@@ -323,6 +348,57 @@ mod tests {
         ] {
             fs::write(dir.join(file), "").unwrap();
         }
+    }
+
+    fn fake_release_bundle(sdk: &Path) {
+        fs::create_dir_all(sdk.join("crates/flutter-plugin-sdk")).unwrap();
+        fs::write(sdk.join("Cargo.toml"), "").unwrap();
+        fs::write(sdk.join("crates/flutter-plugin-sdk/Cargo.toml"), "").unwrap();
+        for mode in ["debug", "release"] {
+            let engine = sdk.join("lib").join(mode);
+            fake_engine(&engine);
+            fs::create_dir_all(engine.join("dart-sdk/bin")).unwrap();
+            fs::write(engine.join("dart-sdk/bin/dart"), "").unwrap();
+            fs::create_dir_all(engine.join("gen/dart-pkg/sky_engine")).unwrap();
+        }
+    }
+
+    #[test]
+    fn incomplete_release_cache_is_refreshed_before_linking_host() {
+        let root = tempdir("sdk_incomplete_release");
+        let sdk = root.join("sdk");
+        let flutter = flutter_at(&root.join("flutter"));
+        fake_release_bundle(&sdk);
+        // Reproduce a cache with valid sources but no host debug engine.
+        remove_path(&sdk.join("lib/debug")).unwrap();
+        ensure_shell_sources_with(&sdk, &flutter, &EngineSources::default(), |dest| {
+            fake_release_bundle(dest);
+            Ok(())
+        })
+        .unwrap();
+        assert!(release_bundle_complete(&sdk));
+        let source = find_engine_build(
+            &["host_debug".to_owned()],
+            Some(sdk.join("lib/debug")),
+            &flutter,
+            &EngineSources::default(),
+        )
+        .unwrap();
+        link_engine_build(&source, &sdk.join("engine/src/out/host_debug")).unwrap();
+        ensure_shell_sources_with(&sdk, &flutter, &EngineSources::default(), |_| {
+            panic!("a complete bundle must not be downloaded again")
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn release_cache_rejects_sources_linked_to_another_checkout() {
+        let root = tempdir("sdk_stale_sources");
+        let sdk = root.join("sdk");
+        fake_release_bundle(&sdk);
+        fs::rename(sdk.join("crates"), root.join("old-crates")).unwrap();
+        replace_link(&sdk.join("crates"), &root.join("old-crates")).unwrap();
+        assert!(!release_bundle_complete(&sdk));
     }
 
     #[test]
