@@ -729,7 +729,8 @@ Likely implementation crates:
 
 - `windows-rs` on Windows.
 - Wayland/X11 ecosystem crates on Linux.
-- `android-activity` and `jni` on Android.
+- Flutter's Android embedding for activity, plugins, IME, accessibility, and
+  lifecycle; a small JNI bridge for Rust-owned GPU textures.
 - `objc2` on macOS and iOS.
 - `web-sys` on web.
 - AccessKit adapters where they meet Flutter's semantics requirements.
@@ -797,8 +798,9 @@ Flutter's own platform directories: arguments after `--` are forwarded to it
 (`rlutter create my_app -- --platforms=android,web`).
 
 The generated project contains `runner-rs/` (and `android-rs/` when Android is
-requested). Without forwarded `--platforms`, no Flutter platform directories
-are kept. Other platforms (Windows, web, macOS, iOS) are not implemented yet;
+requested). Android builds expose `android-rs/` through an `android/` link when
+there is no conventional Android project, so Flutter can discover and generate
+plugin registration. Other platforms (Windows, web, macOS, iOS) are not implemented yet;
 the intended direction is generating their packaging projects into build output:
 
 ```text
@@ -809,7 +811,9 @@ the intended direction is generating their packaging projects into build output:
 ```
 
 Android packaging lives in the generated, user-owned `android-rs/` Gradle
-project (manifest, signing configuration, resources). Apple platforms still
+project (manifest, signing configuration, resources). Its release build disables
+R8 shrinking because Dart JNI bindings can look up Java plugin methods by name;
+R8 cannot see those references. Apple platforms still
 require Xcode packaging, signing, plist data, and entitlements. These become SDK-managed templates configured
 from `pubspec.yaml` or a small `rust_shell.yaml`, not source directories users
 must maintain.
@@ -919,12 +923,14 @@ content without Dart rebuilds and without CPU readback.
 
 ### Phase 4: Android
 
-- Integrate winit with Android activity, window, and surface lifecycles.
-- Add the Vulkan shared-device and Impeller presentation path.
-- Complete touch, keyboard, IME, semantics, suspension, surface recreation,
-  and memory-pressure behavior.
-- Generate transient Gradle packaging, Android manifest, resources, and signing
-  configuration.
+- Host Android with FlutterActivity so the standard embedding handles window,
+  input, accessibility, plugins, and lifecycle.
+- Share the Rust wgpu Vulkan device with Impeller through a private attachment
+  hook, while the Android embedding presents the surface.
+- Keep `android-rs/` as the Gradle project for manifest, resources, signing,
+  and Rust libraries; let Flutter's Gradle plugin build Dart and native plugins.
+- Validate suspension, surface recreation, memory pressure, and Rust texture
+  rendering on Android hardware.
 
 ### Phase 5: web
 

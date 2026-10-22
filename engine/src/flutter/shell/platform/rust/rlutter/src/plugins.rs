@@ -28,7 +28,7 @@ pub const PLUGINS_END: &str = "# === END FLUTTER GENERATED RUST PLUGINS ===";
 
 /// Version of the tool-owned runner files (`build.rs`, `src/main.rs`). Keep in
 /// sync with the `flutter-rust-runner-version` marker in the templates.
-pub const RUNNER_VERSION: u32 = 6;
+pub const RUNNER_VERSION: u32 = 7;
 const RUNNER_VERSION_MARKER: &str = "// flutter-rust-runner-version: ";
 
 pub const TEMPLATE_BUILD_RS: &str = include_str!("../templates/runner-rs/build.rs.tmpl");

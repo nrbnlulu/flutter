@@ -17,7 +17,7 @@ use crate::{
     mode::BuildMode,
 };
 
-const ACTIVITY: &str = "com.google.androidgamesdk.GameActivity";
+const ACTIVITY: &str = "dev.flutter.rs.RustActivity";
 const PID_TIMEOUT: Duration = Duration::from_secs(20);
 const VM_SERVICE_TIMEOUT: Duration = Duration::from_secs(60);
 

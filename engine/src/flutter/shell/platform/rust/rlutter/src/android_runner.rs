@@ -13,7 +13,11 @@ use std::fs;
 use anyhow::{Result, anyhow};
 use cargo_metadata::MetadataCommand;
 
-use crate::{project::Project, util::write_if_changed};
+use crate::{
+    plugins::{PLUGINS_BEGIN, PLUGINS_END},
+    project::Project,
+    util::write_if_changed,
+};
 
 pub const ANDROID_BEGIN: &str = "# === BEGIN FLUTTER GENERATED ANDROID RUNNER ===";
 pub const ANDROID_END: &str = "# === END FLUTTER GENERATED ANDROID RUNNER ===";
@@ -23,9 +27,58 @@ const TEMPLATE: &str = include_str!("../templates/runner-rs/src/flutter_android.
 const ANDROID_DEPENDENCIES: &str = r#"[target.'cfg(target_os = "android")'.dependencies]
 android_logger = "=0.15.1"
 log = "=0.4.33"
-winit = { version = "=0.31.0-beta.2", default-features = false, features = ["android-game-activity"] }"#;
+flutter-shell-android = { path = "../.dart_tool/flutter_rs/sdk/crates/flutter-shell-android" }"#;
 
 const MODULE_LINE: &str = "mod flutter_android;";
+const WINIT_DEPENDENCY: &str =
+    "flutter-shell-winit = { path = \"../.dart_tool/flutter_rs/sdk/crates/flutter-shell-winit\" }";
+const LINUX_DEPENDENCIES: &str = "[target.'cfg(target_os = \"linux\")'.dependencies]";
+
+/// Moves older runners' desktop shell dependency out of Android's graph.
+fn with_linux_only_winit(manifest: &str) -> String {
+    if !manifest.lines().any(|line| line == WINIT_DEPENDENCY) {
+        return manifest.to_owned();
+    }
+    let mut manifest = manifest.replace(&format!("{WINIT_DEPENDENCY}\n"), "");
+    if manifest.contains(LINUX_DEPENDENCIES) {
+        manifest = manifest.replacen(
+            LINUX_DEPENDENCIES,
+            &format!("{LINUX_DEPENDENCIES}\n{WINIT_DEPENDENCY}"),
+            1,
+        );
+    } else {
+        manifest.push_str(&format!("\n{LINUX_DEPENDENCIES}\n{WINIT_DEPENDENCY}\n"));
+    }
+    manifest
+}
+
+/// Fix runners generated while the plugin block followed the Linux table.
+fn with_shared_plugins(manifest: &str) -> String {
+    let (Some(linux), Some(begin), Some(end)) = (
+        manifest.find(LINUX_DEPENDENCIES),
+        manifest.find(PLUGINS_BEGIN),
+        manifest.find(PLUGINS_END),
+    ) else {
+        return manifest.to_owned();
+    };
+    if begin < linux || end < begin {
+        return manifest.to_owned();
+    }
+    if manifest[linux + LINUX_DEPENDENCIES.len()..begin]
+        .lines()
+        .any(|line| line.starts_with('['))
+    {
+        return manifest.to_owned();
+    }
+    let mut updated = manifest.to_owned();
+    let block = updated[begin..end + PLUGINS_END.len()].to_owned();
+    updated.replace_range(begin..end + PLUGINS_END.len(), "");
+    let linux = updated
+        .find(LINUX_DEPENDENCIES)
+        .expect("table was retained");
+    updated.insert_str(linux, &format!("{block}\n\n"));
+    updated
+}
 
 /// `Cargo.toml` with the generated Android block present and current.
 pub fn with_android_dependencies(manifest: &str) -> String {
@@ -128,7 +181,10 @@ pub fn ensure(project: &Project) -> Result<()> {
 
     let manifest = fs::read_to_string(&cargo_toml)
         .map_err(|e| anyhow!("cannot read {}: {e}", cargo_toml.display()))?;
-    let manifest_changed = write_if_changed(&cargo_toml, &with_android_dependencies(&manifest))?;
+    let manifest_changed = write_if_changed(
+        &cargo_toml,
+        &with_android_dependencies(&with_shared_plugins(&with_linux_only_winit(&manifest))),
+    )?;
 
     let lib = fs::read_to_string(&lib_rs)
         .map_err(|e| anyhow!("cannot read {}: {e}", lib_rs.display()))?;
@@ -158,9 +214,29 @@ mod tests {
     #[test]
     fn android_dependencies_are_appended_once() {
         let once = with_android_dependencies(MANIFEST);
-        assert!(once.starts_with(MANIFEST) && once.contains("android-game-activity"));
+        assert!(once.starts_with(MANIFEST) && once.contains("flutter-shell-android"));
         assert_eq!(with_android_dependencies(&once), once);
         assert_eq!(once.matches(ANDROID_BEGIN).count(), 1);
+    }
+
+    #[test]
+    fn existing_runner_moves_winit_to_linux_only() {
+        let old = format!("[dependencies]\n{WINIT_DEPENDENCY}\n\n[workspace]\n");
+        let updated = with_linux_only_winit(&old);
+        assert_eq!(updated.matches(WINIT_DEPENDENCY).count(), 1);
+        assert!(updated.contains(&format!("{LINUX_DEPENDENCIES}\n{WINIT_DEPENDENCY}")));
+        assert_eq!(with_linux_only_winit(&updated), updated);
+    }
+
+    #[test]
+    fn plugin_dependencies_remain_shared_after_migration() {
+        let old = format!(
+            "[dependencies]\nflutter-plugin-sdk = \"x\"\n\n{LINUX_DEPENDENCIES}\n{WINIT_DEPENDENCY}\n\n{PLUGINS_BEGIN}\nplugin = \"x\"\n{PLUGINS_END}\n\n[patch.crates-io]\n"
+        );
+        let updated = with_shared_plugins(&old);
+        assert!(updated.find(PLUGINS_BEGIN) < updated.find(LINUX_DEPENDENCIES));
+        assert!(updated.contains("plugin = \"x\""));
+        assert_eq!(with_shared_plugins(&updated), updated);
     }
 
     #[test]
@@ -231,7 +307,7 @@ mod tests {
 
     #[test]
     fn template_fills_the_project_name_and_has_the_current_version() {
-        assert!(TEMPLATE.contains("{{projectName}}"));
+        assert!(TEMPLATE.contains("AndroidRuntime"));
         let marker = format!(
             "// flutter-rust-runner-version: {}",
             crate::plugins::RUNNER_VERSION

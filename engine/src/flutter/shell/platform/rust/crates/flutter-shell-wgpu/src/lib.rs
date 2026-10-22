@@ -16,22 +16,30 @@ mod vulkan {
     };
     use flutter_shell_core::{
         FlutterRustExternalTextureCallbacks, FlutterRustExternalTextureFrame,
-        FlutterRustVulkanImage, FlutterRustVulkanPresentationCallbacks,
     };
+    #[cfg(target_os = "linux")]
+    use flutter_shell_core::{FlutterRustVulkanImage, FlutterRustVulkanPresentationCallbacks};
     use parking_lot::Mutex;
     use std::collections::VecDeque;
     use std::ffi::c_void;
+    #[cfg(target_os = "linux")]
     use std::fs::File;
+    #[cfg(target_os = "linux")]
     use std::io::Write;
+    #[cfg(target_os = "linux")]
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
+    #[cfg(target_os = "linux")]
     use std::time::Instant;
     use tokio::sync::mpsc;
 
     /// Application-scoped wgpu/Vulkan ownership shared by every native view.
     pub struct GpuContext {
+        // Keep both alive for the lifetime of the borrowed Vulkan handles.
+        #[cfg_attr(target_os = "android", allow(dead_code))]
         instance: wgpu::Instance,
+        #[cfg_attr(target_os = "android", allow(dead_code))]
         adapter: wgpu::Adapter,
         device: wgpu::Device,
         queue: flutter_gpu_queue::SharedQueue,
@@ -39,7 +47,7 @@ mod vulkan {
     }
 
     /// Borrowed Vulkan object values suitable only for an immediate C++ call.
-    /// Their lifetime is tied to the [`GpuBroker`] that supplied them.
+    /// Their lifetime is tied to the [`GpuContext`] that supplied them.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct VulkanContextData {
         pub get_instance_proc_addr: usize,
@@ -55,6 +63,7 @@ mod vulkan {
     /// Wgpu owns the instance, device, queue, and surface. The broker exposes
     /// Vulkan values only through [`Self::with_vulkan_context`], preventing a
     /// Rust reference from escaping the handoff into C++.
+    #[cfg(target_os = "linux")]
     pub struct GpuBroker {
         context: std::sync::Arc<GpuContext>,
         // Swappable as a pair so `recreate_surface` can replace both without
@@ -66,6 +75,7 @@ mod vulkan {
         presentation_stats: Option<Mutex<PresentationStats>>,
     }
 
+    #[cfg(target_os = "linux")]
     struct Presentable {
         surface: Option<wgpu::Surface<'static>>,
         // Retained both for the unsafe surface lifetime and so presentation
@@ -200,6 +210,7 @@ mod vulkan {
         state: AtomicU8,
     }
 
+    #[cfg(target_os = "linux")]
     struct PresentationStats {
         file: File,
         count: u64,
@@ -208,6 +219,7 @@ mod vulkan {
         submits_this_frame: u32,
     }
 
+    #[cfg(target_os = "linux")]
     impl PresentationStats {
         fn create(path: PathBuf) -> Result<Self, String> {
             let file = File::create(&path).map_err(|error| {
@@ -249,6 +261,7 @@ mod vulkan {
         }
     }
 
+    #[cfg(target_os = "linux")]
     struct SurfaceState {
         configuration: Option<wgpu::SurfaceConfiguration>,
         // Holds the acquired frame between `acquire_image` and `present_image`.
@@ -270,6 +283,7 @@ mod vulkan {
         suspended: bool,
     }
 
+    #[cfg(target_os = "linux")]
     struct PendingFrame {
         texture: wgpu::SurfaceTexture,
         sync: FrameSync,
@@ -277,6 +291,7 @@ mod vulkan {
         swapchain_us: u128,
     }
 
+    #[cfg(target_os = "linux")]
     struct RetiredFrame {
         submission: wgpu::SubmissionIndex,
         sync: FrameSync,
@@ -290,6 +305,7 @@ mod vulkan {
 
     /// A Vulkan swapchain image borrowed from the broker's current frame.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[cfg(target_os = "linux")]
     pub struct AcquiredImage {
         pub image: u64,
         pub format: u32,
@@ -297,6 +313,7 @@ mod vulkan {
         pub render_semaphore: u64,
     }
 
+    #[cfg(target_os = "linux")]
     fn vulkan_format(format: wgpu::TextureFormat) -> Option<ash::vk::Format> {
         use wgpu::TextureFormat::*;
         Some(match format {
@@ -309,6 +326,47 @@ mod vulkan {
         })
     }
 
+    // Static dispatch keeps the shared device setup independent of the host's
+    // display ownership. Only Linux needs a winit surface for adapter choice.
+    trait SurfaceSource {
+        fn create_surface(
+            self,
+            instance: &wgpu::Instance,
+        ) -> Result<Option<wgpu::Surface<'static>>, String>;
+    }
+
+    #[cfg(target_os = "linux")]
+    impl SurfaceSource for &Arc<dyn winit::window::Window> {
+        fn create_surface(
+            self,
+            instance: &wgpu::Instance,
+        ) -> Result<Option<wgpu::Surface<'static>>, String> {
+            // The broker retains the window for at least as long as this
+            // temporary surface and the device selected through it.
+            let surface = unsafe {
+                instance.create_surface_unsafe(
+                    wgpu::SurfaceTargetUnsafe::from_display_and_window(self, self)
+                        .map_err(|error| error.to_string())?,
+                )
+            }
+            .map_err(|error| error.to_string())?;
+            Ok(Some(surface))
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    struct Headless;
+
+    #[cfg(target_os = "android")]
+    impl SurfaceSource for Headless {
+        fn create_surface(
+            self,
+            _instance: &wgpu::Instance,
+        ) -> Result<Option<wgpu::Surface<'static>>, String> {
+            Ok(None)
+        }
+    }
+
     impl GpuContext {
         fn assert_gpu_thread(&self) {
             let current = std::thread::current().id();
@@ -319,9 +377,21 @@ mod vulkan {
             );
         }
 
+        #[cfg(target_os = "linux")]
         fn new_for_window(
             window: &std::sync::Arc<dyn winit::window::Window>,
         ) -> Result<std::sync::Arc<Self>, String> {
+            Self::create(window)
+        }
+
+        /// Creates a shared Vulkan device without taking ownership of an
+        /// Android display surface. FlutterActivity owns presentation.
+        #[cfg(target_os = "android")]
+        pub fn headless() -> Result<Arc<Self>, String> {
+            Self::create(Headless)
+        }
+
+        fn create<S: SurfaceSource>(source: S) -> Result<Arc<Self>, String> {
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::VULKAN,
                 // Keep debug validation by default, while allowing wgpu's
@@ -329,20 +399,12 @@ mod vulkan {
                 flags: wgpu::InstanceFlags::default().with_env(),
                 ..wgpu::InstanceDescriptor::new_without_display_handle()
             });
-            // This temporary surface selects a device that can present to the
-            // application's initial native window.
-            let surface = unsafe {
-                instance.create_surface_unsafe(
-                    wgpu::SurfaceTargetUnsafe::from_display_and_window(window, window)
-                        .map_err(|error| error.to_string())?,
-                )
-            }
-            .map_err(|error| error.to_string())?;
+            let surface = source.create_surface(&instance)?;
             let adapter =
                 pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
                     force_fallback_adapter: false,
-                    compatible_surface: Some(&surface),
+                    compatible_surface: surface.as_ref(),
                     apply_limit_buckets: false,
                 }))
                 .map_err(|error| error.to_string())?;
@@ -401,6 +463,51 @@ mod vulkan {
                 device,
                 queue: flutter_gpu_queue::SharedQueue::new(queue),
                 gpu_thread: std::sync::OnceLock::new(),
+            }))
+        }
+
+        /// Installs the engine mutex used for every shared queue submission.
+        ///
+        /// # Safety
+        /// Hooks must remain valid until `clear_queue_lock` completes.
+        pub unsafe fn install_queue_lock(&self, hooks: flutter_gpu_queue::QueueLockHooks) {
+            unsafe { self.queue.install_lock_hooks(hooks) };
+        }
+
+        /// Removes the engine queue hooks before the engine context is released.
+        pub fn clear_queue_lock(&self) {
+            self.queue.clear_lock_hooks();
+        }
+
+        /// Calls `callback` while wgpu-hal guards keep the borrowed Vulkan
+        /// device alive. The callback must copy values immediately and must
+        /// not destroy or submit through the handles.
+        pub fn with_vulkan_context<T>(
+            &self,
+            callback: impl FnOnce(VulkanContextData) -> T,
+        ) -> Option<T> {
+            // SAFETY: the broker retains wgpu ownership, and no HAL resource
+            // is destroyed or submitted through this borrowed handle.
+            let device = unsafe { self.device.as_hal::<wgpu::hal::vulkan::Api>() }?;
+            let instance = device.shared_instance();
+            Some(callback(VulkanContextData {
+                get_instance_proc_addr: instance.entry().static_fn().get_instance_proc_addr
+                    as usize,
+                instance: instance.raw_instance().handle().as_raw() as usize,
+                physical_device: device.raw_physical_device().as_raw() as usize,
+                device: device.raw_device().handle().as_raw() as usize,
+                queue: device.raw_queue().as_raw() as usize,
+                queue_family_index: device.queue_family_index(),
+                instance_extensions: instance
+                    .extensions()
+                    .iter()
+                    .map(|extension| extension.to_string_lossy().into_owned())
+                    .collect(),
+                device_extensions: device
+                    .enabled_device_extensions()
+                    .iter()
+                    .map(|extension| extension.to_string_lossy().into_owned())
+                    .collect(),
             }))
         }
 
@@ -933,6 +1040,7 @@ mod vulkan {
         }
     }
 
+    #[cfg(target_os = "linux")]
     impl GpuBroker {
         /// Creates an engine-owned external texture ring on this application's
         /// shared wgpu device.
@@ -1171,36 +1279,12 @@ mod vulkan {
             self.context.queue.clear_lock_hooks();
         }
 
-        /// Calls `callback` while wgpu-hal guards keep the borrowed Vulkan
-        /// device alive. The callback must copy values immediately and must
-        /// not destroy or submit through the handles.
+        /// Borrows this broker's shared Vulkan device for an engine handoff.
         pub fn with_vulkan_context<T>(
             &self,
             callback: impl FnOnce(VulkanContextData) -> T,
         ) -> Option<T> {
-            // SAFETY: the broker retains wgpu ownership, and no HAL resource
-            // is destroyed or submitted through this borrowed handle.
-            let device = unsafe { self.context.device.as_hal::<wgpu::hal::vulkan::Api>() }?;
-            let instance = device.shared_instance();
-            Some(callback(VulkanContextData {
-                get_instance_proc_addr: instance.entry().static_fn().get_instance_proc_addr
-                    as usize,
-                instance: instance.raw_instance().handle().as_raw() as usize,
-                physical_device: device.raw_physical_device().as_raw() as usize,
-                device: device.raw_device().handle().as_raw() as usize,
-                queue: device.raw_queue().as_raw() as usize,
-                queue_family_index: device.queue_family_index(),
-                instance_extensions: instance
-                    .extensions()
-                    .iter()
-                    .map(|extension| extension.to_string_lossy().into_owned())
-                    .collect(),
-                device_extensions: device
-                    .enabled_device_extensions()
-                    .iter()
-                    .map(|extension| extension.to_string_lossy().into_owned())
-                    .collect(),
-            }))
+            self.context.with_vulkan_context(callback)
         }
 
         /// Configure the Rust-owned surface after winit reports a non-zero
@@ -1528,6 +1612,7 @@ mod vulkan {
         }
     }
 
+    #[cfg(target_os = "linux")]
     impl Drop for GpuBroker {
         fn drop(&mut self) {
             // Drop can run on winit. Only an unconfigured startup failure or
@@ -1543,6 +1628,7 @@ mod vulkan {
         }
     }
 
+    #[cfg(target_os = "linux")]
     extern "C" fn release_surface_callback(user_data: *mut c_void) {
         // SAFETY: the host retains the broker until raster release completes.
         let broker = unsafe { &*user_data.cast::<GpuBroker>() };
@@ -1683,6 +1769,7 @@ mod vulkan {
         }
     }
 
+    #[cfg(target_os = "linux")]
     extern "C" fn acquire_image_callback(
         user_data: *mut c_void,
         width: u32,
@@ -1713,6 +1800,7 @@ mod vulkan {
         }
     }
 
+    #[cfg(target_os = "linux")]
     extern "C" fn present_image_callback(
         user_data: *mut c_void,
         image: FlutterRustVulkanImage,
@@ -1728,5 +1816,7 @@ mod vulkan {
     }
 }
 
+#[cfg(target_os = "linux")]
+pub use vulkan::GpuBroker;
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub use vulkan::{GpuBroker, GpuContext, VulkanContextData, WgpuTextureRing};
+pub use vulkan::{GpuContext, VulkanContextData, WgpuTextureRing};

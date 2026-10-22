@@ -39,7 +39,8 @@ class AndroidShellHolder {
  public:
   AndroidShellHolder(const flutter::Settings& settings,
                      std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
-                     AndroidRenderingAPI android_rendering_api);
+                     AndroidRenderingAPI android_rendering_api,
+                     std::shared_ptr<AndroidContext> rust_context = nullptr);
 
   ~AndroidShellHolder();
 
@@ -91,6 +92,8 @@ class AndroidShellHolder {
   const flutter::Settings& GetSettings() const;
 
   fml::WeakPtr<PlatformViewAndroid> GetPlatformView();
+
+  const TaskRunners& GetTaskRunners() const { return shell_->GetTaskRunners(); }
 
   bool IsSurfaceControlEnabled();
 

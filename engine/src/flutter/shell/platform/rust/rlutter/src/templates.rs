@@ -49,5 +49,9 @@ mod tests {
         assert!(manifest.contains("name = \"my_app\""));
         assert!(manifest.contains(crate::plugins::PLUGINS_BEGIN));
         assert!(manifest.contains(crate::plugins::PLUGINS_END));
+        assert!(
+            manifest.find(crate::plugins::PLUGINS_END)
+                < manifest.find("[target.'cfg(target_os = \"linux\")'.dependencies]")
+        );
     }
 }

@@ -246,7 +246,10 @@ jobs:
           echo "ANDROID_OUT=$out" >> "$GITHUB_ENV"
           # Android has no flutter_patched_sdk archive target. Build the
           # platform dill files copied by package_android_engine_artifacts.sh.
-          targets=(libflutter_rust_engine.so flutter/lib/snapshot:strong_platform)
+          targets=(flutter/shell/platform/android:android_jar
+                   flutter/shell/platform/android:pom_embedding
+                   flutter/shell/platform/android:pom_libflutter
+                   flutter/lib/snapshot:strong_platform)
           # Release apps are AOT-compiled by the host-run gen_snapshot for
           # this target; debug ones use the snapshots linked into the engine.
           if [[ "${{ matrix.runtime_mode }}" == release ]]; then
@@ -376,6 +379,55 @@ jobs:
           test -f runner-rs/target/debug/data/flutter_assets/kernel_blob.bin
           "$rlutter" build linux --release
           test -f runner-rs/target/release/data/flutter_assets/app.so
+
+          # Exercise the Android archives exactly as a release user receives
+          # them, including Flutter's Java plugin loader and JNI libraries.
+          rustup target add aarch64-linux-android --toolchain 1.93.1
+          sdkmanager --install "platforms;android-36" "ndk;28.2.13676358"
+          mkdir -p .dart_tool/flutter_rs/sdk/lib/android-arm64
+          tar -xzf "$GITHUB_WORKSPACE/build/flutter-rust-arm64.tar.gz" \
+            -C .dart_tool/flutter_rs/sdk/lib/android-arm64
+          "$XDG_CACHE_HOME/rlutter/flutter-BETA/bin/flutter" pub add \
+            shared_preferences path_provider
+          cat > lib/main.dart <<'DART'
+          import 'package:flutter/material.dart';
+          import 'package:path_provider/path_provider.dart';
+          import 'package:shared_preferences/shared_preferences.dart';
+
+          Future<void> main() async {
+            WidgetsFlutterBinding.ensureInitialized();
+            final preferences = SharedPreferencesAsync();
+            await preferences.setString('probe', 'ok');
+            final path = await getApplicationSupportDirectory();
+            runApp(MaterialApp(home: Text('${await preferences.getString('probe')} ${path.path}')));
+          }
+          DART
+          "$rlutter" build android --debug
+          "$rlutter" build android --release
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          for mode in ('debug', 'release'):
+              apk = Path(f'android-rs/app/build/outputs/apk/{mode}/app-{mode}.apk')
+              with ZipFile(apk) as archive:
+                  names = set(archive.namelist())
+                  dex = b''.join(archive.read(name) for name in names
+                                 if name.startswith('classes') and name.endswith('.dex'))
+              required = {
+                  'lib/arm64-v8a/libflutter.so',
+                  'lib/arm64-v8a/libstandalone_smoke.so',
+                  'lib/arm64-v8a/libdartjni.so',
+              }
+              if mode == 'debug':
+                  required.add('assets/flutter_assets/kernel_blob.bin')
+                  for plugin in (b'JniPlugin', b'JniFlutterPlugin', b'SharedPreferencesPlugin'):
+                      assert plugin in dex, (mode, plugin)
+              else:
+                  required.add('lib/arm64-v8a/libapp.so')
+              assert required <= names, (mode, sorted(required - names))
+              assert 'lib/arm64-v8a/libflutter_rust_engine.so' not in names
+          PY
 
       - name: Publish rolling BETA release
         env:

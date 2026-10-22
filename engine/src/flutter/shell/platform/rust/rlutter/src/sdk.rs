@@ -50,6 +50,21 @@ const ENGINE_ENTRIES: &[&str] = &[
     "clang_x64/gen_snapshot",
     "icudtl.dat",
     "libflutter_rust_engine.so",
+    // Standard Android embedding and its local Maven artifacts.
+    "libflutter.so",
+    "flutter.jar",
+    "flutter_embedding_debug.jar",
+    "flutter_embedding_debug.pom",
+    "flutter_embedding_debug.maven-metadata.xml",
+    "flutter_embedding_release.jar",
+    "flutter_embedding_release.pom",
+    "flutter_embedding_release.maven-metadata.xml",
+    "arm64_v8a_debug.jar",
+    "arm64_v8a_debug.pom",
+    "arm64_v8a_debug.maven-metadata.xml",
+    "arm64_v8a_release.jar",
+    "arm64_v8a_release.pom",
+    "arm64_v8a_release.maven-metadata.xml",
     // Debug bundles copy the VM snapshots from here.
     "gen/flutter/lib/snapshot",
 ];
@@ -194,7 +209,16 @@ fn find_engine_build(
         .iter()
         .map(|name| out.join(name))
         .chain(fallback)
-        .find(|dir| dir.join("libflutter_rust_engine.so").is_file())
+        .find(|dir| {
+            if candidates
+                .first()
+                .is_some_and(|name| name.starts_with("android_"))
+            {
+                dir.join("libflutter.so").is_file()
+            } else {
+                dir.join("libflutter_rust_engine.so").is_file()
+            }
+        })
 }
 
 /// Fills `layout` with links to `source`'s engine files.
@@ -207,7 +231,12 @@ fn link_engine_build(source: &Path, layout: &Path) -> Result<()> {
             replace_link(&layout.join(entry), &from)?;
         }
     }
-    for entry in ENGINE_REQUIRED {
+    let required: &[&str] = if source.join("libflutter.so").is_file() {
+        &["libflutter.so", "flutter.jar"]
+    } else {
+        ENGINE_REQUIRED
+    };
+    for entry in required {
         if !layout.join(entry).exists() {
             bail!("{} is missing {entry}", source.display());
         }
@@ -248,6 +277,9 @@ fn ensure_shell_sources_with(
 fn release_bundle_complete(sdk: &Path) -> bool {
     sdk.join("Cargo.toml").is_file()
         && sdk.join("crates/flutter-plugin-sdk/Cargo.toml").is_file()
+        && sdk
+            .join("crates/flutter-shell-android/Cargo.toml")
+            .is_file()
         && !sdk.join("crates").is_symlink()
         && !sdk.join("third_party").is_symlink()
         && ["debug", "release"].iter().all(|mode| {
@@ -285,7 +317,7 @@ fn android_bundle_url(abi: Abi) -> String {
 fn ensure_android_bundle(sdk: &Path, abi: Abi, mode: BuildMode) -> Result<PathBuf> {
     let bundle = sdk.join("lib").join(abi.flutter_platform());
     let engine = bundle.join(mode.name());
-    if engine.join("libflutter_rust_engine.so").is_file() {
+    if android_bundle_complete(&engine, abi, mode) {
         return Ok(engine);
     }
     let url = android_bundle_url(abi);
@@ -295,10 +327,88 @@ fn ensure_android_bundle(sdk: &Path, abi: Abi, mode: BuildMode) -> Result<PathBu
     );
     remove_path(&bundle)?;
     download_and_unpack(&url, &bundle)?;
-    if !engine.join("libflutter_rust_engine.so").is_file() {
-        bail!("{url} has no {} engine", mode.name());
+    if !android_bundle_complete(&engine, abi, mode) {
+        bail!(
+            "{url} has an incomplete {} Android embedding; rebuild/publish the Android release bundle",
+            mode.name()
+        );
     }
     Ok(engine)
+}
+
+fn android_bundle_complete(engine: &Path, abi: Abi, mode: BuildMode) -> bool {
+    let native = format!("{}_{}", abi.android_name().replace('-', "_"), mode.name());
+    let embedding = format!("flutter_embedding_{}", mode.name());
+    [
+        "libflutter.so",
+        "flutter.jar",
+        "flutter_patched_sdk/platform_strong.dill",
+    ]
+    .iter()
+    .all(|entry| engine.join(entry).is_file())
+        && [&native, &embedding].iter().all(|artifact| {
+            ["jar", "pom", "maven-metadata.xml"]
+                .iter()
+                .all(|extension| engine.join(format!("{artifact}.{extension}")).is_file())
+        })
+        && (mode.config().dart_aot
+            || ["vm_isolate_snapshot.bin", "isolate_snapshot.bin"]
+                .iter()
+                .all(|name| engine.join("gen/flutter/lib/snapshot").join(name).is_file()))
+        && (!mode.config().dart_aot || engine.join("clang_x64/gen_snapshot").is_file())
+}
+
+/// Local Maven artifacts must come from the same fork build as libflutter.so;
+/// an upstream embedding jar has neither the matching Dart VM nor Rust hooks.
+pub fn android_maven_repository(
+    project: &Project,
+    engine: &Engine,
+    mode: BuildMode,
+    abi: Abi,
+) -> Result<PathBuf> {
+    if !android_bundle_complete(&engine.target, abi, mode) {
+        bail!(
+            "{} is missing Android embedding artifacts. Build flutter/shell/platform/android:android_jar, :pom_embedding and :pom_libflutter before running rlutter",
+            engine.target.display()
+        );
+    }
+    let repository = project
+        .flutter_rs_dir()
+        .join("android")
+        .join(format!("maven-{}", mode.name()));
+    remove_path(&repository)?;
+    for artifact in [
+        format!("flutter_embedding_{}", mode.name()),
+        format!("{}_{}", abi.android_name().replace('-', "_"), mode.name()),
+    ] {
+        let pom = fs::read_to_string(engine.target.join(format!("{artifact}.pom")))?;
+        let version = pom
+            .split_once("<version>")
+            .and_then(|(_, rest)| rest.split_once("</version>"))
+            .map(|(v, _)| v.trim())
+            .context("Android engine POM has no version")?;
+        if version.is_empty()
+            || !version
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        {
+            bail!("invalid Android engine artifact version {version:?}");
+        }
+        let directory = repository.join("io/flutter").join(&artifact);
+        for extension in ["jar", "pom"] {
+            replace_link(
+                &directory
+                    .join(version)
+                    .join(format!("{artifact}-{version}.{extension}")),
+                &engine.target.join(format!("{artifact}.{extension}")),
+            )?;
+        }
+        replace_link(
+            &directory.join("maven-metadata.xml"),
+            &engine.target.join(format!("{artifact}.maven-metadata.xml")),
+        )?;
+    }
+    Ok(repository)
 }
 
 pub(crate) fn download_and_unpack(url: &str, dest: &Path) -> Result<()> {
@@ -341,6 +451,8 @@ mod tests {
         fs::create_dir_all(dir.join("flutter_patched_sdk")).unwrap();
         for file in [
             "libflutter_rust_engine.so",
+            "libflutter.so",
+            "flutter.jar",
             "icudtl.dat",
             "gen_snapshot",
             "font-subset",
@@ -352,6 +464,8 @@ mod tests {
 
     fn fake_release_bundle(sdk: &Path) {
         fs::create_dir_all(sdk.join("crates/flutter-plugin-sdk")).unwrap();
+        fs::create_dir_all(sdk.join("crates/flutter-shell-android")).unwrap();
+        fs::write(sdk.join("crates/flutter-shell-android/Cargo.toml"), "").unwrap();
         fs::write(sdk.join("Cargo.toml"), "").unwrap();
         fs::write(sdk.join("crates/flutter-plugin-sdk/Cargo.toml"), "").unwrap();
         for mode in ["debug", "release"] {
@@ -414,10 +528,44 @@ mod tests {
         let root = tempdir("sdk_android_bundle");
         let engine = root.join("lib/android-arm64/release");
         fake_engine(&engine);
+        fs::write(engine.join("flutter_patched_sdk/platform_strong.dill"), "").unwrap();
+        fs::create_dir_all(engine.join("clang_x64")).unwrap();
+        fs::write(engine.join("clang_x64/gen_snapshot"), "").unwrap();
+        for artifact in ["arm64_v8a_release", "flutter_embedding_release"] {
+            for extension in ["jar", "pom", "maven-metadata.xml"] {
+                fs::write(engine.join(format!("{artifact}.{extension}")), "").unwrap();
+            }
+        }
         assert_eq!(
             ensure_android_bundle(&root, Abi::Arm64V8a, BuildMode::Release).unwrap(),
             engine
         );
+    }
+
+    #[test]
+    fn debug_android_bundle_requires_flutter_snapshots() {
+        let root = tempdir("sdk_android_debug_snapshots");
+        let engine = root.join("debug");
+        fake_engine(&engine);
+        fs::write(engine.join("flutter_patched_sdk/platform_strong.dill"), "").unwrap();
+        for artifact in ["arm64_v8a_debug", "flutter_embedding_debug"] {
+            for extension in ["jar", "pom", "maven-metadata.xml"] {
+                fs::write(engine.join(format!("{artifact}.{extension}")), "").unwrap();
+            }
+        }
+        assert!(!android_bundle_complete(
+            &engine,
+            Abi::Arm64V8a,
+            BuildMode::Debug
+        ));
+        for name in ["vm_isolate_snapshot.bin", "isolate_snapshot.bin"] {
+            fs::write(engine.join("gen/flutter/lib/snapshot").join(name), "").unwrap();
+        }
+        assert!(android_bundle_complete(
+            &engine,
+            Abi::Arm64V8a,
+            BuildMode::Debug
+        ));
     }
 
     #[test]

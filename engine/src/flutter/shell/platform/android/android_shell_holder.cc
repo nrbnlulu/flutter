@@ -82,7 +82,8 @@ static PlatformData GetDefaultPlatformData() {
 AndroidShellHolder::AndroidShellHolder(
     const flutter::Settings& settings,
     std::shared_ptr<PlatformViewAndroidJNI> jni_facade,
-    AndroidRenderingAPI android_rendering_api)
+    AndroidRenderingAPI android_rendering_api,
+    std::shared_ptr<AndroidContext> rust_context)
     : settings_(settings),
       jni_facade_(jni_facade),
       android_rendering_api_(android_rendering_api) {
@@ -115,14 +116,20 @@ AndroidShellHolder::AndroidShellHolder(
   fml::WeakPtr<PlatformViewAndroid> weak_platform_view;
   AndroidRenderingAPI rendering_api = android_rendering_api_;
   Shell::CreateCallback<PlatformView> on_create_platform_view =
-      [&jni_facade, &weak_platform_view, rendering_api](Shell& shell) {
+      [&jni_facade, &weak_platform_view, rendering_api,
+       &rust_context](Shell& shell) {
         std::unique_ptr<PlatformViewAndroid> platform_view_android;
-        platform_view_android = std::make_unique<PlatformViewAndroid>(
-            shell,                   // delegate
-            shell.GetTaskRunners(),  // task runners
-            jni_facade,              // JNI interop
-            rendering_api            // rendering API
-        );
+        if (rust_context) {
+          platform_view_android = std::make_unique<PlatformViewAndroid>(
+              shell, shell.GetTaskRunners(), jni_facade, rust_context);
+        } else {
+          platform_view_android = std::make_unique<PlatformViewAndroid>(
+              shell,                   // delegate
+              shell.GetTaskRunners(),  // task runners
+              jni_facade,              // JNI interop
+              rendering_api            // rendering API
+          );
+        }
         weak_platform_view = platform_view_android->GetWeakPtr();
         return platform_view_android;
       };

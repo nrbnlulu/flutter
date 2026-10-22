@@ -1226,3 +1226,65 @@ Verification: all 93 CLI tests pass, including incomplete-cache repair, host
 layout linking after repair, cache reuse, and stale-source-link rejection.
 Clippy passes with the existing argument-count lint suppressed. This verifies
 the reported preparation failure; an Android device build was not run.
+
+## FlutterActivity Android embedding and plugin packaging
+
+`rlutter build android` now uses `FlutterActivity` and the standard Flutter
+Android engine for window, input, lifecycle, Dart VM, and Java/Kotlin plugins.
+A small optional `FlutterJNI` attachment hook passes the Rust-owned Vulkan
+context to Impeller. The Rust runner still supplies plugin registration and
+wgpu/pixel-buffer textures. Existing GameActivity projects are migrated with
+backups of the original Gradle and manifest files.
+
+The generated `android/` link exposes `android-rs/` to `flutter pub get` so
+Flutter writes `.flutter-plugins-dependencies` and its own Java registrant.
+Flutter's Gradle plugin builds the Dart bundle, AOT code, plugin projects and
+JNI libraries. `rlutter` stages Rust libraries and selects matching local
+embedding/native Maven artifacts. The BETA workflow now builds and packages
+those artifacts in debug and release archives and compiles an Android plugin
+smoke APK from the standalone release bundle before publishing.
+
+Local verification: the debug and release Android engines and embedding JARs
+build; CLI tests and Clippy pass. Generated debug and release APKs include the
+JNI plugin libraries (`libdartjni.so` and `libdatastore_shared_counter.so`),
+standard `libflutter.so`, the Rust runner, and mode-appropriate Dart kernel or
+AOT code. A second app built both modes from copied host/Android engine bundles
+with a nonexistent engine source path, exercising the release asset layout.
+The original GameActivity Gradle templates also migrated in place and built a
+debug APK with the Java plugins.
+This exposed and fixed missing debug snapshot files in the Android archive.
+
+On an Armor 21 running Android 16, debug and release APKs both launched with
+`FlutterActivity`, read and wrote `SharedPreferencesAsync` through Dart JNI,
+resolved `path_provider`, and displayed a Rust pixel-buffer texture. Returning
+from the launcher and recreating the Activity also passed. Device testing
+found and fixed the old GameActivity `android_main` link reference, Android's
+duplicate `JNI_OnLoad` lookup through `libflutter.so`, and an invalid cast of
+Impeller's Android surface context while painting external textures. Release
+testing found that R8 removed JNI-referenced plugin methods, so generated and
+migrated Android projects now disable release code/resource shrinking until
+JNI-aware keep rules can be generated.
+
+The Android runner no longer links winit's GameActivity glue. Its winit
+dependency is Linux-only, including for existing runners migrated during
+`rlutter build android`; wgpu shares its Vulkan device setup through a
+statically dispatched surface-source trait. FlutterActivity's Android path
+supplies no winit surface, and the obsolete `android_main` shim is gone. A
+debug and release smoke APK build passed after this change; the Android Cargo
+dependency tree contains neither winit nor android-activity. The obsolete GN
+GameActivity runner target has also been removed.
+
+On the connected Armor 21, the `ui-flutter` debug APK built from the local
+engine and reached its login screen. Device testing exposed two later crashes:
+the location foreground service was launched before runtime permission, and
+the plugin's persisted boot/watchdog restart could create a Vulkan Flutter
+engine before the Rust activity. The app now starts tracking only with `always`
+location permission, disables the plugin's automatic boot/watchdog receivers,
+and explicitly starts tracking after permission is granted. A subsequent
+launch stayed alive beyond the foreground-service timeout without a fatal
+exception or invalid Vulkan surface. The no-permission path was verified;
+location tracking after permission grant and media playback remain untested.
+Standard secondary engines created after a Rust runtime select Impeller
+OpenGLES to avoid replacing Vulkan-Hpp's process-wide default dispatcher.
+Vulkan validation also reported a depth-buffer write synchronization warning
+on an earlier run; its impact has not been established.

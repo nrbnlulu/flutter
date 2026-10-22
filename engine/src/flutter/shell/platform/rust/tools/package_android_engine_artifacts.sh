@@ -1,20 +1,31 @@
 #!/usr/bin/env bash
-# Copies the subset of an Android engine out directory (out/android_<mode>_<cpu>)
-# that rlutter links into a project: the engine library, ICU data, the
-# platform dill, the debug VM snapshots, and (release) the host-run AOT
-# compiler. Keep in sync with ENGINE_ENTRIES in rlutter/src/sdk.rs.
+# Package the standard Android embedding plus the matching compiler inputs.
+# rlutter must never combine an upstream flutter.jar with our native engine.
 # Usage: package_android_engine_artifacts.sh <out/android_mode_cpu> <destination>
 set -euo pipefail
-
 src="$1"
 dst="$2"
-mkdir -p "$dst/gen/flutter/lib/snapshot" "$dst/clang_x64"
+mkdir -p "$dst/clang_x64" "$dst/gen/flutter/lib/snapshot"
 
-for f in libflutter_rust_engine.so icudtl.dat; do
+# The native library is linked by Cargo; the Maven jars/POMs supply the same
+# engine and its Java dependencies to Flutter's Gradle plugin.
+for f in libflutter.so flutter.jar; do
   cp -L "$src/$f" "$dst/$f"
 done
+for artifact in "$src"/flutter_embedding_*.pom "$src"/arm64_v8a_*.pom; do
+  name="$(basename "$artifact" .pom)"
+  for extension in pom jar maven-metadata.xml; do
+    cp -L "$src/$name.$extension" "$dst/$name.$extension"
+  done
+done
 cp -RL "$src/flutter_patched_sdk" "$dst/"
-# Debug engines carry the VM snapshots; release ones have none.
-cp -L "$src"/gen/flutter/lib/snapshot/*.bin "$dst/gen/flutter/lib/snapshot/" 2>/dev/null || true
-[[ -e "$src/clang_x64/gen_snapshot" ]] && cp -L "$src/clang_x64/gen_snapshot" "$dst/clang_x64/gen_snapshot"
-exit 0
+# Flutter's debug assemble target reads these snapshots from local-engine-out
+# even though libflutter.so also embeds its own VM code.
+for snapshot in "$src"/gen/flutter/lib/snapshot/*.bin; do
+  if [[ -f "$snapshot" ]]; then
+    cp -L "$snapshot" "$dst/gen/flutter/lib/snapshot/"
+  fi
+done
+if [[ -e "$src/clang_x64/gen_snapshot" ]]; then
+  cp -L "$src/clang_x64/gen_snapshot" "$dst/clang_x64/gen_snapshot"
+fi

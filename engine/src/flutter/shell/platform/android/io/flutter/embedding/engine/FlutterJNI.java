@@ -443,8 +443,20 @@ public class FlutterJNI {
 
   @VisibleForTesting
   public long performNativeAttach(@NonNull FlutterJNI flutterJNI) {
-    return nativeAttach(flutterJNI);
+    return rustRuntime == 0 ? nativeAttach(flutterJNI) : nativeAttachRust(flutterJNI, rustRuntime);
   }
+
+  // Private fork integration: Rust owns the shared wgpu/Vulkan device;
+  // the standard Android embedding owns the shell and display surface.
+  private long rustRuntime;
+
+  public void setRustRuntime(long runtime) {
+    ensureRunningOnMainThread();
+    if (isAttached()) throw new IllegalStateException("Rust runtime must be set before attach");
+    rustRuntime = runtime;
+  }
+
+  private native long nativeAttachRust(@NonNull FlutterJNI flutterJNI, long runtime);
 
   private native long nativeAttach(@NonNull FlutterJNI flutterJNI);
 

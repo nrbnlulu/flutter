@@ -15,10 +15,12 @@ path = "src/main.rs"
 
 [dependencies]
 flutter-plugin-sdk = { path = "../.dart_tool/flutter_rs/sdk/crates/flutter-plugin-sdk" }
-flutter-shell-winit = { path = "../.dart_tool/flutter_rs/sdk/crates/flutter-shell-winit" }
 
 # === BEGIN FLUTTER GENERATED RUST PLUGINS ===
 # === END FLUTTER GENERATED RUST PLUGINS ===
+
+[target.'cfg(target_os = "linux")'.dependencies]
+flutter-shell-winit = { path = "../.dart_tool/flutter_rs/sdk/crates/flutter-shell-winit" }
 
 [patch.crates-io]
 flutter-plugin-sdk = { path = "../.dart_tool/flutter_rs/sdk/crates/flutter-plugin-sdk" }

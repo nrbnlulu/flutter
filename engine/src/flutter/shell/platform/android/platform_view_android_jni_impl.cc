@@ -27,6 +27,7 @@
 #include "flutter/shell/platform/android/flutter_main.h"
 #include "flutter/shell/platform/android/jni/platform_view_android_jni.h"
 #include "flutter/shell/platform/android/platform_view_android.h"
+#include "flutter/shell/platform/rust/cpp/rust_android.h"
 
 #define ANDROID_SHELL_HOLDER \
   (reinterpret_cast<AndroidShellHolder*>(shell_holder))
@@ -184,18 +185,35 @@ static jfieldID g_path_fill_type_winding_field = nullptr;
 static jfieldID g_path_fill_type_even_odd_field = nullptr;
 
 // Called By Java
-static jlong AttachJNI(JNIEnv* env, jclass clazz, jobject flutterJNI) {
+static jlong AttachRustJNI(JNIEnv* env,
+                           jclass clazz,
+                           jobject flutterJNI,
+                           jlong rust_runtime) {
   fml::jni::JavaObjectWeakGlobalRef java_object(env, flutterJNI);
   std::shared_ptr<PlatformViewAndroidJNI> jni_facade =
       std::make_shared<PlatformViewAndroidJNIImpl>(java_object);
+  // Vulkan-Hpp's default dispatcher is process-wide. A secondary engine
+  // (for example a background service) would replace the Rust engine's
+  // instance dispatch table and invalidate its swapchain. Its Dart isolate
+  // does not need the Rust renderer, so keep that engine on OpenGLES.
+  auto rendering_api = FlutterMain::Get().GetAndroidRenderingAPI();
+  if (rust_runtime == 0 && HasRustAndroidRuntime()) {
+    rendering_api = AndroidRenderingAPI::kImpellerOpenGLES;
+  }
   auto shell_holder = std::make_unique<AndroidShellHolder>(
-      FlutterMain::Get().GetSettings(), jni_facade,
-      FlutterMain::Get().GetAndroidRenderingAPI());
+      FlutterMain::Get().GetSettings(), jni_facade, rendering_api,
+      RustAndroidContext(reinterpret_cast<void*>(rust_runtime)));
   if (shell_holder->IsValid()) {
+    AttachRustAndroidRuntime(reinterpret_cast<void*>(rust_runtime),
+                             *shell_holder);
     return reinterpret_cast<jlong>(shell_holder.release());
   } else {
     return 0;
   }
+}
+
+static jlong AttachJNI(JNIEnv* env, jclass clazz, jobject flutterJNI) {
+  return AttachRustJNI(env, clazz, flutterJNI, 0);
 }
 
 static void DestroyJNI(JNIEnv* env, jobject jcaller, jlong shell_holder) {
@@ -755,6 +773,11 @@ static void UpdateJavaAssetManager(JNIEnv* env,
 bool RegisterApi(JNIEnv* env) {
   static const JNINativeMethod flutter_jni_methods[] = {
       // Start of methods from FlutterJNI
+      {
+          .name = "nativeAttachRust",
+          .signature = "(Lio/flutter/embedding/engine/FlutterJNI;J)J",
+          .fnPtr = reinterpret_cast<void*>(&AttachRustJNI),
+      },
       {
           .name = "nativeAttach",
           .signature = "(Lio/flutter/embedding/engine/FlutterJNI;)J",

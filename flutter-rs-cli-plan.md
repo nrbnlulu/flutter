@@ -427,7 +427,7 @@ x86_64 emulator gives a clear "unsupported ABI" error.
 | Stock tool changes `--local-engine` path parsing or assemble target names | Pin in Phase 0 tests; one module (`flutter.rs`) owns all invocations |
 | `flutter create` workaround (generate + delete `linux/`) breaks | Isolated in one function; an upstream "no platforms" option would remove it |
 | Asset extraction slows startup | Build-id stamp means extraction only after an install; `AAssetManager` later |
-| Plugins with Android-only native code (Java/Kotlin) | Out of scope for v1; rlutter only handles Rust plugins and cdylibs |
+| Plugins with Android native code (Java/Kotlin) | FlutterActivity and the standard Flutter Gradle plugin build and register them; release verification compiles a fixture that uses JNI plugins. |
 - 2026-10-19: Phase 2 done (`rlutter build linux [--debug|--release] [-t ...]`, 47 unit tests). Verified on a generated app:
   - debug: runner + `data/flutter_assets` + `libs/libflutter_rust_engine.so`; the built binary started with no
     arguments finds its assets next to itself and boots the Dart VM (VM service banner printed).
@@ -520,4 +520,3 @@ x86_64 emulator gives a clear "unsupported ABI" error.
    release; also that the extracted-assets startup path really works on a phone. Nothing in Phase 5 has run.
 3. BETA SDK download path in `sdk::ensure_sources` (only the local-checkout path was exercised).
 4. x86_64 emulator, other ABIs, profile mode, 16 KB page alignment, icon tree shaking, Windows/web/macOS/iOS.
-

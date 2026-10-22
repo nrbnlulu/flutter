@@ -6,17 +6,32 @@
 
 #include <array>
 
+#include "flutter/fml/build_config.h"
 #include "flutter/fml/logging.h"
 #include "flutter/impeller/display_list/aiks_context.h"
 #include "flutter/impeller/display_list/dl_image_impeller.h"
 #include "flutter/impeller/renderer/backend/vulkan/context_vk.h"
 #include "flutter/impeller/renderer/backend/vulkan/formats_vk.h"
 #include "flutter/impeller/renderer/backend/vulkan/queue_vk.h"
+#if defined(FML_OS_ANDROID)
+#include "flutter/impeller/renderer/backend/vulkan/surface_context_vk.h"
+#endif
 #include "flutter/impeller/renderer/backend/vulkan/texture_source_vk.h"
 #include "flutter/impeller/renderer/backend/vulkan/texture_vk.h"
 
 namespace flutter {
 namespace {
+
+std::shared_ptr<impeller::Context> TextureDeviceContext(
+    const std::shared_ptr<impeller::Context>& context) {
+#if defined(FML_OS_ANDROID)
+  // Android paints through a SurfaceContextVK. Vulkan queue and texture
+  // operations belong to its parent ContextVK.
+  return impeller::SurfaceContextVK::Cast(*context).GetParent();
+#else
+  return context;
+#endif
+}
 
 class BorrowedTextureSourceVK final : public impeller::TextureSourceVK {
  public:
@@ -91,7 +106,7 @@ RustExternalTexture::ResolveFrame(PaintContext& context, const DlISize& size) {
     return std::nullopt;
   }
 
-  auto context_ptr = context.aiks_context->GetContext();
+  auto context_ptr = TextureDeviceContext(context.aiks_context->GetContext());
   context_ = context_ptr;
   auto& context_vk = impeller::ContextVK::Cast(*context_ptr);
   if (!SubmitSemaphore(context_vk, frame.acquire_semaphore, true)) {
@@ -126,9 +141,10 @@ RustExternalTexture::ResolveFrame(PaintContext& context, const DlISize& size) {
 
 void RustExternalTexture::ReleaseFrame(PaintContext* context,
                                        ResolvedFrame frame) {
-  auto context_ptr = context && context->aiks_context
-                         ? context->aiks_context->GetContext()
-                         : context_.lock();
+  auto context_ptr =
+      context && context->aiks_context
+          ? TextureDeviceContext(context->aiks_context->GetContext())
+          : context_.lock();
   if (context_ptr && frame.frame.render_semaphore != 0u) {
     auto& context_vk = impeller::ContextVK::Cast(*context_ptr);
     if (!SubmitSemaphore(context_vk, frame.frame.render_semaphore, false)) {

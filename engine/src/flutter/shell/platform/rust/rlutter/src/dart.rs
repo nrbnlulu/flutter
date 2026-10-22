@@ -35,7 +35,7 @@ fn base64(input: &str) -> String {
 }
 
 /// The `DartDefines` build value: comma separated, each define base64 encoded.
-fn encode_dart_defines(user: &[String]) -> String {
+pub(crate) fn encode_dart_defines(user: &[String]) -> String {
     std::iter::once(WINDOWING_DEFINE)
         .chain(user.iter().map(String::as_str))
         .map(base64)
