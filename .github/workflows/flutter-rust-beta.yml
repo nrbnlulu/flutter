@@ -383,7 +383,12 @@ jobs:
           # Exercise the Android archives exactly as a release user receives
           # them, including Flutter's Java plugin loader and JNI libraries.
           rustup target add aarch64-linux-android --toolchain 1.93.1
-          sdkmanager --install "platforms;android-36" "ndk;28.2.13676358"
+          # PATH was reset above, so locate sdkmanager via the runner's SDK root.
+          android_sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          export ANDROID_HOME="$android_sdk" ANDROID_SDK_ROOT="$android_sdk"
+          yes | "$android_sdk/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$android_sdk/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platforms;android-36" "ndk;28.2.13676358"
           mkdir -p .dart_tool/flutter_rs/sdk/lib/android-arm64
           tar -xzf "$GITHUB_WORKSPACE/build/flutter-rust-arm64.tar.gz" \
             -C .dart_tool/flutter_rs/sdk/lib/android-arm64
