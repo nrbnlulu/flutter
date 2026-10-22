@@ -18,6 +18,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use indicatif::{ProgressBar, ProgressStyle};
 use flate2::read::GzDecoder;
 
 use crate::{
@@ -279,10 +280,30 @@ pub(crate) fn download_and_unpack(url: &str, dest: &Path) -> Result<()> {
     let response = ureq::get(url)
         .call()
         .with_context(|| format!("cannot download {url}"))?;
+    let total = response
+        .headers()
+        .get("content-length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    let progress = match total {
+        Some(total) => ProgressBar::new(total),
+        None => ProgressBar::new_spinner(),
+    };
+    progress.set_style(
+        ProgressStyle::with_template(
+            "{bar:40.cyan/blue} {bytes}/{total_bytes} ({bytes_per_sec}, eta {eta})",
+        )
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .progress_chars("=> "),
+    );
     fs::create_dir_all(dest)?;
-    tar::Archive::new(GzDecoder::new(response.into_body().into_reader()))
-        .unpack(dest)
-        .with_context(|| format!("cannot unpack {url}"))
+    let result = tar::Archive::new(GzDecoder::new(
+        progress.wrap_read(response.into_body().into_reader()),
+    ))
+    .unpack(dest)
+    .with_context(|| format!("cannot unpack {url}"));
+    progress.finish_and_clear();
+    result
 }
 
 #[cfg(test)]

@@ -226,11 +226,31 @@ fn stage_android(project: &Project, stage: &Path, outputs: &[AbiOutput]) -> Resu
                 libs.join(native.file_name().context("native library has no name")?),
             )?;
         }
+        // Code assets from build hooks (`DynamicLoadingBundled`) land in
+        // `native_assets/jniLibs/lib/<abi>/`; the Flutter Gradle plugin would move them into
+        // the APK's `lib/<abi>/`, so do the same or `dlopen` can't find them.
+        let hook_libs = output
+            .assets
+            .join("native_assets/jniLibs/lib")
+            .join(output.abi.android_name());
+        if hook_libs.is_dir() {
+            for entry in fs::read_dir(&hook_libs)? {
+                let path = entry?.path();
+                if path.extension().is_some_and(|ext| ext == "so") {
+                    let dest = libs.join(path.file_name().context("native library has no name")?);
+                    if !dest.exists() {
+                        fs::copy(&path, dest)?;
+                    }
+                }
+            }
+        }
     }
 
     let assets = stage.join("assets");
     let flutter_assets = assets.join("flutter_assets");
     copy_dir(&first.assets, &flutter_assets)?;
+    // Already staged under jniLibs/; don't package the libraries twice.
+    let _ = fs::remove_dir_all(flutter_assets.join("native_assets/jniLibs"));
     // Build bookkeeping, and the AOT library, which ships as libapp.so.
     let _ = fs::remove_file(flutter_assets.join(".last_build_id"));
     let _ = fs::remove_file(flutter_assets.join("app.so"));

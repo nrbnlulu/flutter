@@ -14,6 +14,8 @@ vars:
   LIFECYCLE_ITERATIONS: 20
   TEXTURE_LIFECYCLE_ITERATIONS: 40
   RUST_SHELL_DIR: '{{.ENGINE_SRC}}/flutter/shell/platform/rust'
+  ANDROID_ENGINE: android_debug_unopt_arm64
+  ANDROID_GRADLE_TASK: assembleDebug
 
 tasks:
   fmt:
@@ -105,6 +107,23 @@ tasks:
           ninja -C {{.ENGINE_SRC}}/out/host_release \
             flutter_rust_shell_runner libflutter_rust_engine.so \
             dart_sdk frontend_server_aot
+
+  build-android-shell:
+    desc: Build the Android Rust shell (libflutter_shell_android_runner.so + libflutter_rust_engine.so) into out/{{.ANDROID_ENGINE}}/android_shell/jniLibs.
+    cmds:
+      - |
+        PATH="{{.DEPOT_PY_BIN}}:{{.BUNDLED_DEPOT_TOOLS}}:$PATH" \
+          ninja -C {{.ENGINE_SRC}}/out/{{.ANDROID_ENGINE}} \
+            flutter_shell_android_runner_rust
+
+  build-android-shell-apk:
+    desc: Build the Android Rust shell and package it into the android_shell_app APK (override ANDROID_GRADLE_TASK=assembleRelease for release; needs a JDK compatible with the Gradle/AGP version, set JAVA_HOME).
+    deps: [build-android-shell]
+    dir: '{{.RUST_SHELL_DIR}}/android_shell_app'
+    cmds:
+      - |
+        ./gradlew {{.ANDROID_GRADLE_TASK}} \
+          -PflutterShellJniLibsDir={{.ENGINE_SRC}}/out/{{.ANDROID_ENGINE}}/android_shell/jniLibs
 
   run-rust-multiple-windows:
     desc: Build and run Flutter's multiple_windows example on the Rust shell.
