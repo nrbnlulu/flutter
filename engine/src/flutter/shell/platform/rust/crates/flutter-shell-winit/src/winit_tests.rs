@@ -711,6 +711,248 @@ fn raw_key_message_terminates_the_modern_key_packet() {
     assert_eq!(message["unicodeScalarValues"], u64::from('a'));
 }
 
+fn press(
+    keyboard: &mut KeyboardState,
+    code: KeyCode,
+    key: Key,
+    state: ElementState,
+) -> ProcessedKey {
+    keyboard
+        .process(PhysicalKey::Code(code), &key, None, state, false, false)
+        .expect("supported key")
+}
+
+fn key_types(events: &[FlutterRustKeyEvent]) -> Vec<(u64, u32, i32)> {
+    events
+        .iter()
+        .map(|event| (event.physical & 0xffff, event.event_type, event.synthesized))
+        .collect()
+}
+
+const META_LEFT_USAGE: u64 = 0xe3;
+const NUM_LOCK_USAGE: u64 = 0x53;
+
+#[test]
+fn focus_loss_releases_every_key_flutter_saw_go_down() {
+    let mut keyboard = KeyboardState::new();
+    keyboard.modifiers_changed(ModifiersState::META);
+    press(
+        &mut keyboard,
+        KeyCode::MetaLeft,
+        Key::Named(NamedKey::Meta),
+        ElementState::Pressed,
+    );
+
+    let released = keyboard.release_all();
+    assert_eq!(
+        key_types(&released),
+        [(META_LEFT_USAGE, FlutterRustKeyEventType::Up as u32, 1)]
+    );
+    assert!(keyboard.release_all().is_empty());
+}
+
+#[test]
+fn modifier_mask_dropping_a_held_modifier_synthesizes_its_release() {
+    let mut keyboard = KeyboardState::new();
+    keyboard.modifiers_changed(ModifiersState::META);
+    press(
+        &mut keyboard,
+        KeyCode::MetaLeft,
+        Key::Named(NamedKey::Meta),
+        ElementState::Pressed,
+    );
+
+    // Compositor swallowed the release; the mask is the only evidence.
+    let released = keyboard.modifiers_changed(ModifiersState::empty());
+    assert_eq!(
+        key_types(&released),
+        [(META_LEFT_USAGE, FlutterRustKeyEventType::Up as u32, 1)]
+    );
+
+    // The real Up arriving afterwards must not reach Flutter twice.
+    let late_up = press(
+        &mut keyboard,
+        KeyCode::MetaLeft,
+        Key::Named(NamedKey::Meta),
+        ElementState::Released,
+    );
+    assert!(late_up.event.is_none());
+}
+
+#[test]
+fn modifier_held_before_focus_is_pressed_before_the_next_key() {
+    let mut keyboard = KeyboardState::new();
+    keyboard.modifiers_changed(ModifiersState::CONTROL);
+    let processed = press(
+        &mut keyboard,
+        KeyCode::KeyA,
+        Key::Character("a".into()),
+        ElementState::Pressed,
+    );
+    assert_eq!(
+        key_types(&processed.before),
+        [(0xe0, FlutterRustKeyEventType::Down as u32, 1)]
+    );
+    assert_eq!(processed.event.expect("A is sent").synthesized, 0);
+
+    // Already recorded: no second synthesized Down.
+    let again = press(
+        &mut keyboard,
+        KeyCode::KeyB,
+        Key::Character("b".into()),
+        ElementState::Pressed,
+    );
+    assert!(again.before.is_empty());
+}
+
+#[test]
+fn a_modifiers_own_transition_is_not_double_reported() {
+    // The mask can arrive before the key event for the modifier itself.
+    let mut keyboard = KeyboardState::new();
+    keyboard.modifiers_changed(ModifiersState::SHIFT);
+    let processed = press(
+        &mut keyboard,
+        KeyCode::ShiftLeft,
+        Key::Named(NamedKey::Shift),
+        ElementState::Pressed,
+    );
+    assert!(processed.before.is_empty());
+    assert!(processed.event.is_some());
+}
+
+#[test]
+fn right_alt_is_left_alone_because_it_may_be_altgr() {
+    let mut keyboard = KeyboardState::new();
+    press(
+        &mut keyboard,
+        KeyCode::AltRight,
+        Key::Named(NamedKey::AltGraph),
+        ElementState::Pressed,
+    );
+    // xkb reports AltGr as level-3, not ALT, so the mask stays empty.
+    assert!(
+        keyboard
+            .modifiers_changed(ModifiersState::empty())
+            .is_empty()
+    );
+}
+
+#[test]
+fn up_reuses_the_logical_key_of_its_down() {
+    let mut keyboard = KeyboardState::new();
+    keyboard.modifiers_changed(ModifiersState::CONTROL);
+    let down = press(
+        &mut keyboard,
+        KeyCode::KeyA,
+        Key::Character("ש".into()),
+        ElementState::Pressed,
+    );
+    keyboard.modifiers_changed(ModifiersState::empty());
+    let up = press(
+        &mut keyboard,
+        KeyCode::KeyA,
+        Key::Character("ש".into()),
+        ElementState::Released,
+    );
+    assert_eq!(
+        up.event.expect("Up is sent").logical,
+        down.event.unwrap().logical
+    );
+}
+
+#[test]
+fn numpad_digit_with_flutter_believing_numlock_off_synthesizes_a_numlock_tap() {
+    let mut keyboard = KeyboardState::new();
+    let first = press(
+        &mut keyboard,
+        KeyCode::Numpad4,
+        Key::Character("4".into()),
+        ElementState::Pressed,
+    );
+    assert_eq!(
+        key_types(&first.before),
+        [
+            (NUM_LOCK_USAGE, FlutterRustKeyEventType::Down as u32, 1),
+            (NUM_LOCK_USAGE, FlutterRustKeyEventType::Up as u32, 1),
+        ]
+    );
+
+    // Belief now matches the OS: later digits add nothing.
+    let second = press(
+        &mut keyboard,
+        KeyCode::Numpad5,
+        Key::Character("5".into()),
+        ElementState::Pressed,
+    );
+    assert!(second.before.is_empty());
+}
+
+#[test]
+fn numpad_navigation_key_means_numlock_is_off() {
+    let mut keyboard = KeyboardState::new();
+    press(
+        &mut keyboard,
+        KeyCode::Numpad4,
+        Key::Character("4".into()),
+        ElementState::Pressed,
+    );
+    press(
+        &mut keyboard,
+        KeyCode::Numpad4,
+        Key::Character("4".into()),
+        ElementState::Released,
+    );
+    let nav = press(
+        &mut keyboard,
+        KeyCode::Numpad4,
+        Key::Named(NamedKey::ArrowLeft),
+        ElementState::Pressed,
+    );
+    assert_eq!(nav.before.len(), 2, "NumLock must be tapped back off");
+}
+
+#[test]
+fn shifted_numpad_keys_say_nothing_about_numlock() {
+    // Whether Shift flips a numpad key depends on the xkb keymap, so neither
+    // a digit nor a navigation key may change the tracked belief.
+    for key in [Key::Character("4".into()), Key::Named(NamedKey::ArrowLeft)] {
+        let mut keyboard = KeyboardState::new();
+        keyboard.modifiers_changed(ModifiersState::SHIFT);
+        let processed = press(&mut keyboard, KeyCode::Numpad4, key, ElementState::Pressed);
+        assert!(
+            processed
+                .before
+                .iter()
+                .all(|event| event.physical & 0xffff != NUM_LOCK_USAGE)
+        );
+    }
+}
+
+#[test]
+fn a_real_numlock_press_flips_the_tracked_belief_like_flutter_does() {
+    let mut keyboard = KeyboardState::new();
+    press(
+        &mut keyboard,
+        KeyCode::NumLock,
+        Key::Named(NamedKey::NumLock),
+        ElementState::Pressed,
+    );
+    press(
+        &mut keyboard,
+        KeyCode::NumLock,
+        Key::Named(NamedKey::NumLock),
+        ElementState::Released,
+    );
+    // Flutter now believes NumLock is on, so a digit needs no correction.
+    let digit = press(
+        &mut keyboard,
+        KeyCode::Numpad1,
+        Key::Character("1".into()),
+        ElementState::Pressed,
+    );
+    assert!(digit.before.is_empty());
+}
+
 #[test]
 fn translates_mouse_motion_and_button_state() {
     let mut pointer = PointerState::new();

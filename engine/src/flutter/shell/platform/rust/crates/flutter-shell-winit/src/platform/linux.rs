@@ -26,6 +26,9 @@ impl PlatformBackend for LinuxPlatform {
     const LEGACY_KEYMAP: &'static str = "linux";
     const LEGACY_TOOLKIT: &'static str = "gtk";
     const FALLBACK_KEY_PLANE: u64 = 0x01500000000;
+    // Flutter's Linux text shortcuts gate the numpad navigation keys on
+    // NumLock, which Flutter learns only from NumLock key events.
+    const INFERS_NUM_LOCK: bool = true;
 
     fn prepare_window_attributes(
         mut attributes: WindowAttributes,

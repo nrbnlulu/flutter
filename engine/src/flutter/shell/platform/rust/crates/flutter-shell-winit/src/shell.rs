@@ -2686,9 +2686,52 @@ impl PointerState {
 
 const KEY_VALUE_MASK: u64 = 0x000ffffffff;
 
+/// Modifier groups Flutter's `HardwareKeyboard` tracks as pressed keys, with
+/// the physical keys whose state is reconciled against winit's modifier mask.
+///
+/// Right Alt is deliberately absent: on layouts where it is AltGr (Hebrew,
+/// German, ...) xkb reports it as a level-3 shift, not `ALT`, so the mask
+/// cannot say whether it is held.
+const SYNCED_MODIFIERS: [(ModifiersState, NamedKey, &[KeyCode]); 4] = [
+    (
+        ModifiersState::SHIFT,
+        NamedKey::Shift,
+        &[KeyCode::ShiftLeft, KeyCode::ShiftRight],
+    ),
+    (
+        ModifiersState::CONTROL,
+        NamedKey::Control,
+        &[KeyCode::ControlLeft, KeyCode::ControlRight],
+    ),
+    (ModifiersState::ALT, NamedKey::Alt, &[KeyCode::AltLeft]),
+    (
+        ModifiersState::META,
+        NamedKey::Meta,
+        &[KeyCode::MetaLeft, KeyCode::MetaRight],
+    ),
+];
+
+/// Key packets produced for one winit keyboard event.
+struct ProcessedKey {
+    /// Synthesized corrections that must reach Flutter before `event`, so
+    /// that its shortcut matching sees the real keyboard state.
+    before: Vec<FlutterRustKeyEvent>,
+    /// The key packet itself; `None` when Flutter must not see it (an Up for
+    /// a key it never saw go down).
+    event: Option<FlutterRustKeyEvent>,
+    /// Legacy `flutter/keyevent` message that terminates the packet batch.
+    raw_message: Vec<u8>,
+}
+
 struct KeyboardState {
     started_at: Instant,
     modifiers: ModifiersState,
+    /// Physical -> logical ID of every key whose Down was sent to Flutter and
+    /// whose Up has not been. Mirrors `HardwareKeyboard`'s pressed set.
+    pressed: HashMap<u64, u64>,
+    /// NumLock state Flutter's `HardwareKeyboard` believes: it starts
+    /// unlocked and flips on every NumLock key-down it receives.
+    flutter_num_lock: bool,
 }
 
 impl KeyboardState {
@@ -2696,31 +2739,200 @@ impl KeyboardState {
         Self {
             started_at: Instant::now(),
             modifiers: ModifiersState::empty(),
+            pressed: HashMap::new(),
+            flutter_num_lock: false,
         }
     }
 
-    fn modifiers_changed(&mut self, modifiers: ModifiersState) {
+    /// Records winit's new modifier mask and returns synthesized Ups for
+    /// modifiers Flutter still thinks are held. A compositor shortcut can
+    /// take focus away mid-press, so the release never reaches this window.
+    fn modifiers_changed(&mut self, modifiers: ModifiersState) -> Vec<FlutterRustKeyEvent> {
         self.modifiers = modifiers;
+        self.sync_modifiers(None, false)
+    }
+
+    /// Synthesizes an Up for every key Flutter believes is held, for when the
+    /// window loses keyboard focus and the releases will go elsewhere.
+    fn release_all(&mut self) -> Vec<FlutterRustKeyEvent> {
+        let mut released = self.pressed.drain().collect::<Vec<_>>();
+        released.sort_unstable();
+        released
+            .into_iter()
+            .map(|(physical, logical)| {
+                self.synthesized_event(FlutterRustKeyEventType::Up, physical, logical)
+            })
+            .collect()
+    }
+
+    fn synthesized_event(
+        &self,
+        event_type: FlutterRustKeyEventType,
+        physical: u64,
+        logical: u64,
+    ) -> FlutterRustKeyEvent {
+        FlutterRustKeyEvent {
+            timestamp_micros: self.started_at.elapsed().as_micros().min(u64::MAX as u128) as u64,
+            event_type: event_type as u32,
+            physical,
+            logical,
+            synthesized: 1,
+            character_length: 0,
+            character: [0; FLUTTER_RUST_KEY_CHARACTER_CAPACITY],
+        }
+    }
+
+    /// Reconciles Flutter's pressed modifiers with `self.modifiers`: Ups for
+    /// modifiers no longer held and, when `press_missing`, a Down for ones
+    /// held but never seen (pressed while another window had focus). The
+    /// group owning `own_physical` is skipped because the event being
+    /// processed is that key's own transition and winit may deliver the mask
+    /// and the key in either order.
+    fn sync_modifiers(
+        &mut self,
+        own_physical: Option<u64>,
+        press_missing: bool,
+    ) -> Vec<FlutterRustKeyEvent> {
+        let mut events = Vec::new();
+        for (flag, named, codes) in SYNCED_MODIFIERS {
+            let keys = codes
+                .iter()
+                .filter_map(|&code| {
+                    let key = PhysicalKey::Code(code);
+                    Some((physical_key_id(key)?, named_logical_key(named, key)?))
+                })
+                .collect::<Vec<_>>();
+            if keys
+                .iter()
+                .any(|&(physical, _)| Some(physical) == own_physical)
+            {
+                continue;
+            }
+            if self.modifiers.contains(flag) {
+                let any_pressed = keys
+                    .iter()
+                    .any(|(physical, _)| self.pressed.contains_key(physical));
+                if press_missing && !any_pressed {
+                    let (physical, logical) = keys[0];
+                    self.pressed.insert(physical, logical);
+                    events.push(self.synthesized_event(
+                        FlutterRustKeyEventType::Down,
+                        physical,
+                        logical,
+                    ));
+                }
+            } else {
+                for (physical, _) in keys {
+                    if let Some(logical) = self.pressed.remove(&physical) {
+                        events.push(self.synthesized_event(
+                            FlutterRustKeyEventType::Up,
+                            physical,
+                            logical,
+                        ));
+                    }
+                }
+            }
+        }
+        events
+    }
+
+    /// Infers the OS NumLock state from a numpad key. xkb has already applied
+    /// it: an unshifted numpad key yields its digit (or `.`) with NumLock on
+    /// and its navigation key with NumLock off. Returns `None` for keys that
+    /// do not reveal the state.
+    ///
+    /// Shift is deliberately not interpreted: current xkeyboard-config's
+    /// `KEYPAD` type ignores Shift, while older keymaps use Shift to flip the
+    /// result, so a shifted numpad key says nothing reliable.
+    fn inferred_num_lock(&self, physical_key: PhysicalKey, logical_key: &Key) -> Option<bool> {
+        let PhysicalKey::Code(code) = physical_key else {
+            return None;
+        };
+        if numpad_logical_key(code).is_none() && code != KeyCode::NumpadDecimal {
+            return None;
+        }
+        if self.modifiers.shift_key() {
+            return None;
+        }
+        Some(matches!(logical_key, Key::Character(_)))
     }
 
     fn committed_text<'a>(&self, event: &'a WinitKeyEvent) -> Option<&'a str> {
         committed_key_text(self.modifiers, event.state, event.text.as_deref())
     }
 
-    fn event(&self, event: &WinitKeyEvent, synthesized: bool) -> Option<FlutterRustKeyEvent> {
+    /// Translates one winit key event into the packets Flutter needs to stay
+    /// in step with the OS keyboard: the key itself, preceded by synthesized
+    /// corrections for any modifier or NumLock drift.
+    fn process(
+        &mut self,
+        physical_key: PhysicalKey,
+        logical_key: &Key,
+        text: Option<&str>,
+        state: ElementState,
+        repeat: bool,
+        synthesized: bool,
+    ) -> Option<ProcessedKey> {
         let mut event = make_key_event(
             self.started_at.elapsed().as_micros().min(u64::MAX as u128) as u64,
-            event.physical_key,
-            &event.logical_key,
-            event.text.as_deref(),
-            event.state,
-            event.repeat,
+            physical_key,
+            logical_key,
+            text,
+            state,
+            repeat,
             synthesized,
         )?;
         if let Some(shortcut_key) = shortcut_logical_key(self.modifiers, event.physical) {
             event.logical = shortcut_key;
         }
-        Some(event)
+
+        let mut before = self.sync_modifiers(Some(event.physical), true);
+
+        let num_lock_physical = physical_key_id(PhysicalKey::Code(KeyCode::NumLock));
+        let num_lock_logical = named_logical_key(NamedKey::NumLock, physical_key);
+        if CurrentPlatform::INFERS_NUM_LOCK
+            && state == ElementState::Pressed
+            && let Some(num_lock) = self.inferred_num_lock(physical_key, logical_key)
+            && num_lock != self.flutter_num_lock
+            && let (Some(physical), Some(logical)) = (num_lock_physical, num_lock_logical)
+        {
+            before.push(self.synthesized_event(FlutterRustKeyEventType::Down, physical, logical));
+            before.push(self.synthesized_event(FlutterRustKeyEventType::Up, physical, logical));
+            self.flutter_num_lock = num_lock;
+        }
+
+        let send = match (state, repeat) {
+            (ElementState::Pressed, false) => {
+                if let Some(logical) = self.pressed.insert(event.physical, event.logical) {
+                    // Flutter rejects a second Down; close the first one.
+                    before.push(self.synthesized_event(
+                        FlutterRustKeyEventType::Up,
+                        event.physical,
+                        logical,
+                    ));
+                }
+                if Some(event.physical) == num_lock_physical {
+                    self.flutter_num_lock = !self.flutter_num_lock;
+                }
+                true
+            }
+            (ElementState::Pressed, true) => true,
+            (ElementState::Released, _) => match self.pressed.remove(&event.physical) {
+                Some(logical) => {
+                    event.logical = logical;
+                    true
+                }
+                // Already released by a synthesized Up above.
+                None => false,
+            },
+        };
+
+        let raw_message = self.raw_event_message(&event);
+        Some(ProcessedKey {
+            before,
+            event: send.then_some(event),
+            raw_message,
+        })
     }
 
     fn raw_event_message(&self, event: &FlutterRustKeyEvent) -> Vec<u8> {
@@ -4581,20 +4793,30 @@ impl ApplicationHandler for ShellApplication {
                 }
             }
             WindowEvent::Focused(focused) => {
-                let any_focused = {
+                let (any_focused, released_keys) = {
                     let mut windows = self.windows.borrow_mut();
-                    windows
+                    let view = windows
                         .views
                         .get_mut(&window_id)
-                        .expect("known window disappeared")
-                        .focused = focused;
+                        .expect("known window disappeared");
+                    view.focused = focused;
+                    // Releases of keys held across a focus loss go to
+                    // whichever window gains focus, never to this one.
+                    let released_keys = if focused {
+                        Vec::new()
+                    } else {
+                        view.keyboard_state.release_all()
+                    };
                     if focused {
                         windows.focused_window = Some(window_id);
                     } else if windows.focused_window == Some(window_id) {
                         windows.focused_window = None;
                     }
-                    windows.aggregate_window_state().1
+                    (windows.aggregate_window_state().1, released_keys)
                 };
+                for event in released_keys {
+                    self.send_key_event(event);
+                }
                 let state = self.lifecycle_state.focus_changed(any_focused);
                 self.send_lifecycle_event(state);
                 if let Some(shell) = { self.windows.borrow().shell } {
@@ -4620,7 +4842,7 @@ impl ApplicationHandler for ShellApplication {
                 is_synthetic,
                 ..
             } => {
-                let (committed_text, key_event) = {
+                let (committed_text, processed) = {
                     let mut windows = self.windows.borrow_mut();
                     let keyboard = &mut windows
                         .views
@@ -4628,15 +4850,21 @@ impl ApplicationHandler for ShellApplication {
                         .expect("known window disappeared")
                         .keyboard_state;
                     let committed_text = keyboard.committed_text(&event).map(str::to_owned);
-                    let key_event = keyboard.event(&event, is_synthetic).map(|event| {
-                        let raw_message = keyboard.raw_event_message(&event);
-                        (event, raw_message)
-                    });
-                    (committed_text, key_event)
+                    let processed = keyboard.process(
+                        event.physical_key,
+                        &event.logical_key,
+                        event.text.as_deref(),
+                        event.state,
+                        event.repeat,
+                        is_synthetic,
+                    );
+                    (committed_text, processed)
                 };
-                if let Some((event, raw_message)) = key_event {
-                    self.send_key_event(event);
-                    self.send_raw_key_event(&raw_message);
+                if let Some(processed) = processed {
+                    for event in processed.before.into_iter().chain(processed.event) {
+                        self.send_key_event(event);
+                    }
+                    self.send_raw_key_event(&processed.raw_message);
                 }
                 if let Some(message) = committed_text
                     .as_deref()
@@ -4646,13 +4874,17 @@ impl ApplicationHandler for ShellApplication {
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
-                self.windows
+                let released = self
+                    .windows
                     .borrow_mut()
                     .views
                     .get_mut(&window_id)
                     .expect("known window disappeared")
                     .keyboard_state
                     .modifiers_changed(modifiers.state());
+                for event in released {
+                    self.send_key_event(event);
+                }
             }
             WindowEvent::Ime(event) => {
                 if let Some(message) = self.text_input_session.ime(event) {

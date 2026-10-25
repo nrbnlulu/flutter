@@ -24,6 +24,7 @@ impl PlatformBackend for AndroidPlatform {
     // Flutter's `LogicalKeyboardKey.androidPlane`
     // (packages/flutter/lib/src/services/keyboard_key.g.dart).
     const FALLBACK_KEY_PLANE: u64 = 0x01100000000;
+    const INFERS_NUM_LOCK: bool = false;
 
     fn prepare_window_attributes(
         attributes: WindowAttributes,

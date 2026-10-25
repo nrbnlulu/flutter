@@ -1288,3 +1288,62 @@ Standard secondary engines created after a Rust runtime select Impeller
 OpenGLES to avoid replacing Vulkan-Hpp's process-wide default dispatcher.
 Vulkan validation also reported a depth-buffer write synchronization warning
 on an earlier run; its impact has not been established.
+
+## Keyboard state sync (stuck modifiers, numpad scrambling)
+
+Two Linux symptoms shared one cause: Flutter's `HardwareKeyboard` only knows
+what the embedder tells it, and the Rust host forwarded raw winit events
+without reconciling state the way the GTK, Windows, macOS, Android, and web
+embedders do.
+
+- **Backspace, Delete, Ctrl+A silently dead.** A modifier released while the
+  window lacked focus (typically Super/Alt consumed by a Hyprland binding)
+  never produced an Up, so Flutter kept it "pressed". Text shortcuts are
+  exact-match `SingleActivator`s, so a phantom Meta/Alt disabled them, while
+  plain typing kept working because the host commits text itself.
+- **Numpad digits scrambling after a few presses.** Flutter learns NumLock
+  only from NumLock key-downs, so if it was already on at launch Flutter
+  assumed it off. Linux's default shortcuts then bind unshifted
+  `numpad1`-`numpad9` to caret/page movement, and each key both inserted its
+  digit (host-committed text) and moved the caret.
+
+`KeyboardState` (`shell.rs`) now keeps a physical→logical map of keys Flutter
+saw go down and sends synthesized (`synthesized = 1`) packets ahead of the
+real one: Ups for modifiers the winit mask no longer holds (on
+`ModifiersChanged`), Downs for modifiers held but never seen, and Ups for
+everything still down on `Focused(false)`. A late real Up for a key already
+released this way is dropped, a repeated Down closes the first, and an Up
+reuses its Down's logical key. The modifier owning the current event is
+skipped because winit may deliver the mask and the key in either order.
+Right Alt is not reconciled: as AltGr (Hebrew, German, ...) xkb reports it as
+level 3, not `ALT`, so the mask cannot say whether it is held.
+
+**NumLock is inferred, not read.** winit's `ModifiersState` has no lock bits.
+xkb has already applied NumLock when a numpad key arrives, so an unshifted
+numpad key that produced a character (digit or `.`) means NumLock is on and
+one that produced a navigation key means it is off. Shifted numpad keys are
+ignored: current xkeyboard-config's `KEYPAD` type ignores Shift (verified
+against this machine's compiled keymap), whereas older keymaps use Shift to
+flip the result, so Shift carries no reliable information. When the inferred
+state disagrees with the state Flutter believes, the host sends a synthesized
+NumLock down+up before the key, and it flips its belief on real NumLock
+presses exactly as `HardwareKeyboard` does. Gated by
+`PlatformBackend::INFERS_NUM_LOCK` (on for Linux, off for Android).
+
+Why inference over reading xkb's `mods_locked`: it needs no platform code, so
+it works unchanged on Wayland and stock `winit-x11` (not vendored here) and on
+future Windows/macOS adapters, and it learns the state at the only moment it
+matters, a numpad press, before shortcut matching. Known limits: Flutter's
+`lockModesEnabled` can be stale until the first numpad press; a layout using
+`numpad:mac` (always digits) is inferred as NumLock-on;
+CapsLock/ScrollLock are not synced. The exact route, if these ever matter, is
+keeping `num_lock`/`caps_lock` from `winit-common`'s xkb `ModifiersState`
+(dropped at the conversion to the public type) in the vendored
+`winit-wayland` and a `XkbGetNamedIndicator` query for X11, behind a new
+`PlatformBackend` method, with inference as the fallback.
+
+State is per view while Flutter's keyboard is global; this is consistent
+because focus changes are sequential (the old view's `Focused(false)` releases
+its keys before the new view reports its held modifiers). Verified with unit
+tests only (`cargo test -p flutter-shell-winit`); not yet confirmed
+interactively on a Hyprland session.

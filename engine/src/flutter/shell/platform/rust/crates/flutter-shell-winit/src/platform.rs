@@ -31,6 +31,10 @@ pub(crate) trait PlatformBackend {
     const LEGACY_KEYMAP: &'static str;
     const LEGACY_TOOLKIT: &'static str;
     const FALLBACK_KEY_PLANE: u64;
+    /// Whether Flutter's text shortcuts depend on NumLock on this platform
+    /// and winit exposes no lock state, so the host infers it from numpad
+    /// keys (see `KeyboardState::inferred_num_lock`).
+    const INFERS_NUM_LOCK: bool;
 
     fn prepare_window_attributes(
         attributes: WindowAttributes,
