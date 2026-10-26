@@ -1123,7 +1123,9 @@ baseline and HAL experiment.
    `out/host_profile` engine build.
 2. Begin Phase 3 with a Windows platform adapter and the existing Vulkan GPU
    path once the generated application workflow is usable without hand-written
-   Cargo glue.
+   Cargo glue. See [`flutter-rs-windows-plan.md`](flutter-rs-windows-plan.md)
+   (Vulkan for both wgpu and Impeller, decided 2026-10-26); its first
+   milestone is a no-behavior-change seam refactor on Linux.
 3. Generalize Android from a fixed milestone-scaffold app to generated
    applications: a flutter_tools `AndroidRustShellDevice` (matching
    `RustShellDevice`'s role for Linux), per-project `runner-rs` Android
