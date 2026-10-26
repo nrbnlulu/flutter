@@ -116,9 +116,38 @@ pub trait PixelBufferTextureFrameBackend: Send + Sync {
     fn present(&self) -> Result<()>;
 }
 
+/// Queue operations a plugin may issue on the shell's shared GPU queue.
+///
+/// The queue is shared with the engine's compositor, so the shell serializes
+/// every call here with the engine's own queue lock. Plugins never receive the
+/// raw `wgpu::Queue`; code that needs one (for example to hand to a third-party
+/// renderer) must adapt this trait instead.
+pub trait GpuQueue: Send + Sync {
+    /// Submits command buffers.
+    fn submit(&self, commands: Vec<wgpu::CommandBuffer>) -> wgpu::SubmissionIndex;
+    /// Stages a buffer write; it reaches the GPU on the next submit.
+    fn write_buffer(&self, buffer: &wgpu::Buffer, offset: wgpu::BufferAddress, data: &[u8]);
+    /// Stages a texture write; it reaches the GPU on the next submit.
+    fn write_texture(
+        &self,
+        texture: wgpu::TexelCopyTextureInfo<'_>,
+        data: &[u8],
+        layout: wgpu::TexelCopyBufferLayout,
+        size: wgpu::Extent3d,
+    );
+}
+
 /// Private runtime factory installed into [`PluginRegistrar`].
 #[doc(hidden)]
 pub trait WgpuTextureBackend: Send + Sync {
+    /// The shell's lock-guarded shared queue, if this shell build exposes one.
+    fn gpu_queue(&self) -> Option<Arc<dyn GpuQueue>> {
+        None
+    }
+    /// The shell's wgpu device, if this shell build exposes one.
+    fn gpu_device(&self) -> Option<wgpu::Device> {
+        None
+    }
     /// Creates one engine-owned texture.
     fn create_texture(
         &self,
@@ -147,6 +176,17 @@ impl GpuTextures {
         Ok(WgpuTexture {
             backend: self.backend.create_texture(descriptor)?,
         })
+    }
+
+    /// The shell's wgpu device, for producers that render on their own thread
+    /// and hand finished textures to [`WgpuTextureFrame::render`].
+    pub fn device(&self) -> Result<wgpu::Device> {
+        self.backend.gpu_device().ok_or(PluginError::Unsupported)
+    }
+
+    /// The shell's shared GPU queue with engine-lock serialization applied.
+    pub fn queue(&self) -> Result<Arc<dyn GpuQueue>> {
+        self.backend.gpu_queue().ok_or(PluginError::Unsupported)
     }
 
     /// Creates a CPU-produced texture. Producers write directly into reusable

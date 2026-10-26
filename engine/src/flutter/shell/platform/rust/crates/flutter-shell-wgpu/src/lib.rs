@@ -368,6 +368,16 @@ mod vulkan {
     }
 
     impl GpuContext {
+        /// The shared wgpu device.
+        pub fn device(&self) -> &wgpu::Device {
+            &self.device
+        }
+
+        /// The lock-guarded shared queue.
+        pub fn shared_queue(&self) -> &flutter_gpu_queue::SharedQueue {
+            &self.queue
+        }
+
         fn assert_gpu_thread(&self) {
             let current = std::thread::current().id();
             assert_eq!(

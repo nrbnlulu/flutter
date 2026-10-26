@@ -4163,7 +4163,37 @@ impl WgpuTextureBackendHandle for ShellWgpuTextureHandle {
         WgpuTextureBackendHandle::next_frame(self.registration.ring.as_ref()).await
     }
 }
+/// Plugin-facing view of the shell's shared queue. Every call goes through
+/// `SharedQueue`, so it is serialized with the engine's own queue access.
+struct ShellGpuQueue(Arc<GpuContext>);
+impl flutter_plugin_sdk::GpuQueue for ShellGpuQueue {
+    fn submit(&self, commands: Vec<wgpu::CommandBuffer>) -> wgpu::SubmissionIndex {
+        self.0.shared_queue().submit(commands)
+    }
+    fn write_buffer(&self, buffer: &wgpu::Buffer, offset: wgpu::BufferAddress, data: &[u8]) {
+        self.0.shared_queue().write_buffer(buffer, offset, data);
+    }
+    fn write_texture(
+        &self,
+        texture: wgpu::TexelCopyTextureInfo<'_>,
+        data: &[u8],
+        layout: wgpu::TexelCopyBufferLayout,
+        size: wgpu::Extent3d,
+    ) {
+        self.0
+            .shared_queue()
+            .write_texture(texture, data, layout, size);
+    }
+}
 impl WgpuTextureBackend for ShellWgpuTextureBackend {
+    fn gpu_queue(&self) -> Option<Arc<dyn flutter_plugin_sdk::GpuQueue>> {
+        Some(Arc::new(ShellGpuQueue(Arc::clone(&self.context))))
+    }
+
+    fn gpu_device(&self) -> Option<wgpu::Device> {
+        Some(self.context.device().clone())
+    }
+
     fn create_texture(
         &self,
         descriptor: TextureDescriptor,

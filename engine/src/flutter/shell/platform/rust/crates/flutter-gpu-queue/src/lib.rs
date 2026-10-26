@@ -139,6 +139,12 @@ mod imp {
             self.queue.present(texture);
         }
 
+        /// Stages a buffer write; it reaches the GPU on the next submit.
+        pub fn write_buffer(&self, buffer: &wgpu::Buffer, offset: wgpu::BufferAddress, data: &[u8]) {
+            let _guard = self.lock();
+            self.queue.write_buffer(buffer, offset, data);
+        }
+
         /// Stages a texture write; it reaches the GPU on the next submit.
         pub fn write_texture(
             &self,
