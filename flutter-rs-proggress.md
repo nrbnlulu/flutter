@@ -1408,3 +1408,28 @@ because focus changes are sequential (the old view's `Focused(false)` releases
 its keys before the new view reports its held modifiers). Verified with unit
 tests only (`cargo test -p flutter-shell-winit`); not yet confirmed
 interactively on a Hyprland session.
+
+## Android VM service port forwarding
+
+`rlutter run -d android` now passes the device VM service URI directly to
+`flutter attach --debug-url`. Flutter's Android attach path creates the adb
+forward itself. The extra forward previously created by rlutter caused attach
+to interpret an allocated host port as the device port and wait indefinitely.
+On the connected Armor 21 the original process had a live VM service despite
+the Vulkan depth/stencil synchronization diagnostics; a direct `getVM` request
+through the first forward succeeded, while attach had created a second forward
+to the wrong device port. Removed rlutter's redundant forwarding and URI rewrite
+helpers. Linux continues to pass its locally reachable service URI to attach.
+
+Verification: all 99 remaining CLI unit tests, formatting, diff checks, and
+Clippy (with the existing `too_many_arguments` lint suppressed) pass. Installed
+the corrected CLI locally. A fresh generated Android Rust-shell probe app built
+and ran on the Armor 21 using the local debug engine. Attach received the raw
+device URI, created one forward to that device port, and exposed DevTools.
+Changing the Dart title hot-reloaded one library in 751 ms; hot restart
+completed in 3,413 ms; quitting exited with status zero and stopped the app.
+The temporary APK was then uninstalled. A rebuild of the user's `ui-flutter`
+app was blocked by its package configuration switching to the FVM beta
+framework, incompatible with the local engine's `SemanticsRole.listBox`;
+the completed full run/reload/restart verification used the isolated probe.
+The Vulkan synchronization diagnostic is not fixed by this change.

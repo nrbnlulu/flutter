@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use super::{Device, RunningApp, forward_output};
 use crate::{
     abi::{Abi, SUPPORTED_ABIS},
-    adb::{self, Adb, AdbDevice},
+    adb::{Adb, AdbDevice},
     android::Toolchain,
     android_project::DEFAULT_ORG,
     commands::{Ctx, build_android::build_android},
@@ -123,29 +123,22 @@ impl Device for AndroidDevice {
         let (uri_tx, uri_rx) = mpsc::channel();
         forward_output(logcat.stdout.take().expect("piped"), false, uri_tx);
 
-        let forwarded: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
         let logcat = Arc::new(Mutex::new(logcat));
         let stop: Arc<dyn Fn() + Send + Sync> = {
             let (adb, serial, app_id) = (adb.clone(), serial.clone(), app_id.clone());
-            let (forwarded, logcat) = (Arc::clone(&forwarded), Arc::clone(&logcat));
+            let logcat = Arc::clone(&logcat);
             Arc::new(move || {
                 let _ = logcat.lock().expect("logcat lock").kill();
-                if let Some(port) = forwarded.lock().expect("forward lock").take() {
-                    adb.remove_forward(&serial, port);
-                }
                 adb.force_stop(&serial, &app_id);
             })
         };
 
         let vm_service_uri = if mode.config().hot_reload {
             match uri_rx.recv_timeout(VM_SERVICE_TIMEOUT) {
-                Ok(device_uri) => {
-                    let port = adb::uri_port(&device_uri)
-                        .with_context(|| format!("no port in {device_uri}"))?;
-                    let host_port = adb.forward(&serial, port)?;
-                    *forwarded.lock().expect("forward lock") = Some(host_port);
-                    adb::rewrite_vm_service_uri(&device_uri, host_port)
-                }
+                // `flutter attach -d <android> --debug-url` expects the
+                // device URI and creates its own adb forward. Forwarding here
+                // would make it forward a host port as a device port again.
+                Ok(device_uri) => Some(device_uri),
                 Err(_) => {
                     stop();
                     bail!("the app did not report a Dart VM service within {VM_SERVICE_TIMEOUT:?}");

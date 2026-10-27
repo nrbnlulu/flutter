@@ -47,30 +47,9 @@ pub fn parse_devices(output: &str) -> Vec<AdbDevice> {
         .collect()
 }
 
-/// The local port printed by `adb forward tcp:0 tcp:<device port>`.
-pub fn parse_forward_port(output: &str) -> Option<u16> {
-    output.lines().find_map(|line| line.trim().parse().ok())
-}
-
 /// First pid printed by `pidof`.
 pub fn parse_pid(output: &str) -> Option<u32> {
     output.split_whitespace().next()?.parse().ok()
-}
-
-/// Maps a VM service URI printed on the device to the forwarded host port.
-pub fn rewrite_vm_service_uri(device_uri: &str, host_port: u16) -> Option<String> {
-    let (scheme, rest) = device_uri.split_once("://")?;
-    let path_start = rest.find('/').unwrap_or(rest.len());
-    let (authority, path) = rest.split_at(path_start);
-    let (host, _port) = authority.rsplit_once(':')?;
-    Some(format!("{scheme}://{host}:{host_port}{path}"))
-}
-
-/// The port in a VM service URI.
-pub fn uri_port(uri: &str) -> Option<u16> {
-    let rest = uri.split_once("://")?.1;
-    let authority = &rest[..rest.find('/').unwrap_or(rest.len())];
-    authority.rsplit_once(':')?.1.parse().ok()
 }
 
 #[derive(Clone)]
@@ -157,25 +136,6 @@ impl Adb {
         self.output(command).ok().and_then(|out| parse_pid(&out))
     }
 
-    /// Forwards a free host port to `device_port` and returns it.
-    pub fn forward(&self, serial: &str, device_port: u16) -> Result<u16> {
-        let mut command = self.command(Some(serial));
-        command
-            .args(["forward", "tcp:0"])
-            .arg(format!("tcp:{device_port}"));
-        let output = self.output(command)?;
-        parse_forward_port(&output)
-            .with_context(|| format!("unexpected output from `adb forward`: {output:?}"))
-    }
-
-    pub fn remove_forward(&self, serial: &str, host_port: u16) {
-        let mut command = self.command(Some(serial));
-        command
-            .args(["forward", "--remove"])
-            .arg(format!("tcp:{host_port}"));
-        let _ = self.output(command);
-    }
-
     /// `adb logcat` for one process, replaying what it already logged.
     pub fn logcat(&self, serial: &str, pid: u32) -> Command {
         let mut command = self.command(Some(serial));
@@ -216,27 +176,10 @@ mod tests {
     }
 
     #[test]
-    fn forward_and_pid_output_are_parsed() {
-        assert_eq!(parse_forward_port("41873\n"), Some(41873));
-        assert_eq!(parse_forward_port("error: closed"), None);
+    fn pid_output_is_parsed() {
         assert_eq!(parse_pid("12345\n"), Some(12345));
         assert_eq!(parse_pid("12345 12399"), Some(12345));
         assert_eq!(parse_pid(""), None);
-    }
-
-    #[test]
-    fn the_vm_service_uri_is_pointed_at_the_forwarded_port() {
-        assert_eq!(
-            rewrite_vm_service_uri("http://127.0.0.1:38241/aB3d=/", 51000),
-            Some("http://127.0.0.1:51000/aB3d=/".to_owned())
-        );
-        assert_eq!(
-            rewrite_vm_service_uri("http://127.0.0.1:38241", 51000),
-            Some("http://127.0.0.1:51000".to_owned())
-        );
-        assert_eq!(rewrite_vm_service_uri("nonsense", 1), None);
-        assert_eq!(uri_port("http://127.0.0.1:38241/aB3d=/"), Some(38241));
-        assert_eq!(uri_port("http://127.0.0.1/aB3d=/"), None);
     }
 
     #[test]

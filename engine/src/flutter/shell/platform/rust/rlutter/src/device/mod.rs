@@ -19,7 +19,8 @@ pub struct RunningApp {
     /// Engine layout the app was built against; `flutter attach` needs it to
     /// compile the same Dart SDK version.
     pub engine: Engine,
-    /// Where the Dart VM service listens (debug mode only).
+    /// Where the Dart VM service listens on the device (debug mode only).
+    /// Android port forwarding is owned by `flutter attach`.
     pub vm_service_uri: Option<String>,
     /// Stops the app. Safe to call from a signal handler and more than once.
     pub stop: Arc<dyn Fn() + Send + Sync>,
