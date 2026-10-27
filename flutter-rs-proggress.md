@@ -164,9 +164,68 @@ same way Linux's own flutter_tools integration followed its native runner.
 | Rust external texture | Engine seam complete | `RustExternalTexture` uses Flutter's existing texture registry and dirty-frame scheduling path. It retains the last good image, honors freeze, retries failed acquisition, imports borrowed wgpu Vulkan image/view handles without taking ownership, and brackets Impeller sampling with producer/consumer semaphores. Context loss, unregister, and repeated teardown are covered by focused tests. |
 | Engine-owned wgpu texture | SDK runtime path complete | `WgpuTextureRing` owns three RGBA8 textures, views, and reusable semaphore pairs on the application's shared device. A bounded Tokio channel carries available slot IDs: `try_next_frame` applies immediate backpressure, `next_frame().await` sleeps until Flutter releases a slot, an unpresented reservation returns its slot on drop, and shutdown wakes waiters with `Shutdown`. Ready frames remain queue-serialized through Flutter's acquire callback. The opt-in animated proof now runs through normal `FlutterRustPlugin` registration and public SDK operations. |
 | `WgpuTexture` plugin API | Public contract and Linux runtime adapter complete | `flutter-plugin-sdk` exposes validated texture descriptors, `GpuTextures::create_texture`, stable Flutter texture IDs, nonblocking `try_next_frame`, asynchronous `next_frame().await`, single-record frame reservations, consuming `present(self)`, and its pinned API crate at `gpu::wgpu` so plugins do not duplicate the Git dependency. The hidden backend uses `async-trait`; no manual `Future` or `Poll` API leaks into the SDK. The winit factory registers the callback-owning ring, routes dirty notifications and handle-drop unregister through the main thread, and releases each retained ring after C++ confirms raster-thread registry removal. The recording closure receives a device, encoder, and view—but no queue—so plugins cannot violate shared-queue external synchronization. |
-| CPU pixel-buffer texture | Linux runtime path complete | `PixelBufferTexture` reserves one of three reusable shell-owned RGBA8 buffers through the same bounded channel/backpressure model. `write_pixels` lends the plugin that allocation and its row stride directly, eliminating a plugin-to-shell CPU copy; acquire performs the unavoidable wgpu CPU-to-GPU upload into the existing Vulkan external-texture ring. Registration, notification, freeze, release, unregister, and teardown reuse the proven hardware-texture seam. The permanent Dart fixture passes under Vulkan validation with changing pixels. |
+| CPU pixel-buffer texture | Linux runtime path complete | `PixelBufferTexture` reserves one of three reusable shell-owned RGBA8 buffers through the same bounded channel/backpressure model. `write_pixels` lends the plugin that allocation and its row stride directly, holding only a per-slot lock. Widths divisible by 64 stage on the producer thread into reusable mapped upload buffers; acquire submits the GPU copy. Other widths use `write_texture` for legacy writes; the opt-in `write_pixels_direct` API eliminates the CPU staging copy at any width using padded upload rows. Slots recycle after both upload remapping and Flutter release. Registration, notification, freeze, release, unregister, and teardown reuse the proven hardware-texture seam. The permanent Dart fixture passes under Vulkan validation with changing pixels. |
 
 ## Implementation log
+
+### Pixel-buffer staging and producer concurrency (2026-10-27)
+
+- Pixel writers hold only their slot's storage lock, allowing raster to acquire
+  and release other slots while plugins generate pixels. An atomic reservation
+  prevents concurrent present/write calls, and unwinding restores reservations.
+  Shutdown can detach GPU resources while a CPU writer finishes safely.
+- RGBA widths divisible by 64 use three reusable mapped upload buffers. The
+  producer stages its pixels before publishing; raster encodes the GPU copy
+  with the existing producer/consumer semaphore handoff. Other widths retain
+  `write_texture`, preserving the SDK's tightly packed rows. The CPU staging
+  copy remains because wgpu's write-only mappings cannot safely back the SDK's
+  read/write slice. Additional retained upload memory is three image buffers.
+- A shared GPU-context worker polls mapping completion independently of Flutter
+  rendering. An atomic handshake recycles each slot only after mapping and
+  Flutter release, without taking the ring lock in reentrant wgpu callbacks.
+  Context teardown closes and joins the worker before Vulkan destruction.
+- Headless Vulkan tests cover aligned/unaligned slot reuse, shutdown during a
+  slow producer, and pending remaps. Unit coverage checks both recycle orders,
+  a concurrent completion/release race, and reservation recovery on panic.
+  All five unit tests, both explicit Vulkan tests, Clippy, and formatting pass.
+  Native Vulkan-validation fixtures pass for CPU pixels (19 presentations),
+  wgpu (18 presentations), and 40 replacement/resize/unregister rotations
+  alternating both producer kinds (475 presentations).
+- The opt-in `benchmark_pixel_upload` compares the old `write_texture` path
+  against reusable staging on the same ring. On this machine's RTX 5060, with
+  wgpu validation disabled, raster acquire p50 fell from 798 to 21 microseconds
+  at 1080p and from 3127 to 43 microseconds at 4K. Producer p50 rose from 595 to
+  1356 microseconds and 1417 to 4654 microseconds respectively. Total time for
+  90 frames was approximately unchanged at 1080p (127/126 ms) and slightly
+  higher at 4K (413/427 ms). These debug microbenchmarks demonstrate reduced
+  raster latency, not a throughput or end-to-end FPS improvement.
+
+### Direct pixel-buffer writes (2026-10-27)
+
+- Added `PixelBufferTextureFrame::write_pixels_direct`, an opt-in callback
+  taking `gpu::wgpu::WriteOnly<'_, [u8]>` and a byte stride. Generators can fill
+  the mapped GPU upload buffer directly, eliminating the CPU staging copy.
+  The existing `write_pixels` API remains available for read/write slices.
+  No unsafe conversion from write-only mappings to mutable slices is used.
+- Direct writes support arbitrary widths through padded row strides. Slots
+  without an upload buffer allocate one on first direct use. Switching back to
+  `write_pixels` preserves its tight layout and stages each row into the padded
+  upload. The GPU transfer and CPU shadow buffers remain; copying a preexisting
+  image into the direct destination still incurs that producer's copy.
+- Updated the native animated pixel fixture to generate into direct uploads.
+  GPU readback tests verify every visible pixel at widths 1, 64, 65, and 257,
+  including alternating direct and staged frames. SDK tests cover exclusive
+  writes and fallback when a backend returns `Unsupported`; Vulkan lifecycle
+  tests exercise panic recovery and shutdown during either writer type.
+- Validation passes: 12 SDK/broker unit tests, three explicit Vulkan tests,
+  Clippy for SDK/broker/winit, formatting, the direct pixel fixture (16
+  presentations), and 40 native lifecycle rotations (474 presentations).
+- The debug fill microbenchmark on the RTX 5060, with wgpu validation disabled,
+  measured staged/direct producer p50 of 1054/762 microseconds at 1080p and
+  4046/3047 microseconds at 4K. Total time for 90 frames fell from 103 to 70 ms
+  and from 368 to 277 ms respectively. Raster acquire p50 remained small
+  (15/9 microseconds). These measurements compare generated fills using the
+  two APIs, not application FPS or decoding into an existing CPU buffer.
 
 ### Phase 0 exit — controlled baseline and A/A calibration
 

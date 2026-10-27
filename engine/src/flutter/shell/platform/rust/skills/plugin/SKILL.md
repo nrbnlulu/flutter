@@ -159,7 +159,8 @@ The SDK offers two engine-owned texture types:
 - `WgpuTexture` lets the plugin record GPU commands without owning or
   submitting to the shared queue.
 - `PixelBufferTexture` lets the plugin write RGBA8 pixels directly into
-  reusable shell-owned memory.
+  reusable shell-owned memory. Use `write_pixels_direct` when the producer can
+  write to a write-only upload buffer; use `write_pixels` for read/write access.
 
 Create textures during registration and retain their handles for as long as
 Dart uses their IDs:
@@ -263,6 +264,30 @@ fn fill(texture: &PixelBufferTexture, width: usize, height: usize) -> Result<()>
 
 Honor `row_bytes` and do not retain the pixel slice. Decode or generate into
 the supplied memory when possible to avoid a full-frame copy.
+
+For generators that can use a write-only destination, `write_pixels_direct`
+also removes the shell's CPU staging copy. It lends a
+`gpu::wgpu::WriteOnly<'_, [u8]>` mapped upload buffer. Honor the supplied stride:
+it may include padding even though `write_pixels` uses tightly packed rows.
+Write every visible pixel; earlier contents are unspecified. For example,
+replace the `write_pixels` call above with:
+
+```rust
+frame.write_pixels_direct(move |mut pixels, row_bytes| {
+    for y in 0..height {
+        let offset = y * row_bytes;
+        pixels.slice(offset..offset + width * 4)
+            .into_chunks::<4>().0.fill([0x20, 0x80, 0xff, 0xff]);
+    }
+})?;
+```
+
+The GPU transfer still occurs when Flutter acquires the frame. Copying an
+already decoded image into the write-only destination also still costs a CPU
+copy. Use `write_pixels` when the producer needs to read destination bytes or
+requires `&mut [u8]`. If `write_pixels_direct` returns
+`PluginError::Unsupported`, the same reserved frame can fall back to
+`write_pixels` before calling `present()`.
 
 ## Threading and shutdown
 

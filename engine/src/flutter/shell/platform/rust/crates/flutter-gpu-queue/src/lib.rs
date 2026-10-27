@@ -140,7 +140,12 @@ mod imp {
         }
 
         /// Stages a buffer write; it reaches the GPU on the next submit.
-        pub fn write_buffer(&self, buffer: &wgpu::Buffer, offset: wgpu::BufferAddress, data: &[u8]) {
+        pub fn write_buffer(
+            &self,
+            buffer: &wgpu::Buffer,
+            offset: wgpu::BufferAddress,
+            data: &[u8],
+        ) {
             let _guard = self.lock();
             self.queue.write_buffer(buffer, offset, data);
         }

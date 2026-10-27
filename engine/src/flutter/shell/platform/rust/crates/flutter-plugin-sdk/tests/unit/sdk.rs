@@ -71,6 +71,12 @@ impl PixelBufferTextureFrameBackend for FakePixelFrameBackend {
         Ok(())
     }
 
+    fn write_pixels_direct(&self, task: PixelUploadTask) -> Result<()> {
+        self.operations.lock().push("write_pixels_direct");
+        task(wgpu::WriteOnly::from_mut(&mut self.pixels.lock()[..]), 16);
+        Ok(())
+    }
+
     fn present(&self) -> Result<()> {
         self.operations.lock().push("present_pixels");
         Ok(())
@@ -203,6 +209,7 @@ fn pixel_buffer_frames_write_directly_into_shell_storage() {
         })
         .unwrap();
     assert_eq!(frame.write_pixels(|_, _| {}), Err(PluginError::Busy));
+    assert_eq!(frame.write_pixels_direct(|_, _| {}), Err(PluginError::Busy));
     frame.present().unwrap();
     assert_eq!(
         *operations.lock(),
@@ -214,6 +221,51 @@ fn pixel_buffer_frames_write_directly_into_shell_storage() {
             "present_pixels"
         ]
     );
+}
+
+#[test]
+fn direct_pixel_writer_uses_the_backend_memory_and_reserves_one_write() {
+    let backend = Arc::new(FakePixelFrameBackend {
+        operations: Arc::new(Mutex::new(Vec::new())),
+        pixels: Mutex::new(vec![0; 32]),
+    });
+    let mut frame = PixelBufferTextureFrame::new(backend.clone());
+    frame
+        .write_pixels_direct(|pixels, row_bytes| {
+            assert_eq!(row_bytes, 16);
+            pixels.into_chunks::<4>().0.fill([1, 2, 3, 255]);
+        })
+        .unwrap();
+    assert_eq!(*backend.pixels.lock(), [1, 2, 3, 255].repeat(8));
+    assert_eq!(frame.write_pixels(|_, _| {}), Err(PluginError::Busy));
+    assert_eq!(frame.write_pixels_direct(|_, _| {}), Err(PluginError::Busy));
+    frame.present().unwrap();
+    assert_eq!(
+        *backend.operations.lock(),
+        ["write_pixels_direct", "present_pixels"]
+    );
+}
+
+#[test]
+fn unsupported_direct_writer_allows_falling_back_to_read_write_pixels() {
+    struct LegacyFrame;
+    impl PixelBufferTextureFrameBackend for LegacyFrame {
+        fn write_pixels(&self, task: PixelWriteTask) -> Result<()> {
+            task(&mut [0; 4], 4);
+            Ok(())
+        }
+        fn present(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+    let mut frame = PixelBufferTextureFrame::new(Arc::new(LegacyFrame));
+    assert_eq!(
+        frame.write_pixels_direct(|_, _| panic!("unsupported writer called")),
+        Err(PluginError::Unsupported)
+    );
+    assert!(!frame.written);
+    frame.write_pixels(|pixels, _| pixels.fill(255)).unwrap();
+    frame.present().unwrap();
 }
 
 #[test]

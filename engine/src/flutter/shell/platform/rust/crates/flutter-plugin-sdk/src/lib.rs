@@ -95,6 +95,10 @@ pub trait WgpuTextureFrameBackend: Send + Sync {
 #[doc(hidden)]
 pub type PixelWriteTask = Box<dyn FnOnce(&mut [u8], usize) + Send + 'static>;
 
+/// One producer callback that writes into mapped GPU upload memory.
+#[doc(hidden)]
+pub type PixelUploadTask = Box<dyn FnOnce(wgpu::WriteOnly<'_, [u8]>, usize) + Send + 'static>;
+
 /// Private runtime implementation behind a public [`PixelBufferTexture`].
 #[doc(hidden)]
 #[async_trait::async_trait]
@@ -112,6 +116,10 @@ pub trait PixelBufferTextureBackendHandle: Send + Sync {
 pub trait PixelBufferTextureFrameBackend: Send + Sync {
     /// Lets the producer write directly into shell-owned memory.
     fn write_pixels(&self, task: PixelWriteTask) -> Result<()>;
+    /// Lets the producer fill mapped upload memory without a CPU staging copy.
+    fn write_pixels_direct(&self, _task: PixelUploadTask) -> Result<()> {
+        Err(PluginError::Unsupported)
+    }
     /// Publishes the written slot and marks the Flutter texture dirty.
     fn present(&self) -> Result<()>;
 }
@@ -260,6 +268,31 @@ impl PixelBufferTextureFrame {
             return Err(PluginError::Busy);
         }
         self.backend.write_pixels(Box::new(writer))?;
+        self.written = true;
+        Ok(())
+    }
+
+    /// Writes RGBA8 pixels directly into the GPU upload buffer, avoiding the
+    /// CPU staging copy performed by [`Self::write_pixels`].
+    ///
+    /// The callback receives write-only memory and its row stride in bytes.
+    /// Rows may contain trailing padding: always use the supplied stride to
+    /// locate each row. Write every visible pixel; previous contents are
+    /// unspecified. Padding may be left untouched. The GPU transfer still
+    /// occurs when Flutter acquires the frame.
+    ///
+    /// Use this for producers that can generate into a write-only destination.
+    /// Copying an existing image into this memory still incurs that CPU copy.
+    /// Returns [`PluginError::Unsupported`] if the runtime lacks direct upload
+    /// support; the frame can then be filled with [`Self::write_pixels`].
+    pub fn write_pixels_direct(
+        &mut self,
+        writer: impl FnOnce(wgpu::WriteOnly<'_, [u8]>, usize) + Send + 'static,
+    ) -> Result<()> {
+        if self.written {
+            return Err(PluginError::Busy);
+        }
+        self.backend.write_pixels_direct(Box::new(writer))?;
         self.written = true;
         Ok(())
     }

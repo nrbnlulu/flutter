@@ -530,6 +530,22 @@ Provide three texture capability levels:
 3. `NativeImportedTexture`: advanced zero-copy import for video decoders and
    external graphics APIs.
 
+CPU pixel writers run against per-slot storage without holding the texture-ring
+mutex. For tightly packed RGBA rows aligned to wgpu's 256-byte copy requirement
+(widths divisible by 64), each slot also retains a mapped upload buffer. The
+producer copies into it before publishing; raster only unmaps, encodes the GPU
+copy, and submits with the existing Vulkan semaphore handoff. Other widths keep
+the `write_texture` upload path and the same tightly packed SDK layout. One
+completion worker per GPU context remaps uploads after GPU completion, and a
+slot returns to producers only after both remapping and Flutter release. The
+worker is joined before context destruction. This moves staging work off raster
+and avoids repeated staging allocation. The existing `write_pixels` callback
+retains one CPU staging copy. Producers can instead use `write_pixels_direct`
+to generate directly into a write-only mapped upload buffer and eliminate that
+copy. Its row stride can include padding; non-aligned widths allocate padded
+upload buffers on first use. The GPU transfer and per-slot CPU shadow storage
+remain, with up to three persistent upload buffers per pixel texture.
+
 Rust plugins initially compile together as Cargo dependencies. A binary plugin
 system would require a separate, stable C ABI and can be considered later.
 

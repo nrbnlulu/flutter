@@ -5253,16 +5253,16 @@ impl ApplicationHandler for ShellApplication {
                 DemoTextureHandle::Pixels(texture) => {
                     if let Ok(mut frame) = texture.try_next_frame() {
                         frame
-                            .write_pixels(move |pixels, _row_bytes| {
+                            .write_pixels_direct(move |pixels, _row_bytes| {
                                 let rgba = [
                                     (color[0] * 255.0) as u8,
                                     (color[1] * 255.0) as u8,
                                     (color[2] * 255.0) as u8,
                                     255,
                                 ];
-                                for pixel in pixels.chunks_exact_mut(4) {
-                                    pixel.copy_from_slice(&rgba);
-                                }
+                                // Solid color: filling the row padding too is
+                                // harmless and keeps this a single linear fill.
+                                pixels.into_chunks::<4>().0.fill(rgba);
                             })
                             .expect("failed to write demo pixels");
                         frame.present().expect("failed to present demo pixels");

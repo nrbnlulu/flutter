@@ -10,9 +10,9 @@
 mod vulkan {
     use ash::vk::Handle as _;
     use flutter_plugin_sdk::{
-        PixelBufferTextureBackendHandle, PixelBufferTextureFrameBackend, PixelWriteTask,
-        PluginError, Result as PluginResult, WgpuRenderTask, WgpuTextureBackendHandle,
-        WgpuTextureFrameBackend,
+        PixelBufferTextureBackendHandle, PixelBufferTextureFrameBackend, PixelUploadTask,
+        PixelWriteTask, PluginError, Result as PluginResult, WgpuRenderTask,
+        WgpuTextureBackendHandle, WgpuTextureFrameBackend,
     };
     use flutter_shell_core::{
         FlutterRustExternalTextureCallbacks, FlutterRustExternalTextureFrame,
@@ -44,6 +44,24 @@ mod vulkan {
         device: wgpu::Device,
         queue: flutter_gpu_queue::SharedQueue,
         gpu_thread: std::sync::OnceLock<std::thread::ThreadId>,
+        upload_completion: Mutex<Option<UploadCompletion>>,
+    }
+
+    struct UploadCompletion {
+        sender: std::sync::mpsc::SyncSender<()>,
+        worker: std::thread::JoinHandle<()>,
+    }
+
+    impl Drop for GpuContext {
+        fn drop(&mut self) {
+            // Retire mapping callbacks before the Vulkan instance and its
+            // validation layer can be destroyed. Callbacks own only the slot
+            // channel, so this worker can never become the context's last owner.
+            if let Some(completion) = self.upload_completion.get_mut().take() {
+                drop(completion.sender);
+                let _ = completion.worker.join();
+            }
+        }
     }
 
     /// Borrowed Vulkan object values suitable only for an immediate C++ call.
@@ -97,7 +115,7 @@ mod vulkan {
         width: u32,
         height: u32,
         state: Mutex<TextureRingState>,
-        available: AvailableSlots,
+        available: Arc<AvailableSlots>,
         pending_clear: Mutex<Option<[f64; 4]>>,
         texture_id: AtomicI64,
         mark_frame_available: Mutex<Option<FrameAvailableCallback>>,
@@ -182,8 +200,109 @@ mod vulkan {
         state: TextureSlotState,
         wait_for_flutter: bool,
         render_task: Option<WgpuRenderTask>,
-        pixels: Vec<u8>,
+        pixels: Option<Arc<Mutex<PixelStorage>>>,
         pixels_written: bool,
+        upload_recycle: Arc<UploadRecycle>,
+    }
+
+    const UPLOAD_MAPPED: u8 = 1;
+    const UPLOAD_RELEASED: u8 = 2;
+
+    // Mapping callbacks may run inside queue.submit, while the ring is locked.
+    // Keep the two-party recycle handshake independent of the ring mutex.
+    struct UploadRecycle(AtomicU8);
+
+    impl UploadRecycle {
+        fn new() -> Self {
+            Self(AtomicU8::new(UPLOAD_MAPPED))
+        }
+
+        fn begin(&self) {
+            self.0.store(0, Ordering::Release);
+        }
+
+        fn mapped(&self) -> bool {
+            self.0.fetch_or(UPLOAD_MAPPED, Ordering::AcqRel) == UPLOAD_RELEASED
+        }
+
+        fn released(&self) -> bool {
+            self.0.fetch_or(UPLOAD_RELEASED, Ordering::AcqRel) & UPLOAD_MAPPED != 0
+        }
+    }
+
+    struct PixelStorage {
+        pixels: Vec<u8>,
+        upload: Option<wgpu::Buffer>,
+        upload_row_bytes: u32,
+    }
+
+    enum PixelWriter {
+        Staged(PixelWriteTask),
+        Direct(PixelUploadTask),
+    }
+
+    impl PixelStorage {
+        fn create_upload(context: &GpuContext, size: u64) -> wgpu::Buffer {
+            context.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Flutter Rust reusable pixel upload"),
+                size,
+                usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: true,
+            })
+        }
+
+        fn write(
+            &mut self,
+            writer: PixelWriter,
+            row_bytes: usize,
+            context: &GpuContext,
+        ) -> PluginResult<()> {
+            match writer {
+                PixelWriter::Staged(task) => {
+                    task(&mut self.pixels, row_bytes);
+                    if let Some(buffer) = &self.upload {
+                        // Preserve the read/write slice contract. Mapped GPU
+                        // memory only supports write-only access.
+                        let mut mapped = buffer
+                            .get_mapped_range_mut(..)
+                            .expect("reserved upload is mapped");
+                        if self.upload_row_bytes as usize == row_bytes {
+                            mapped.copy_from_slice(&self.pixels);
+                        } else {
+                            for (y, row) in self.pixels.chunks_exact(row_bytes).enumerate() {
+                                let offset = y * self.upload_row_bytes as usize;
+                                mapped
+                                    .slice(offset..offset + row_bytes)
+                                    .copy_from_slice(row);
+                            }
+                        }
+                    }
+                }
+                PixelWriter::Direct(task) => {
+                    if self.upload.is_none() {
+                        // Unaligned textures retain write_texture for legacy
+                        // writers, but can opt into padded direct uploads.
+                        context.enable_upload_completion().map_err(|error| {
+                            eprintln!("Flutter Rust direct pixel upload unavailable: {error}");
+                            PluginError::Unsupported
+                        })?;
+                        let height = self.pixels.len() / row_bytes;
+                        self.upload = Some(Self::create_upload(
+                            context,
+                            u64::from(self.upload_row_bytes) * height as u64,
+                        ));
+                    }
+                    let mut mapped = self
+                        .upload
+                        .as_ref()
+                        .unwrap()
+                        .get_mapped_range_mut(..)
+                        .expect("reserved upload is mapped");
+                    task(mapped.slice(..), self.upload_row_bytes as usize);
+                }
+            }
+            Ok(())
+        }
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +316,16 @@ mod vulkan {
     const FRAME_RESERVED: u8 = 0;
     const FRAME_PRESENTED: u8 = 1;
     const FRAME_RETURNED: u8 = 2;
+    const FRAME_WRITING: u8 = 3;
+
+    // Restore the reservation even if a plugin's pixel writer unwinds.
+    struct PixelWriteReservation<'a>(&'a AtomicU8);
+
+    impl Drop for PixelWriteReservation<'_> {
+        fn drop(&mut self) {
+            self.0.store(FRAME_RESERVED, Ordering::Release);
+        }
+    }
 
     struct ReservedWgpuTextureFrame {
         ring: Arc<WgpuTextureRingInner>,
@@ -354,10 +483,10 @@ mod vulkan {
         }
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", test))]
     struct Headless;
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", test))]
     impl SurfaceSource for Headless {
         fn create_surface(
             self,
@@ -473,7 +602,36 @@ mod vulkan {
                 device,
                 queue: flutter_gpu_queue::SharedQueue::new(queue),
                 gpu_thread: std::sync::OnceLock::new(),
+                upload_completion: Mutex::new(None),
             }))
+        }
+
+        fn enable_upload_completion(&self) -> Result<(), String> {
+            let mut completion = self.upload_completion.lock();
+            if completion.is_none() {
+                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                let device = self.device.clone();
+                let worker = std::thread::Builder::new()
+                    .name("flutter-pixel-upload".to_owned())
+                    .spawn(move || {
+                        while receiver.recv().is_ok() {
+                            // Polling retires copies and runs mapping callbacks;
+                            // it never submits to the shared Vulkan queue. Keep
+                            // waits off raster and wake producers even if Flutter
+                            // stops rendering while an upload is in flight.
+                            if let Err(error) = device.poll(wgpu::PollType::Wait {
+                                submission_index: None,
+                                timeout: None,
+                            }) {
+                                eprintln!("Flutter Rust pixel upload completion failed: {error}");
+                                break;
+                            }
+                        }
+                    })
+                    .map_err(|error| format!("failed to start pixel upload completion: {error}"))?;
+                *completion = Some(UploadCompletion { sender, worker });
+            }
+            Ok(())
         }
 
         /// Installs the engine mutex used for every shared queue submission.
@@ -555,6 +713,20 @@ mod vulkan {
                 .checked_mul(height as usize)
                 .and_then(|size| size.checked_mul(4))
                 .ok_or_else(|| "pixel-buffer dimensions overflow address space".to_owned())?;
+            let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+            let upload_row_bytes = width
+                .checked_mul(4)
+                .and_then(|bytes| bytes.checked_add(alignment - 1))
+                .map(|bytes| bytes / alignment * alignment)
+                .ok_or_else(|| "pixel-buffer row stride overflow".to_owned())?;
+            // Preserve the SDK's tight row layout. Explicit buffer copies need
+            // aligned rows; write_texture handles all other widths unchanged.
+            let mapped_upload = allocate_pixels
+                && (u64::from(width) * 4)
+                    .is_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
+            if mapped_upload {
+                context.enable_upload_completion()?;
+            }
             for index in 0..3 {
                 let texture = context.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("Flutter Rust external texture slot"),
@@ -569,7 +741,9 @@ mod vulkan {
                     format: wgpu::TextureFormat::Rgba8Unorm,
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                         | wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::COPY_DST,
+                        | wgpu::TextureUsages::COPY_DST
+                        // Headless tests verify uploaded texels by readback.
+                        | if cfg!(test) { wgpu::TextureUsages::COPY_SRC } else { wgpu::TextureUsages::empty() },
                     view_formats: &[],
                 });
                 let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -602,13 +776,22 @@ mod vulkan {
                         return Err(format!("failed to create render semaphore: {error}"));
                     }
                 };
-                let mut pixels = Vec::new();
-                if allocate_pixels {
+                let pixels = if allocate_pixels {
+                    let mut pixels = Vec::new();
                     pixels.try_reserve_exact(pixel_bytes).map_err(|error| {
                         format!("failed to allocate pixel-buffer slot: {error}")
                     })?;
                     pixels.resize(pixel_bytes, 0);
-                }
+                    let upload = mapped_upload
+                        .then(|| PixelStorage::create_upload(&context, pixel_bytes as u64));
+                    Some(PixelStorage {
+                        pixels,
+                        upload,
+                        upload_row_bytes,
+                    })
+                } else {
+                    None
+                };
                 slots.push(TextureSlot {
                     texture,
                     view,
@@ -618,8 +801,9 @@ mod vulkan {
                     state: TextureSlotState::Available,
                     wait_for_flutter: false,
                     render_task: None,
-                    pixels,
+                    pixels: pixels.map(|pixels| Arc::new(Mutex::new(pixels))),
                     pixels_written: false,
+                    upload_recycle: Arc::new(UploadRecycle::new()),
                 });
                 debug_assert_eq!(slots.len(), index + 1);
             }
@@ -633,7 +817,7 @@ mod vulkan {
                         ready: VecDeque::new(),
                         submitted: false,
                     }),
-                    available: AvailableSlots::new(3),
+                    available: Arc::new(AvailableSlots::new(3)),
                     pending_clear: Mutex::new(None),
                     texture_id: AtomicI64::new(-1),
                     mark_frame_available: Mutex::new(None),
@@ -793,19 +977,29 @@ mod vulkan {
             Ok(())
         }
 
-        fn write_pixels(&self, index: usize, task: PixelWriteTask) -> PluginResult<()> {
+        fn write_pixels(&self, index: usize, task: PixelWriter) -> PluginResult<()> {
+            let pixels = {
+                let state = self.state.lock();
+                let Some(slot) = state.slots.get(index) else {
+                    return Err(PluginError::Shutdown);
+                };
+                if slot.state != TextureSlotState::Reserved
+                    || slot.render_task.is_some()
+                    || slot.pixels_written
+                {
+                    return Err(PluginError::Busy);
+                }
+                slot.pixels.clone().ok_or(PluginError::Busy)?
+            };
+            // Plugin work only holds this slot's storage lock. Raster can
+            // acquire/release other slots, and teardown can detach the ring.
+            pixels
+                .lock()
+                .write(task, self.width as usize * 4, &self.context)?;
             let mut state = self.state.lock();
             let Some(slot) = state.slots.get_mut(index) else {
                 return Err(PluginError::Shutdown);
             };
-            if slot.state != TextureSlotState::Reserved
-                || slot.render_task.is_some()
-                || slot.pixels_written
-                || slot.pixels.is_empty()
-            {
-                return Err(PluginError::Busy);
-            }
-            task(&mut slot.pixels, self.width as usize * 4);
             slot.pixels_written = true;
             Ok(())
         }
@@ -978,12 +1172,28 @@ mod vulkan {
         }
     }
 
+    impl ReservedPixelBufferTextureFrame {
+        fn write(&self, task: PixelWriter) -> PluginResult<()> {
+            self.state
+                .compare_exchange(
+                    FRAME_RESERVED,
+                    FRAME_WRITING,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .map_err(|_| PluginError::Busy)?;
+            let _reservation = PixelWriteReservation(&self.state);
+            self.ring.write_pixels(self.slot, task)
+        }
+    }
+
     impl PixelBufferTextureFrameBackend for ReservedPixelBufferTextureFrame {
         fn write_pixels(&self, task: PixelWriteTask) -> PluginResult<()> {
-            if self.state.load(Ordering::Acquire) != FRAME_RESERVED {
-                return Err(PluginError::Busy);
-            }
-            self.ring.write_pixels(self.slot, task)
+            self.write(PixelWriter::Staged(task))
+        }
+
+        fn write_pixels_direct(&self, task: PixelUploadTask) -> PluginResult<()> {
+            self.write(PixelWriter::Direct(task))
         }
 
         fn present(&self) -> PluginResult<()> {
@@ -1684,28 +1894,57 @@ mod vulkan {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Flutter Rust external texture producer"),
                 });
+        let mut upload = None;
         if let Some(task) = task {
             task(&ring.inner.context.device, &mut encoder, &slot.view);
         } else {
-            ring.inner.context.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &slot.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &slot.pixels,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(ring.inner.width * 4),
-                    rows_per_image: Some(ring.inner.height),
-                },
-                wgpu::Extent3d {
-                    width: ring.inner.width,
-                    height: ring.inner.height,
-                    depth_or_array_layers: 1,
-                },
-            );
+            let destination = wgpu::TexelCopyTextureInfo {
+                texture: &slot.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            };
+            let layout = wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(ring.inner.width * 4),
+                rows_per_image: Some(ring.inner.height),
+            };
+            let extent = wgpu::Extent3d {
+                width: ring.inner.width,
+                height: ring.inner.height,
+                depth_or_array_layers: 1,
+            };
+            let pixels = slot
+                .pixels
+                .as_ref()
+                .expect("pixel frame has storage")
+                .lock();
+            match &pixels.upload {
+                None => {
+                    ring.inner.context.queue.write_texture(
+                        destination,
+                        &pixels.pixels,
+                        layout,
+                        extent,
+                    );
+                }
+                Some(buffer) => {
+                    buffer.unmap();
+                    slot.upload_recycle.begin();
+                    encoder.copy_buffer_to_texture(
+                        wgpu::TexelCopyBufferInfo {
+                            buffer,
+                            layout: wgpu::TexelCopyBufferLayout {
+                                bytes_per_row: Some(pixels.upload_row_bytes),
+                                ..layout
+                            },
+                        },
+                        destination,
+                        extent,
+                    );
+                    upload = Some((buffer.clone(), Arc::clone(&slot.upload_recycle)));
+                }
+            }
             slot.pixels_written = false;
         }
         encoder.transition_resources(
@@ -1732,9 +1971,10 @@ mod vulkan {
             )
             .is_none()
         {
-            slot.state = TextureSlotState::Available;
+            // A failed native queue handoff cannot safely recycle an unmapped
+            // upload or its binary semaphores. Wake producers with Shutdown.
+            ring.inner.available.shutdown();
             drop(state);
-            ring.inner.return_available(index);
             return 0;
         }
         slot.wait_for_flutter = false;
@@ -1750,6 +1990,26 @@ mod vulkan {
         };
         unsafe { *out_frame = frame };
         state.submitted = true;
+        drop(state);
+        if let Some((buffer, recycle)) = upload {
+            let available = Arc::clone(&ring.inner.available);
+            buffer.map_async(wgpu::MapMode::Write, .., move |result| match result {
+                Ok(()) if recycle.mapped() => available.give_back(index),
+                Ok(()) => {}
+                Err(error) => {
+                    eprintln!("Flutter Rust pixel upload remap failed: {error}");
+                    available.shutdown();
+                }
+            });
+            if let Some(completion) = ring.inner.context.upload_completion.lock().as_ref() {
+                match completion.sender.try_send(()) {
+                    Ok(()) | Err(std::sync::mpsc::TrySendError::Full(())) => {}
+                    Err(std::sync::mpsc::TrySendError::Disconnected(())) => {
+                        ring.inner.available.shutdown();
+                    }
+                }
+            }
+        }
         1
     }
 
@@ -1774,8 +2034,11 @@ mod vulkan {
         if slot.state == TextureSlotState::InFlutter {
             slot.state = TextureSlotState::Available;
             slot.wait_for_flutter = true;
+            let reusable = slot.upload_recycle.released();
             drop(state);
-            ring.inner.return_available(index);
+            if reusable {
+                ring.inner.return_available(index);
+            }
         }
     }
 
