@@ -19,7 +19,7 @@ extern "C" {
 
 // This private ABI is lockstep-versioned with the Flutter fork. It is not the
 // Flutter Embedder API and is never exposed to application plugins.
-#define FLUTTER_RUST_SHELL_ABI_VERSION 12u
+#define FLUTTER_RUST_SHELL_ABI_VERSION 13u
 #define FLUTTER_RUST_PLUGIN_SDK_API_VERSION 1u
 
 typedef struct FlutterRustShellAbi {
@@ -269,6 +269,12 @@ typedef struct FlutterRustExternalTextureFrame {
   uint32_t height;
   uint64_t acquire_semaphore;
   uint64_t render_semaphore;
+  // Nonzero hardware_buffer selects a ready Android decoder frame. Its
+  // release callback owns frame_token independently of callbacks.user_data,
+  // which may have been unregistered before GPU sampling finishes.
+  uint64_t hardware_buffer;
+  uint64_t frame_token;
+  uint32_t crop[4];
 } FlutterRustExternalTextureFrame;
 
 typedef int (*FlutterRustAcquireExternalTextureFrameCallback)(

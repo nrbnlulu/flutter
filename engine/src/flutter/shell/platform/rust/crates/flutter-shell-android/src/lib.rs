@@ -2,6 +2,11 @@
 //! embedding. FlutterActivity owns the window, input, lifecycle and Dart VM.
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod hardware_buffer;
+
+use flutter_plugin_sdk::android::{HardwareBufferFrame, HardwareBufferTextureBackend};
+use hardware_buffer::HardwareBufferMailbox;
+
 use flutter_plugin_sdk::{
     GpuTextures, MainThreadDispatcher, MainThreadTask, PixelBufferTextureBackendHandle,
     PixelBufferTextureFrameBackend, PluginError, PluginRegistrar, Result, TextureDescriptor,
@@ -12,7 +17,10 @@ use flutter_shell_wgpu::{GpuContext, WgpuTextureRing};
 use std::{
     collections::BTreeMap,
     ffi::{CString, c_void},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 type TaskCallback = unsafe extern "C" fn(*mut c_void);
@@ -69,7 +77,7 @@ pub struct AndroidRuntime {
     native: Arc<NativeRuntime>,
     dispatcher: MainThreadDispatcher,
     registrar: PluginRegistrar,
-    textures: Arc<Mutex<BTreeMap<i64, Arc<WgpuTextureRing>>>>,
+    textures: Arc<Mutex<BTreeMap<i64, RegisteredTexture>>>,
     registered: bool,
     stopped: bool,
 }
@@ -179,7 +187,7 @@ impl AndroidRuntime {
             ring.shutdown();
         }
         unsafe extern "C" fn release(data: *mut c_void) {
-            let rings = unsafe { Box::from_raw(data.cast::<Vec<Arc<WgpuTextureRing>>>()) };
+            let rings = unsafe { Box::from_raw(data.cast::<Vec<RegisteredTexture>>()) };
             for ring in rings.iter() {
                 ring.release_gpu_resources();
             }
@@ -202,7 +210,7 @@ impl Drop for AndroidRuntime {
 struct Backend {
     native: Arc<NativeRuntime>,
     dispatcher: MainThreadDispatcher,
-    textures: Arc<Mutex<BTreeMap<i64, Arc<WgpuTextureRing>>>>,
+    textures: Arc<Mutex<BTreeMap<i64, RegisteredTexture>>>,
 }
 impl Backend {
     fn create(&self, descriptor: TextureDescriptor, pixels: bool) -> Result<Arc<Texture>> {
@@ -219,23 +227,33 @@ impl Backend {
                 .create_texture_ring(descriptor.width, descriptor.height)
         }
         .map_err(|_| PluginError::InvalidDescriptor)?;
-        let ring = Arc::new(*ring);
-        let id = unsafe { FlutterRustAndroidRegisterTexture(self.native.ptr(), ring.callbacks()) };
+        self.register(RegisteredTexture::Wgpu(Arc::new(*ring)))
+    }
+
+    fn register(&self, source: RegisteredTexture) -> Result<Arc<Texture>> {
+        if !self.dispatcher.is_main_thread() {
+            return Err(PluginError::Unsupported);
+        }
+        let id =
+            unsafe { FlutterRustAndroidRegisterTexture(self.native.ptr(), source.callbacks()) };
         if id < 0 {
             return Err(PluginError::Shutdown);
         }
         let native = self.native.clone();
         let dispatcher = self.dispatcher.clone();
-        ring.set_registration(id, move |id| {
-            let native = native.clone();
-            dispatcher
-                .dispatch(move || unsafe { FlutterRustAndroidMarkTexture(native.ptr(), id) })
-                .map_err(|_| PluginError::Shutdown)
-        });
-        self.textures.lock().unwrap().insert(id, ring.clone());
+        if let RegisteredTexture::Wgpu(ring) = &source {
+            ring.set_registration(id, move |id| {
+                let native = native.clone();
+                dispatcher
+                    .dispatch(move || unsafe { FlutterRustAndroidMarkTexture(native.ptr(), id) })
+                    .map_err(|_| PluginError::Shutdown)
+            });
+        }
+        self.textures.lock().unwrap().insert(id, source.clone());
         Ok(Arc::new(Texture {
             id,
-            ring,
+            source,
+            notification_pending: Arc::new(AtomicBool::new(false)),
             native: self.native.clone(),
             dispatcher: self.dispatcher.clone(),
             textures: self.textures.clone(),
@@ -243,6 +261,15 @@ impl Backend {
     }
 }
 impl WgpuTextureBackend for Backend {
+    fn create_android_hardware_buffer_texture(
+        &self,
+    ) -> Result<Arc<dyn HardwareBufferTextureBackend>> {
+        #[cfg(target_os = "android")]
+        if !self.native.gpu.supports_android_hardware_buffers() {
+            return Err(PluginError::Unsupported);
+        }
+        Ok(self.register(RegisteredTexture::HardwareBuffer(Arc::default()))?)
+    }
     fn create_texture(
         &self,
         descriptor: TextureDescriptor,
@@ -258,21 +285,22 @@ impl WgpuTextureBackend for Backend {
 }
 struct Texture {
     id: i64,
-    ring: Arc<WgpuTextureRing>,
+    source: RegisteredTexture,
+    notification_pending: Arc<AtomicBool>,
     native: Arc<NativeRuntime>,
     dispatcher: MainThreadDispatcher,
-    textures: Arc<Mutex<BTreeMap<i64, Arc<WgpuTextureRing>>>>,
+    textures: Arc<Mutex<BTreeMap<i64, RegisteredTexture>>>,
 }
 impl Drop for Texture {
     fn drop(&mut self) {
-        self.ring.shutdown();
+        self.source.shutdown();
         let native = self.native.clone();
         let textures = self.textures.clone();
         let id = self.id;
         let _ = self.dispatcher.dispatch(move || {
             if let Some(ring) = textures.lock().unwrap().remove(&id) {
                 unsafe extern "C" fn release(data: *mut c_void) {
-                    let ring = unsafe { Box::from_raw(data.cast::<Arc<WgpuTextureRing>>()) };
+                    let ring = unsafe { Box::from_raw(data.cast::<RegisteredTexture>()) };
                     ring.release_gpu_resources();
                 }
                 unsafe {
@@ -293,10 +321,10 @@ impl WgpuTextureBackendHandle for Texture {
         self.id
     }
     fn try_next_frame(&self) -> Result<Arc<dyn WgpuTextureFrameBackend>> {
-        WgpuTextureBackendHandle::try_next_frame(self.ring.as_ref())
+        WgpuTextureBackendHandle::try_next_frame(self.source.ring()?)
     }
     async fn next_frame(&self) -> Result<Arc<dyn WgpuTextureFrameBackend>> {
-        WgpuTextureBackendHandle::next_frame(self.ring.as_ref()).await
+        WgpuTextureBackendHandle::next_frame(self.source.ring()?).await
     }
 }
 #[async_trait::async_trait]
@@ -305,9 +333,69 @@ impl PixelBufferTextureBackendHandle for Texture {
         self.id
     }
     fn try_next_frame(&self) -> Result<Arc<dyn PixelBufferTextureFrameBackend>> {
-        PixelBufferTextureBackendHandle::try_next_frame(self.ring.as_ref())
+        PixelBufferTextureBackendHandle::try_next_frame(self.source.ring()?)
     }
     async fn next_frame(&self) -> Result<Arc<dyn PixelBufferTextureFrameBackend>> {
-        PixelBufferTextureBackendHandle::next_frame(self.ring.as_ref()).await
+        PixelBufferTextureBackendHandle::next_frame(self.source.ring()?).await
+    }
+}
+
+#[derive(Clone)]
+enum RegisteredTexture {
+    Wgpu(Arc<WgpuTextureRing>),
+    HardwareBuffer(Arc<HardwareBufferMailbox>),
+}
+impl RegisteredTexture {
+    fn callbacks(&self) -> FlutterRustExternalTextureCallbacks {
+        match self {
+            Self::Wgpu(ring) => ring.callbacks(),
+            Self::HardwareBuffer(mailbox) => mailbox.callbacks(),
+        }
+    }
+    fn shutdown(&self) {
+        match self {
+            Self::Wgpu(ring) => ring.shutdown(),
+            Self::HardwareBuffer(mailbox) => mailbox.shutdown(),
+        }
+    }
+    fn release_gpu_resources(&self) {
+        if let Self::Wgpu(ring) = self {
+            ring.release_gpu_resources();
+        }
+    }
+    fn ring(&self) -> Result<&WgpuTextureRing> {
+        match self {
+            Self::Wgpu(ring) => Ok(ring),
+            _ => Err(PluginError::Unsupported),
+        }
+    }
+}
+impl HardwareBufferTextureBackend for Texture {
+    fn texture_id(&self) -> i64 {
+        self.id
+    }
+    fn present(&self, frame: HardwareBufferFrame) -> Result<()> {
+        let RegisteredTexture::HardwareBuffer(mailbox) = &self.source else {
+            return Err(PluginError::Unsupported);
+        };
+        mailbox.present(frame)?;
+        if self.notification_pending.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let pending = self.notification_pending.clone();
+        let native = self.native.clone();
+        let id = self.id;
+        self.dispatcher
+            .dispatch(move || {
+                // Clear before marking so a concurrently presented frame can
+                // always request another repaint, even if raster acquires now.
+                pending.store(false, Ordering::Release);
+                unsafe { FlutterRustAndroidMarkTexture(native.ptr(), id) };
+            })
+            .map_err(|_| {
+                self.notification_pending.store(false, Ordering::Release);
+                mailbox.shutdown();
+                PluginError::Shutdown
+            })
     }
 }

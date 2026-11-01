@@ -29,6 +29,7 @@ class RustExternalTexture : public Texture {
   struct ResolvedFrame {
     FlutterRustExternalTextureFrame frame = {};
     sk_sp<DlImage> image;
+    std::optional<DlRect> source_rect;
   };
 
   // Virtual only to make the frame lifecycle independently testable without a
@@ -53,6 +54,7 @@ class RustExternalTexture : public Texture {
   std::optional<ResolvedFrame> current_frame_;
   bool new_frame_available_ = true;
   bool unregistered_ = false;
+  bool logged_hardware_buffer_ = false;
   std::weak_ptr<impeller::Context> context_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(RustExternalTexture);

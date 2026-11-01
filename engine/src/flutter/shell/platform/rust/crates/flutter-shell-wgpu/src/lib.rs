@@ -45,6 +45,8 @@ mod vulkan {
         queue: flutter_gpu_queue::SharedQueue,
         gpu_thread: std::sync::OnceLock<std::thread::ThreadId>,
         upload_completion: Mutex<Option<UploadCompletion>>,
+        #[cfg(target_os = "android")]
+        android_hardware_buffers: bool,
     }
 
     struct UploadCompletion {
@@ -483,10 +485,8 @@ mod vulkan {
         }
     }
 
-    #[cfg(any(target_os = "android", test))]
     struct Headless;
 
-    #[cfg(any(target_os = "android", test))]
     impl SurfaceSource for Headless {
         fn create_surface(
             self,
@@ -523,9 +523,8 @@ mod vulkan {
             Self::create(window)
         }
 
-        /// Creates a shared Vulkan device without taking ownership of an
-        /// Android display surface. FlutterActivity owns presentation.
-        #[cfg(target_os = "android")]
+        /// Creates a shared Vulkan device without taking ownership of a
+        /// display surface. On Android, FlutterActivity owns presentation.
         pub fn headless() -> Result<Arc<Self>, String> {
             Self::create(Headless)
         }
@@ -561,7 +560,7 @@ mod vulkan {
                 ..Default::default()
             };
             #[cfg(target_os = "android")]
-            let (device, queue) = {
+            let (device, queue, android_hardware_buffers) = {
                 // Impeller's Android capability check (capabilities_vk.cc)
                 // hard-requires these device extensions for
                 // AHardwareBuffer-backed texture interop; wgpu has no
@@ -573,25 +572,48 @@ mod vulkan {
                 let open_device = {
                     let hal_adapter = unsafe { adapter.as_hal::<wgpu::hal::vulkan::Api>() }
                         .ok_or_else(|| "adapter is not a Vulkan adapter".to_owned())?;
+                    // Enabling the extension does not enable its feature bit.
+                    let mut ycbcr =
+                        ash::vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default();
+                    let mut features =
+                        ash::vk::PhysicalDeviceFeatures2::default().push_next(&mut ycbcr);
                     unsafe {
+                        hal_adapter
+                            .shared_instance()
+                            .raw_instance()
+                            .get_physical_device_features2(
+                                hal_adapter.raw_physical_device(),
+                                &mut features,
+                            );
+                    }
+                    let supports_ycbcr = ycbcr.sampler_ycbcr_conversion != 0;
+                    let enabled_ycbcr = &mut ycbcr;
+                    let opened = unsafe {
                         hal_adapter.open_with_callback(
                             device_descriptor.required_features,
                             &device_descriptor.required_limits,
                             &wgpu::MemoryHints::default(),
-                            Some(Box::new(|args| {
+                            Some(Box::new(move |args| {
                                 args.extensions
                                     .push(c"VK_ANDROID_external_memory_android_hardware_buffer");
                                 args.extensions.push(c"VK_KHR_sampler_ycbcr_conversion");
                                 args.extensions.push(c"VK_KHR_external_memory");
                                 args.extensions.push(c"VK_EXT_queue_family_foreign");
                                 args.extensions.push(c"VK_KHR_dedicated_allocation");
+                                // This pinned HAL does not add YCbCr to its own
+                                // device chain. The borrowed structure lives outside
+                                // the callback through vkCreateDevice below.
+                                *args.create_info = (*args.create_info).push_next(enabled_ycbcr);
                             })),
                         )
                     }
-                    .map_err(|error| error.to_string())?
+                    .map_err(|error| error.to_string())?;
+                    (opened, supports_ycbcr)
                 };
-                unsafe { adapter.create_device_from_hal(open_device, &device_descriptor) }
-                    .map_err(|error| error.to_string())?
+                let (device, queue) =
+                    unsafe { adapter.create_device_from_hal(open_device.0, &device_descriptor) }
+                        .map_err(|error| error.to_string())?;
+                (device, queue, open_device.1)
             };
             #[cfg(not(target_os = "android"))]
             let (device, queue) = pollster::block_on(adapter.request_device(&device_descriptor))
@@ -603,6 +625,8 @@ mod vulkan {
                 queue: flutter_gpu_queue::SharedQueue::new(queue),
                 gpu_thread: std::sync::OnceLock::new(),
                 upload_completion: Mutex::new(None),
+                #[cfg(target_os = "android")]
+                android_hardware_buffers,
             }))
         }
 
@@ -677,6 +701,12 @@ mod vulkan {
                     .map(|extension| extension.to_string_lossy().into_owned())
                     .collect(),
             }))
+        }
+
+        /// Whether the Android device has enabled native YUV buffer sampling.
+        #[cfg(target_os = "android")]
+        pub fn supports_android_hardware_buffers(&self) -> bool {
+            self.android_hardware_buffers
         }
 
         /// Creates external-texture storage on this shared device.
@@ -1987,6 +2017,9 @@ mod vulkan {
             height: ring.inner.height,
             acquire_semaphore: slot.sync.acquire.as_raw(),
             render_semaphore: slot.sync.render.as_raw(),
+            hardware_buffer: 0,
+            frame_token: 0,
+            crop: [0; 4],
         };
         unsafe { *out_frame = frame };
         state.submitted = true;

@@ -6,6 +6,30 @@ for the architectural plan.
 
 ## Current focus
 
+Android hardware-buffer textures have an experimental SDK capability and a
+bounded mailbox in `flutter-shell-android`. ABI 13 extends the existing external
+texture bridge with producer leases and crop rectangles. The C++ adapter reuses
+Impeller's AHB importer and command tracking; device creation enables supported
+YCbCr conversion through the HAL callback's pNext chain. Producer leases survive
+unregistration through GPU reads and foreign ownership release. The realtime
+player shares output/sample/clock handling between Playbin and WSC-RTP and keeps
+CPU fallback. Its Java Flutter plugin supplies GStreamer's VM/class loader and
+uses the matching SDK's Java helpers. Runner version 8 adds Android DF_1_GLOBAL
+visibility for FRB process lookup and native runtime providers.
+
+On 2026-10-29, an Armor 21 (API 36, Mali-G57 MC2) displayed advancing H.264 video
+through AHardwareBuffer output, completed the twenty-second clip at normal
+speed, and passed session replacement and background/resume checks. CPU output
+was separately verified with GStreamer 1.28.3. A development overlay SDK
+(pkg-config 1.29.2.1) supplies the forthcoming 1.30 AHardwareBuffer API; the original
+SDK was preserved. The YCbCr feature validation error was resolved on device.
+The direct path also exposed missing stencil attachment synchronization:
+RenderPassBuilderVK's incoming dependency now covers early/late fragment tests
+and depth/stencil writes. That engine fix rebuilt successfully, and the WSC-RTP
+APK built, but the device disconnected before their final validation run.
+Remaining checks include clean Vulkan validation, WSC-RTP, dynamic resizing,
+performance measurement, and a second GPU vendor.
+
 Public Embedder API migration and prototyping are deferred; see the
 [2026-10-18 reassessment](flutter-rs.md#embedder-api-reassessment-2026-10-18).
 Source inspection confirms single-engine multi-view APIs, but Vulkan Impeller

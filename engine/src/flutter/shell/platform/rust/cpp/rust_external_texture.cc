@@ -14,7 +14,10 @@
 #include "flutter/impeller/renderer/backend/vulkan/formats_vk.h"
 #include "flutter/impeller/renderer/backend/vulkan/queue_vk.h"
 #if defined(FML_OS_ANDROID)
+#include "flutter/impeller/renderer/backend/vulkan/android/ahb_texture_source_vk.h"
+#include "flutter/impeller/renderer/backend/vulkan/command_buffer_vk.h"
 #include "flutter/impeller/renderer/backend/vulkan/surface_context_vk.h"
+#include "flutter/impeller/toolkit/android/hardware_buffer.h"
 #endif
 #include "flutter/impeller/renderer/backend/vulkan/texture_source_vk.h"
 #include "flutter/impeller/renderer/backend/vulkan/texture_vk.h"
@@ -77,6 +80,108 @@ bool SubmitSemaphore(impeller::ContextVK& context,
          impeller::vk::Result::eSuccess;
 }
 
+#if defined(FML_OS_ANDROID)
+// The frame is already acquire-fence-ready. Explicitly acquire/release the
+// foreign image ownership on the engine's shared, lock-serialized queue.
+bool TransferHardwareBuffer(
+    const std::shared_ptr<impeller::ContextVK>& context,
+    const std::shared_ptr<impeller::AHBTextureSourceVK>& source,
+    bool acquire,
+    const std::shared_ptr<void>& lease) {
+  auto command = context->CreateCommandBuffer();
+  if (!command) {
+    return false;
+  }
+  auto& command_vk = impeller::CommandBufferVK::Cast(*command);
+  auto family = context->GetGraphicsQueue()->GetIndex().family;
+  impeller::vk::ImageMemoryBarrier barrier;
+  barrier.setImage(source->GetImage());
+  barrier.setSubresourceRange(
+      {impeller::vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+  barrier.setSrcQueueFamilyIndex(acquire ? VK_QUEUE_FAMILY_FOREIGN_EXT
+                                         : family);
+  barrier.setDstQueueFamilyIndex(acquire ? family
+                                         : VK_QUEUE_FAMILY_FOREIGN_EXT);
+  barrier.setOldLayout(acquire
+                           ? impeller::vk::ImageLayout::eUndefined
+                           : impeller::vk::ImageLayout::eShaderReadOnlyOptimal);
+  barrier.setNewLayout(acquire
+                           ? impeller::vk::ImageLayout::eShaderReadOnlyOptimal
+                           : impeller::vk::ImageLayout::eGeneral);
+  barrier.setSrcAccessMask(acquire ? impeller::vk::AccessFlags{}
+                                   : impeller::vk::AccessFlagBits::eShaderRead);
+  barrier.setDstAccessMask(acquire ? impeller::vk::AccessFlagBits::eShaderRead
+                                   : impeller::vk::AccessFlags{});
+  command_vk.GetCommandBuffer().pipelineBarrier(
+      acquire ? impeller::vk::PipelineStageFlagBits::eTopOfPipe
+              : impeller::vk::PipelineStageFlagBits::eFragmentShader,
+      acquire ? impeller::vk::PipelineStageFlagBits::eFragmentShader
+              : impeller::vk::PipelineStageFlagBits::eBottomOfPipe,
+      {}, {}, {}, barrier);
+  // Retain the image and its decoder lease through the transfer fence too.
+  return context->GetCommandQueue()
+      ->Submit({command}, [source, lease](impeller::CommandBuffer::Status) {})
+      .ok();
+}
+
+sk_sp<DlImage> ImportHardwareBuffer(
+    const std::shared_ptr<impeller::ContextVK>& context,
+    FlutterRustExternalTextureCallbacks callbacks,
+    FlutterRustExternalTextureFrame frame) {
+  // Frame-token release deliberately does not use the texture's user_data:
+  // unregister can finish while submitted display lists still retain images.
+  auto released_frame =
+      std::make_shared<FlutterRustExternalTextureFrame>(frame);
+  released_frame->format =
+      UINT32_MAX;  // Failed imports trigger producer fallback.
+  auto lease = std::shared_ptr<void>(
+      reinterpret_cast<void*>(static_cast<uintptr_t>(frame.frame_token)),
+      [callbacks, released_frame](void*) {
+        callbacks.release_frame(nullptr, *released_frame);
+      });
+  auto* buffer = reinterpret_cast<AHardwareBuffer*>(
+      static_cast<uintptr_t>(frame.hardware_buffer));
+  auto desc = impeller::android::HardwareBuffer::Describe(buffer);
+  if (!desc || desc->layers != 1 ||
+      !(desc->usage & AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE) ||
+      (desc->usage & AHARDWAREBUFFER_USAGE_PROTECTED_CONTENT) ||
+      frame.crop[2] == 0 || frame.crop[3] == 0 ||
+      uint64_t(frame.crop[0]) + frame.crop[2] > desc->width ||
+      uint64_t(frame.crop[1]) + frame.crop[3] > desc->height) {
+    return nullptr;
+  }
+  auto* imported = new impeller::AHBTextureSourceVK(context, buffer, *desc);
+  if (!imported->IsValid()) {
+    delete imported;
+    return nullptr;
+  }
+  auto acquired = std::make_shared<bool>(false);
+  auto source = std::shared_ptr<impeller::AHBTextureSourceVK>(
+      imported, [weak = std::weak_ptr(context), lease, acquired](auto* image) {
+        // Impeller tracks TextureVK through every GPU draw. This deleter runs
+        // only after its last reader has completed, including cached frames.
+        auto retiring = std::shared_ptr<impeller::AHBTextureSourceVK>(image);
+        auto context = weak.lock();
+        if (*acquired && context &&
+            !TransferHardwareBuffer(context, retiring, false, lease)) {
+          FML_LOG(ERROR) << "Could not release Android decoder image ownership";
+        }
+      });
+  if (!TransferHardwareBuffer(context, source, true, lease)) {
+    return nullptr;
+  }
+  *acquired = true;
+  source->SetLayoutWithoutEncoding(
+      impeller::vk::ImageLayout::eShaderReadOnlyOptimal);
+  auto image = impeller::DlImageImpeller::Make(
+      std::make_shared<impeller::TextureVK>(context, std::move(source)));
+  if (image) {
+    released_frame->format = 0;
+  }
+  return image;
+}
+#endif
+
 }  // namespace
 
 RustExternalTexture::RustExternalTexture(
@@ -99,6 +204,27 @@ RustExternalTexture::ResolveFrame(PaintContext& context, const DlISize& size) {
                                 &frame)) {
     return std::nullopt;
   }
+#if defined(FML_OS_ANDROID)
+  if (frame.hardware_buffer != 0u && frame.frame_token != 0u &&
+      callbacks_.release_frame) {
+    auto context_ptr = TextureDeviceContext(context.aiks_context->GetContext());
+    context_ = context_ptr;
+    auto image = ImportHardwareBuffer(
+        std::static_pointer_cast<impeller::ContextVK>(context_ptr), callbacks_,
+        frame);
+    if (!image) {
+      return std::nullopt;
+    }
+    if (!logged_hardware_buffer_) {
+      FML_LOG(INFO) << "Rust Android hardware buffer imported: "
+                    << frame.width << "x" << frame.height;
+      logged_hardware_buffer_ = true;
+    }
+    return ResolvedFrame{frame, std::move(image),
+                         DlRect::MakeXYWH(frame.crop[0], frame.crop[1],
+                                          frame.crop[2], frame.crop[3])};
+  }
+#endif
   if (frame.image == 0u || frame.image_view == 0u || frame.width == 0u ||
       frame.height == 0u || frame.acquire_semaphore == 0u ||
       frame.render_semaphore == 0u) {
@@ -141,6 +267,10 @@ RustExternalTexture::ResolveFrame(PaintContext& context, const DlISize& size) {
 
 void RustExternalTexture::ReleaseFrame(PaintContext* context,
                                        ResolvedFrame frame) {
+  if (frame.frame.hardware_buffer != 0u) {
+    // Dropping the image retires its producer lease after GPU readers finish.
+    return;
+  }
   auto context_ptr =
       context && context->aiks_context
           ? TextureDeviceContext(context->aiks_context->GetContext())
@@ -175,7 +305,9 @@ void RustExternalTexture::Paint(PaintContext& context,
   }
   if (current_frame_ && current_frame_->image) {
     context.canvas->DrawImageRect(
-        current_frame_->image, DlRect::Make(current_frame_->image->GetBounds()),
+        current_frame_->image,
+        current_frame_->source_rect.value_or(
+            DlRect::Make(current_frame_->image->GetBounds())),
         bounds, sampling, context.paint, DlSrcRectConstraint::kStrict);
   }
 }

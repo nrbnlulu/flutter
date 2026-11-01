@@ -3,7 +3,11 @@
 //! The SDK deliberately exposes no Flutter C++ or Impeller types. Those remain
 //! behind the private, lockstep engine bridge.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+
+/// Android decoder-buffer textures. Native pointer construction is confined here.
+#[allow(unsafe_code)]
+pub mod android;
 
 use std::{
     sync::{
@@ -156,6 +160,12 @@ pub trait WgpuTextureBackend: Send + Sync {
     fn gpu_device(&self) -> Option<wgpu::Device> {
         None
     }
+    /// Creates a texture that samples ready Android hardware buffers directly.
+    fn create_android_hardware_buffer_texture(
+        &self,
+    ) -> Result<Arc<dyn android::HardwareBufferTextureBackend>> {
+        Err(PluginError::Unsupported)
+    }
     /// Creates one engine-owned texture.
     fn create_texture(
         &self,
@@ -184,6 +194,14 @@ impl GpuTextures {
         Ok(WgpuTexture {
             backend: self.backend.create_texture(descriptor)?,
         })
+    }
+
+    /// Creates an Android texture with a stable ID across buffer size changes.
+    /// Returns `Unsupported` on runtimes without native hardware-buffer import.
+    pub fn create_android_hardware_buffer_texture(&self) -> Result<android::HardwareBufferTexture> {
+        Ok(android::HardwareBufferTexture::for_shell(
+            self.backend.create_android_hardware_buffer_texture()?,
+        ))
     }
 
     /// The shell's wgpu device, for producers that render on their own thread

@@ -11,7 +11,7 @@
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 12;
+pub const SHELL_ABI_VERSION: u32 = 13;
 /// Plugin SDK API version expected by this lockstep private runtime.
 pub const PLUGIN_SDK_API_VERSION: u32 = 1;
 
@@ -260,6 +260,9 @@ pub struct FlutterRustExternalTextureFrame {
     pub height: u32,
     pub acquire_semaphore: u64,
     pub render_semaphore: u64,
+    pub hardware_buffer: u64,
+    pub frame_token: u64,
+    pub crop: [u32; 4],
 }
 
 /// ABI-compatible with `FlutterRustExternalTextureCallbacks`.

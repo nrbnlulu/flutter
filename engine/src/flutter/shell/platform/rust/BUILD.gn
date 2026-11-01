@@ -24,6 +24,7 @@ action("flutter_shell_core_rust") {
     "crates/flutter-gpu-queue/src/lib.rs",
     "crates/flutter-plugin-sdk/Cargo.toml",
     "crates/flutter-plugin-sdk/src/lib.rs",
+    "crates/flutter-plugin-sdk/src/android.rs",
     "crates/flutter-shell-core/Cargo.toml",
     "crates/flutter-shell-core/src/lib.rs",
   ]
@@ -54,6 +55,7 @@ action("flutter_shell_winit_rust") {
     "crates/flutter-gpu-queue/src/lib.rs",
     "crates/flutter-plugin-sdk/Cargo.toml",
     "crates/flutter-plugin-sdk/src/lib.rs",
+    "crates/flutter-plugin-sdk/src/android.rs",
     "crates/flutter-shell-core/Cargo.toml",
     "crates/flutter-shell-core/src/lib.rs",
     "crates/flutter-shell-winit/Cargo.toml",

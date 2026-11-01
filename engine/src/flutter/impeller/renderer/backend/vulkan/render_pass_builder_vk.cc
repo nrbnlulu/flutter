@@ -204,6 +204,15 @@ vk::UniqueRenderPass RenderPassBuilderVK::Build(
                          vk::PipelineStageFlagBits::eEarlyFragmentTests;
   deps[0].dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite |
                           vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+  if (depth_stencil_.has_value()) {
+    // Attachment stores/discards can execute in late fragment tests. A later
+    // pass may clear the same stencil image even when its layout is unchanged;
+    // color-only synchronization does not order these writes.
+    deps[0].srcStageMask |= vk::PipelineStageFlagBits::eEarlyFragmentTests |
+                            vk::PipelineStageFlagBits::eLateFragmentTests;
+    deps[0].srcAccessMask |= vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+    deps[0].dstStageMask |= vk::PipelineStageFlagBits::eLateFragmentTests;
+  }
   deps[0].dependencyFlags = kSelfDependencyFlags;
 
   // Self dependency for reading back the framebuffer, necessary for
