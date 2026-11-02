@@ -16,7 +16,7 @@ use crate::{
     mode::BuildMode,
     plugins::{NativeLibrary, read_native_libraries},
     project::Project,
-    util::{remove_path, run},
+    util::{copy_if_changed, retain_files, run},
 };
 
 /// A cross-compilation target: the ABI and the NDK that links for it.
@@ -63,12 +63,6 @@ fn cargo_command(
 pub fn build_all(project: &Project, mode: BuildMode, cross: CrossTarget) -> Result<Vec<PathBuf>> {
     let libraries = read_native_libraries(project)?;
     let staging = staging_dir(project, mode, cross.map(|(abi, _)| abi));
-    // Drop libraries staged by an earlier build, including those whose plugin
-    // has since been removed, so only what is built now gets bundled.
-    remove_path(&staging)?;
-    if libraries.is_empty() {
-        return Ok(Vec::new());
-    }
     let target_dir = project.flutter_rs_dir().join("native_libs").join("target");
     fs::create_dir_all(&staging)?;
     let mut staged = Vec::new();
@@ -94,9 +88,10 @@ pub fn build_all(project: &Project, mode: BuildMode, cross: CrossTarget) -> Resu
             );
         }
         let destination = staging.join(library.file_name());
-        fs::copy(&built, &destination)?;
+        copy_if_changed(&built, &destination)?;
         staged.push(destination);
     }
+    retain_files(&staging, &staged)?;
     Ok(staged)
 }
 

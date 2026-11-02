@@ -73,31 +73,65 @@ pub fn write_if_changed(path: &Path, contents: &str) -> Result<bool> {
 }
 
 pub fn copy_if_changed(source: &Path, destination: &Path) -> Result<()> {
-    let contents = fs::read(source).with_context(|| format!("read {}", source.display()))?;
-    if fs::read(destination).is_ok_and(|existing| existing == contents) {
-        return Ok(());
+    use std::io::Read;
+    // Compare in bounded chunks: engine libraries can be hundreds of MB.
+    if destination.is_file() && fs::metadata(source)?.len() == fs::metadata(destination)?.len() {
+        let mut left = io::BufReader::new(fs::File::open(source)?);
+        let mut right = io::BufReader::new(fs::File::open(destination)?);
+        let mut a = [0; 65536];
+        let mut b = [0; 65536];
+        loop {
+            let count = left.read(&mut a)?;
+            if count == 0 {
+                return Ok(());
+            }
+            right.read_exact(&mut b[..count])?;
+            if a[..count] != b[..count] {
+                break;
+            }
+        }
     }
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(destination, contents).with_context(|| format!("write {}", destination.display()))
+    if destination.is_dir() {
+        remove_path(destination)?;
+    }
+    fs::copy(source, destination).with_context(|| format!("copy {}", source.display()))?;
+    Ok(())
 }
 
-/// Recursively copies `source` into `destination`, replacing it.
+/// Remove entries no longer included in a tool-owned staging directory.
+pub fn retain_files(directory: &Path, keep: &[PathBuf]) -> Result<()> {
+    if directory.is_dir() {
+        for entry in fs::read_dir(directory)? {
+            let path = entry?.path();
+            if !keep.contains(&path) {
+                remove_path(&path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Mirrors a directory, retaining unchanged files and deleting obsolete entries.
 pub fn copy_dir(source: &Path, destination: &Path) -> Result<()> {
-    remove_path(destination)?;
+    if destination.exists() && !destination.is_dir() {
+        remove_path(destination)?;
+    }
     fs::create_dir_all(destination)?;
+    let mut keep = Vec::new();
     for entry in fs::read_dir(source).with_context(|| format!("read {}", source.display()))? {
         let entry = entry?;
         let to = destination.join(entry.file_name());
         if entry.file_type()?.is_dir() {
             copy_dir(&entry.path(), &to)?;
         } else {
-            fs::copy(entry.path(), &to)
-                .with_context(|| format!("copy {}", entry.path().display()))?;
+            copy_if_changed(&entry.path(), &to)?;
         }
+        keep.push(to);
     }
-    Ok(())
+    retain_files(destination, &keep)
 }
 
 /// Resolves `.` and `..` without touching the file system.
@@ -120,6 +154,40 @@ pub fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{testing::tempdir, *};
+
+    #[test]
+    fn staging_preserves_unchanged_files_and_removes_obsolete_entries() {
+        let dir = tempdir("incremental_staging");
+        let source = dir.join("source");
+        let destination = dir.join("destination");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::write(source.join("nested/keep"), "same").unwrap();
+        fs::write(source.join("change"), "old!").unwrap();
+        copy_dir(&source, &destination).unwrap();
+        let sentinel = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
+        fs::File::open(destination.join("nested/keep"))
+            .unwrap()
+            .set_modified(sentinel)
+            .unwrap();
+        fs::write(destination.join("obsolete"), "gone").unwrap();
+        fs::write(source.join("change"), "new!").unwrap();
+        copy_dir(&source, &destination).unwrap();
+        assert_eq!(
+            fs::metadata(destination.join("nested/keep"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            sentinel
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("change")).unwrap(),
+            "new!"
+        );
+        assert!(!destination.join("obsolete").exists());
+        fs::remove_dir_all(source.join("nested")).unwrap();
+        copy_dir(&source, &destination).unwrap();
+        assert!(!destination.join("nested").exists());
+    }
 
     #[test]
     fn normalize_resolves_dots() {

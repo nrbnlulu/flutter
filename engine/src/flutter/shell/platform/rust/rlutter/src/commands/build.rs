@@ -13,7 +13,7 @@ use crate::{
     native_libs,
     project::Project,
     sdk::Engine,
-    util::{copy_dir, run},
+    util::{copy_dir, copy_if_changed, retain_files, run},
 };
 
 pub struct LinuxBuild {
@@ -111,25 +111,29 @@ fn stage_bundle(
     copy_dir(assets, &data.join("flutter_assets"))?;
     // Only needed to locate app.so while building.
     let _ = fs::remove_file(data.join("flutter_assets").join(".last_build_id"));
-    fs::copy(engine.target.join("icudtl.dat"), data.join("icudtl.dat"))
+    copy_if_changed(&engine.target.join("icudtl.dat"), &data.join("icudtl.dat"))
         .context("cannot copy icudtl.dat")?;
 
     let libs = runner_dir.join("libs");
     fs::create_dir_all(&libs)?;
-    fs::copy(
-        engine.target.join("libflutter_rust_engine.so"),
-        libs.join("libflutter_rust_engine.so"),
+    copy_if_changed(
+        &engine.target.join("libflutter_rust_engine.so"),
+        &libs.join("libflutter_rust_engine.so"),
     )
     .context("cannot copy libflutter_rust_engine.so")?;
+    let mut keep = vec![libs.join("libflutter_rust_engine.so")];
     let native = native_libs::staging_dir(project, mode, None);
     if native.is_dir() {
         for entry in fs::read_dir(&native)? {
             let entry = entry?;
             if entry.file_type()?.is_file() {
-                fs::copy(entry.path(), libs.join(entry.file_name()))?;
+                let destination = libs.join(entry.file_name());
+                copy_if_changed(&entry.path(), &destination)?;
+                keep.push(destination);
             }
         }
     }
+    retain_files(&libs, &keep)?;
     if !runner.is_file() {
         bail!("cargo did not produce {}", runner.display());
     }
@@ -207,6 +211,19 @@ mod tests {
 
         stage_bundle(&p, BuildMode::Debug, &engine, &assets, &runner).unwrap();
         let dir = runner.parent().unwrap();
+        let staged_engine = dir.join("libs/libflutter_rust_engine.so");
+        let sentinel = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
+        fs::File::open(&staged_engine)
+            .unwrap()
+            .set_modified(sentinel)
+            .unwrap();
+        fs::remove_file(native.join("libplug.so")).unwrap();
+        stage_bundle(&p, BuildMode::Debug, &engine, &assets, &runner).unwrap();
+        assert_eq!(
+            fs::metadata(staged_engine).unwrap().modified().unwrap(),
+            sentinel
+        );
+        assert!(!dir.join("libs/libplug.so").exists());
         assert!(dir.join("data/flutter_assets/AssetManifest.bin").is_file());
         assert!(!dir.join("data/flutter_assets/.last_build_id").exists());
         assert_eq!(
@@ -214,6 +231,5 @@ mod tests {
             "icu"
         );
         assert!(dir.join("libs/libflutter_rust_engine.so").is_file());
-        assert!(dir.join("libs/libplug.so").is_file());
     }
 }

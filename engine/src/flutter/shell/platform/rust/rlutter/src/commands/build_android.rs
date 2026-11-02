@@ -7,7 +7,7 @@ use crate::{
     native_libs, plugins,
     project::Project,
     sdk::{self, Engine},
-    util::{remove_path, run, write_if_changed},
+    util::{copy_if_changed, retain_files, run, write_if_changed},
 };
 use anyhow::{Context, Result, bail};
 use std::{
@@ -172,21 +172,23 @@ fn runner_cargo_command(
     command
 }
 fn stage_android(project: &Project, stage: &Path, outputs: &[AbiOutput]) -> Result<()> {
-    remove_path(stage)?;
+    let mut keep_abis = Vec::new();
     for output in outputs {
         let libs = stage.join("jniLibs").join(output.abi.android_name());
         fs::create_dir_all(&libs)?;
-        fs::copy(
-            &output.runner_lib,
-            libs.join(format!("lib{}.so", project.name)),
-        )?;
+        let runner = libs.join(format!("lib{}.so", project.name));
+        let mut keep = vec![runner.clone()];
+        copy_if_changed(&output.runner_lib, &runner)?;
         for native in &output.native_libs {
-            fs::copy(
-                native,
-                libs.join(native.file_name().context("native library has no name")?),
-            )?;
+            let destination = libs.join(native.file_name().context("native library has no name")?);
+            copy_if_changed(native, &destination)?;
+            keep.push(destination);
         }
+        retain_files(&libs, &keep)?;
+        keep_abis.push(libs);
     }
+    retain_files(&stage.join("jniLibs"), &keep_abis)?;
+    retain_files(stage, &[stage.join("jniLibs")])?;
     // Flutter's Gradle plugin supplies libflutter.so, Dart assets/AOT and build
     // hook libraries. Staging those again would package duplicates or two VMs.
     Ok(())
@@ -344,7 +346,19 @@ mod tests {
         };
         fs::create_dir_all(stage.join("assets")).unwrap();
         fs::write(stage.join("assets/stale"), "stale").unwrap();
+        stage_android(&p, &stage, std::slice::from_ref(&output)).unwrap();
+        let staged = stage.join("jniLibs/arm64-v8a/libdemo.so");
+        let sentinel = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
+        fs::File::open(&staged)
+            .unwrap()
+            .set_modified(sentinel)
+            .unwrap();
+        fs::write(stage.join("jniLibs/arm64-v8a/libremoved.so"), "old").unwrap();
+        fs::create_dir_all(stage.join("jniLibs/x86_64")).unwrap();
         stage_android(&p, &stage, &[output]).unwrap();
+        assert_eq!(fs::metadata(staged).unwrap().modified().unwrap(), sentinel);
+        assert!(!stage.join("jniLibs/arm64-v8a/libremoved.so").exists());
+        assert!(!stage.join("jniLibs/x86_64").exists());
         assert!(stage.join("jniLibs/arm64-v8a/libdemo.so").is_file());
         assert!(
             !stage

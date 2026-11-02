@@ -1457,3 +1457,18 @@ app was blocked by its package configuration switching to the FVM beta
 framework, incompatible with the local engine's `SemanticsRole.listBox`;
 the completed full run/reload/restart verification used the isolated probe.
 The Vulkan synchronization diagnostic is not fixed by this change.
+
+## Incremental runner bundle staging
+
+Linux and Android rlutter builds now preserve unchanged staged files instead
+of deleting and copying the bundle on every invocation. Content comparisons
+use bounded buffers for large engine libraries. Linux mirrors the Dart assets
+and prunes removed native plugins; Android prunes removed libraries and ABIs.
+The intermediate native-plugin staging directory also retains unchanged files.
+Cargo still checks native inputs on every build, so native changes remain
+tracked independently of Dart changes.
+
+Verification: all 100 CLI unit tests pass, including preserved timestamps,
+same-size content updates, and removed assets/plugins/ABIs. Formatting and
+Clippy pass (existing too_many_arguments lint suppressed). End-to-end build
+time improvements have not yet been measured.

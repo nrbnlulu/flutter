@@ -216,8 +216,8 @@ RustExternalTexture::ResolveFrame(PaintContext& context, const DlISize& size) {
       return std::nullopt;
     }
     if (!logged_hardware_buffer_) {
-      FML_LOG(INFO) << "Rust Android hardware buffer imported: "
-                    << frame.width << "x" << frame.height;
+      FML_LOG(INFO) << "Rust Android hardware buffer imported: " << frame.width
+                    << "x" << frame.height;
       logged_hardware_buffer_ = true;
     }
     return ResolvedFrame{frame, std::move(image),
