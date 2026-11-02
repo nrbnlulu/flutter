@@ -532,9 +532,9 @@ mod vulkan {
         fn create<S: SurfaceSource>(source: S) -> Result<Arc<Self>, String> {
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::VULKAN,
-                // Keep debug validation by default, while allowing wgpu's
-                // standard WGPU_VALIDATION/WGPU_DEBUG overrides for profiling.
-                flags: wgpu::InstanceFlags::default().with_env(),
+                // Validation affects the shared Impeller Vulkan device too.
+                // Opt in with WGPU_VALIDATION=1 and WGPU_DEBUG=1 when needed.
+                flags: wgpu::InstanceFlags::empty().with_env(),
                 ..wgpu::InstanceDescriptor::new_without_display_handle()
             });
             let surface = source.create_surface(&instance)?;
