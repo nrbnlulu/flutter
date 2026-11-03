@@ -111,6 +111,12 @@ impl Flutter {
         command
     }
 
+    pub fn dart_command(&self) -> Command {
+        let mut command = Command::new(self.root.join("bin/cache/dart-sdk/bin/dart"));
+        command.env("FLUTTER_ROOT", &self.root);
+        command
+    }
+
     pub fn pub_get(&self, project_dir: &Path) -> Command {
         let mut command = self.command(None);
         command.args(["pub", "get"]).current_dir(project_dir);

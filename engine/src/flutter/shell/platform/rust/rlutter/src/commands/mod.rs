@@ -3,6 +3,7 @@ pub mod build_android;
 pub mod clean;
 pub mod create;
 pub mod run;
+pub mod vscode;
 
 use anyhow::Result;
 

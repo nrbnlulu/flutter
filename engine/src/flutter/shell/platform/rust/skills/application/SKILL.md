@@ -1,6 +1,6 @@
 ---
 name: application
-description: Create, convert, build, and run a Flutter application with the nrbnlulu Flutter Rust shell. Use when an application needs the generated runner-rs Cargo runner, Rust plugins, or the rust-shell pubspec setting. Currently supports Linux x64.
+description: Create, convert, build, and run a Flutter application with the nrbnlulu Flutter Rust shell. Use when an application needs the generated runner-rs Cargo runner, Rust plugins, or the rust-shell pubspec setting. Includes bundled Dart CLI and editor LSP shortcuts through rlutter.
 ---
 
 # Create a Flutter Rust-shell application
@@ -36,6 +36,75 @@ rust` generates `runner-rs/Cargo.lock`; commit this directory and its lockfile.
 Do not edit
 `runner-rs/src/flutter_plugins.rs` or the marked generated dependency block in
 `runner-rs/Cargo.toml`.
+
+## Bundled Dart CLI and editor LSP (standalone rlutter)
+
+The standalone `rlutter` CLI manages its own Flutter SDK; these shortcuts do
+not require FVM or a global Dart installation:
+
+```sh
+rlutter dart --version
+rlutter dart analyze
+rlutter dart format lib
+rlutter lsp
+```
+
+`rlutter dart <args...>` runs the bundled Dart CLI with arguments unchanged.
+`rlutter lsp <args...>` runs `dart language-server --protocol=lsp`, forwarding
+additional arguments and inheriting stdin/stdout. Configure an editor's LSP
+command as `rlutter` with arguments `["lsp"]`. No project build or engine
+artifact download is needed. The first invocation downloads the managed
+Flutter SDK if it is absent; download diagnostics go to stderr.
+
+Both commands use `$XDG_CACHE_HOME/rlutter/flutter-BETA` (default
+`~/.cache/rlutter/flutter-BETA`). For an explicit SDK, set `FLUTTER_ROOT` or put
+`--flutter-root DIR` before `dart` or `lsp`. `--help` after either shortcut is
+forwarded to Dart/the language server. The FVM commands elsewhere in this
+skill describe the older Flutter-tool integration.
+
+## VS Code: F5 debugging with standalone rlutter
+
+From the application root, generate and open the VS Code configuration:
+
+```sh
+rlutter vscode
+code rlutter.code-workspace
+```
+
+`rlutter.code-workspace` is a JSON configuration file created in the application
+root. It opens the same application folder and supplies its SDK setting,
+background run task, and debugger profile. Open this file through the command
+above or VS Code's **File → Open Workspace from File…**; opening only the folder
+with `code .` does not load the generated workspace configuration.
+
+Install the recommended Flutter extension, select **rlutter (Linux)** in Run
+and Debug, and press **F5** (or click its green start button). This builds,
+launches, and attaches automatically; no separate `rlutter run` command or
+VM service URL copying is needed.
+
+The workspace records the current rlutter binary, Flutter SDK, and explicit
+local-engine override. If these paths move, update the workspace or rename the
+existing file before regenerating it with `rlutter vscode`. The command refuses
+to overwrite an existing `rlutter.code-workspace` and leaves `.vscode/` settings
+untouched.
+
+The background task builds and runs the Linux app and writes
+`.dart_tool/rlutter-vm-service.json`. VS Code reads that file to attach its Dart
+debugger, providing breakpoints, stepping, and variable inspection. Use `r`/`R`
+in the task terminal for hot reload/restart. Stopping the VS Code debugger
+detaches; press `q` in the task terminal to stop the app. F5 can reconnect to an
+app whose task is still running. This generated configuration currently targets
+Linux; it does not configure Android port forwarding or native Rust debugging.
+
+For a custom editor task, the underlying option is:
+
+```sh
+rlutter run -d linux --vm-service-info-file .dart_tool/rlutter-vm-service.json
+```
+
+The task is ready when it prints `rlutter: debugger ready`. The generated JSON
+service-info file contains Flutter attach's DDS `uri`, which carries the source
+mappings needed by Dart's debug adapter. Do not substitute the raw engine URI.
 
 ## Resolve dependencies
 

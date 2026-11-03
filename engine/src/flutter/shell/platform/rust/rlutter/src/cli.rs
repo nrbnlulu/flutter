@@ -34,10 +34,24 @@ pub enum Command {
     },
     /// Build, launch and (in debug mode) hot reload the app on a device.
     Run(RunArgs),
+    /// Generate a VS Code workspace with one-button Linux debugging.
+    Vscode,
     /// List the devices the app can run on.
     Devices,
+    /// Run the bundled Dart CLI, forwarding all arguments.
+    Dart(PassthroughArgs),
+    /// Start the bundled Dart language server over stdio.
+    Lsp(PassthroughArgs),
     /// Remove build outputs.
     Clean(CleanArgs),
+}
+
+#[derive(Args, Debug)]
+#[command(disable_help_flag = true)]
+pub struct PassthroughArgs {
+    /// Arguments passed unchanged to Dart or the language server.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<std::ffi::OsString>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -130,6 +144,10 @@ pub struct RunArgs {
     #[arg(short = 't', long, default_value = "lib/main.dart")]
     pub target: String,
 
+    /// Write VM service details for an editor debugger (Linux debug mode).
+    #[arg(long, value_name = "FILE")]
+    pub vm_service_info_file: Option<PathBuf>,
+
     /// Device id from `rlutter devices`, or a platform (`android`, `linux`) to
     /// choose among its devices. Several candidates open a picker.
     #[arg(short = 'd', long)]
@@ -149,6 +167,34 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
         Cli::try_parse_from(std::iter::once("rlutter").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn dart_and_lsp_forward_flags_and_arguments() {
+        for (name, arguments) in [
+            ("dart", vec!["--help"]),
+            (
+                "dart",
+                vec!["run", "tool.dart", "--", "--flutter-root", "other"],
+            ),
+            ("lsp", vec!["--client-id=editor", "--help"]),
+            ("lsp", vec![]),
+        ] {
+            let mut input = vec!["--flutter-root", "/sdk", name];
+            input.extend(&arguments);
+            let cli = parse(&input).unwrap();
+            assert_eq!(cli.flutter_root, Some(PathBuf::from("/sdk")));
+            let (Command::Dart(args) | Command::Lsp(args)) = cli.command else {
+                panic!("not a passthrough command")
+            };
+            assert_eq!(
+                args.args,
+                arguments
+                    .iter()
+                    .map(std::ffi::OsString::from)
+                    .collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

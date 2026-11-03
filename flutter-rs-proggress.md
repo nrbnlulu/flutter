@@ -1472,3 +1472,31 @@ Verification: all 100 CLI unit tests pass, including preserved timestamps,
 same-size content updates, and removed assets/plugins/ABIs. Formatting and
 Clippy pass (existing too_many_arguments lint suppressed). End-to-end build
 time improvements have not yet been measured.
+
+## Bundled Dart and LSP shortcuts
+
+`rlutter dart <args...>` now runs the selected Flutter SDK's Dart CLI directly.
+`rlutter lsp <args...>` starts its Dart analysis server with
+`language-server --protocol=lsp` for editor integration. Both replace the CLI
+process, preserving stdio, exit status and signals; SDK preparation diagnostics
+stay on stderr. Explicit SDK overrides work as before. Usage is documented in
+the Rust-shell application skill.
+
+## VS Code F5 launch and automatic debugger attachment
+
+`rlutter vscode` generates a separate `rlutter.code-workspace` containing a
+Linux background run task, SDK selection, and a Dart debugger attach profile.
+F5 builds and launches the application, then attaches using the VM service
+info file written by `rlutter run --vm-service-info-file FILE`. Existing editor
+configuration is not overwritten. Hot reload/restart stay in the task terminal;
+debugger Stop detaches, while terminal `q` stops the application. Android and
+native Rust debugging are outside this generated configuration.
+
+Verification: all 104 CLI tests, formatting, Clippy (existing argument-count
+lint suppressed), skill validation and diff checks pass. Workspace generation
+and refusal to overwrite existing files were exercised through the built CLI.
+A real Linux Rust-shell app was launched with the new service-info option;
+a Dart debug-adapter client attached through the file, hit a breakpoint after
+hot restart, inspected the stack, resumed, and disconnected. Publishing
+Flutter attach's DDS URI, rather than the raw engine URI, is required for
+source-path resolution. The VS Code GUI itself was not exercised.

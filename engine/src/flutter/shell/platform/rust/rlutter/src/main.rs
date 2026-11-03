@@ -16,8 +16,9 @@ mod sdk;
 mod templates;
 mod util;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
+use std::os::unix::process::CommandExt;
 
 use crate::{
     cli::{BuildTarget, Cli, Command},
@@ -42,6 +43,18 @@ fn run() -> Result<()> {
         },
     };
     match cli.command {
+        command @ (Command::Dart(_) | Command::Lsp(_)) => {
+            let is_lsp = matches!(command, Command::Lsp(_));
+            let (Command::Dart(args) | Command::Lsp(args)) = command else {
+                unreachable!()
+            };
+            let mut command = ctx.flutter.dart_command();
+            if is_lsp {
+                command.args(["language-server", "--protocol=lsp"]);
+            }
+            command.args(args.args);
+            Err(command.exec()).context("failed to start bundled Dart")
+        }
         Command::Create(args) => commands::create::run_create(&ctx, &args),
         Command::Clean(args) => commands::clean::run_clean(&ctx, &args),
         Command::Build { target } => match target {
@@ -66,6 +79,7 @@ fn run() -> Result<()> {
             0 => Ok(()),
             code => std::process::exit(code),
         },
+        Command::Vscode => commands::vscode::configure(&ctx),
         Command::Devices => {
             for device in device::discover() {
                 println!("{} \u{2022} {}", device.id(), device.description());
