@@ -1500,3 +1500,29 @@ a Dart debug-adapter client attached through the file, hit a breakpoint after
 hot restart, inspected the stack, resumed, and disconnected. Publishing
 Flutter attach's DDS URI, rather than the raw engine URI, is required for
 source-path resolution. The VS Code GUI itself was not exercised.
+
+## Linux profile mode
+
+`rlutter build linux --profile` and `rlutter run -d linux --profile` now
+compile Dart with `aot_snapshot_profile`, link `host_profile`, and build an
+optimized Rust runner with debug information. Profile bundles live under
+`runner-rs/target/flutter-profile/`, separate from release. Run attaches
+Flutter with `--profile` for DevTools; hot reload/restart remain debug-only.
+Existing generated runners are refreshed automatically. Android profile mode
+is explicitly rejected.
+
+For local engines, first configure from `engine/src` with
+`flutter/tools/gn --runtime-mode profile --no-goma --enable-fontconfig`, then
+run `task build-rust-shell-profile` from the repository root. The BETA workflow
+now builds, packages, and smoke-builds Linux profile artifacts; managed SDKs
+require that updated bundle to be published.
+
+Verification: all 106 rlutter unit tests, formatting, and Clippy pass (with the
+existing too_many_arguments lint suppressed). No host_profile engine exists
+in the local checkout, so a real profile build, launch and DevTools session
+have not been verified.
+
+The `build-rust-shell-profile` task now configures `host_profile` automatically
+when `args.gn` is absent, with fontconfig enabled. Existing configurations are
+preserved. Verified from a missing output directory: GN generated the build
+successfully and Ninja started compiling the profile engine.

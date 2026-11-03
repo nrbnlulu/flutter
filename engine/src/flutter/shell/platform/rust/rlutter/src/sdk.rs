@@ -282,7 +282,7 @@ fn release_bundle_complete(sdk: &Path) -> bool {
             .is_file()
         && !sdk.join("crates").is_symlink()
         && !sdk.join("third_party").is_symlink()
-        && ["debug", "release"].iter().all(|mode| {
+        && ["debug", "profile", "release"].iter().all(|mode| {
             let engine = sdk.join("lib").join(mode);
             ENGINE_REQUIRED
                 .iter()
@@ -468,7 +468,7 @@ mod tests {
         fs::write(sdk.join("crates/flutter-shell-android/Cargo.toml"), "").unwrap();
         fs::write(sdk.join("Cargo.toml"), "").unwrap();
         fs::write(sdk.join("crates/flutter-plugin-sdk/Cargo.toml"), "").unwrap();
-        for mode in ["debug", "release"] {
+        for mode in ["debug", "profile", "release"] {
             let engine = sdk.join("lib").join(mode);
             fake_engine(&engine);
             fs::create_dir_all(engine.join("dart-sdk/bin")).unwrap();

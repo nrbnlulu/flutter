@@ -47,7 +47,7 @@ pub struct Bundle {
     /// Directory holding the app's assets (`AssetManifest.bin`, fonts, and
     /// `kernel_blob.bin` in debug).
     pub assets: PathBuf,
-    /// AOT-compiled app (release only).
+    /// AOT-compiled app (profile and release).
     pub app_so: Option<PathBuf>,
 }
 
@@ -72,7 +72,7 @@ fn assemble_args(
         "copy_flutter_bundle".to_owned(),
     ];
     if mode.config().dart_aot {
-        args.push("aot_snapshot_release".to_owned());
+        args.push(format!("aot_snapshot_{}", mode.name()));
     }
     args
 }
@@ -192,6 +192,20 @@ mod tests {
             &args[args.len() - 2..],
             ["copy_flutter_bundle", "aot_snapshot_release"]
         );
+    }
+
+    #[test]
+    fn profile_uses_the_profile_aot_compiler_target() {
+        let args = assemble_args(
+            BuildMode::Profile,
+            "linux-x64",
+            "lib/main.dart",
+            &[],
+            Path::new("/o"),
+        );
+        assert!(args.contains(&"-dBuildMode=profile".to_owned()));
+        assert_eq!(args.last().unwrap(), "aot_snapshot_profile");
+        assert!(!args.contains(&"aot_snapshot_release".to_owned()));
     }
 
     #[test]

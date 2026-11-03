@@ -73,7 +73,7 @@ impl Device for LinuxHost {
             })
         };
 
-        let vm_service_uri = if mode.config().hot_reload {
+        let vm_service_uri = if mode.config().vm_service {
             match uri_rx.recv_timeout(VM_SERVICE_TIMEOUT) {
                 Ok(uri) => Some(uri),
                 Err(_) => {

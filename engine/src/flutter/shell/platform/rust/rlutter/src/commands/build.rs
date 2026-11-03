@@ -76,6 +76,7 @@ pub fn build_linux(
 
 fn runner_cargo_command(project: &Project, mode: BuildMode) -> Command {
     let mut command = Command::new("cargo");
+    command.env("FLUTTER_RS_BUILD_MODE", mode.name());
     command.arg("build");
     command.args(mode.cargo_args());
     if project.runner_dir().join("Cargo.lock").is_file() {
@@ -149,6 +150,22 @@ mod tests {
         let dir = tempdir(name);
         fs::write(dir.join("pubspec.yaml"), "name: demo\nrust-shell: true\n").unwrap();
         Project::load(&dir).unwrap()
+    }
+
+    #[test]
+    fn profile_runner_selects_the_profile_engine_and_separate_output() {
+        let p = project("build_profile");
+        let command = runner_cargo_command(&p, BuildMode::Profile);
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == "FLUTTER_RS_BUILD_MODE"
+                    && value == Some(std::ffi::OsStr::new("profile")))
+        );
+        assert_eq!(
+            runner_binary(&p, BuildMode::Profile),
+            p.dir.join("runner-rs/target/flutter-profile/demo")
+        );
     }
 
     #[test]

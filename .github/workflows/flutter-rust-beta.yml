@@ -137,7 +137,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runtime_mode: [debug, release]
+        runtime_mode: [debug, profile, release]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -311,6 +311,12 @@ jobs:
           name: rust-engine-release
           path: build/flutter-rust-sdk/lib/release
 
+      - name: Download profile engine build
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: rust-engine-profile
+          path: build/flutter-rust-sdk/lib/profile
+
       - name: Download Android engine builds
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -324,7 +330,7 @@ jobs:
           cp engine/src/flutter/shell/platform/rust/Cargo.lock build/flutter-rust-sdk/
           cp -R engine/src/flutter/shell/platform/rust/crates/. build/flutter-rust-sdk/crates/
           cp -R engine/src/flutter/shell/platform/rust/third_party/winit-wayland build/flutter-rust-sdk/third_party/
-          for mode in debug release; do
+          for mode in debug profile release; do
             lib="build/flutter-rust-sdk/lib/$mode"
             chmod +x "$lib/flutter_rust_shell_runner" "$lib/gen_snapshot" "$lib/font-subset" \
               "$lib/dart-sdk/bin/dart" "$lib/dart-sdk/bin/dartaotruntime" "$lib/impellerc"
@@ -377,6 +383,8 @@ jobs:
           "$rlutter" create . --project-name standalone_smoke
           "$rlutter" build linux
           test -f runner-rs/target/debug/data/flutter_assets/kernel_blob.bin
+          "$rlutter" build linux --profile
+          test -f runner-rs/target/flutter-profile/data/flutter_assets/app.so
           "$rlutter" build linux --release
           test -f runner-rs/target/release/data/flutter_assets/app.so
 

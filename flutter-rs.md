@@ -1003,3 +1003,12 @@ If this succeeds, the core architecture is sound. If it fails, the likely cause
 will be the wgpu/Impeller device and synchronization boundary, which is why that
 boundary should be tested before investing heavily in tooling or additional
 platforms.
+
+### Linux profile builds
+
+The standalone CLI supports `rlutter build linux --profile` and
+`rlutter run -d linux --profile`. These use the `host_profile` AOT engine and
+attach DevTools in profile mode. The optimized Rust runner retains debug
+information and is staged in `runner-rs/target/flutter-profile/`. Profile
+requires a matching local engine build or a BETA SDK containing profile
+artifacts. See `flutter-rs-proggress.md` for build setup and verification.

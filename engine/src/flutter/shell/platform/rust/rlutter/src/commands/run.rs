@@ -11,14 +11,14 @@ use crate::{
     util::describe,
 };
 
-/// Builds and launches the app, then (debug) hands it to `flutter attach` for
-/// hot reload, hot restart and DevTools, or (release) streams its output.
+/// Builds and launches the app, attaching DevTools in debug/profile mode.
+/// Debug also supports hot reload and hot restart; release streams output.
 pub fn run_app(ctx: &Ctx, args: &RunArgs) -> Result<i32> {
     let mode = args.mode.resolve()?;
     let device = device::select(device::discover(), args.device.as_deref())?;
     if let Some(path) = &args.vm_service_info_file {
-        if !mode.config().hot_reload || device.platform() != "linux" {
-            bail!("--vm-service-info-file requires a Linux debug run");
+        if !mode.config().vm_service || device.platform() != "linux" {
+            bail!("--vm-service-info-file requires a Linux debug or profile run");
         }
         crate::util::remove_path(path)?;
     }
@@ -29,11 +29,12 @@ pub fn run_app(ctx: &Ctx, args: &RunArgs) -> Result<i32> {
     ctrlc::set_handler(move || stop())
         .map_err(|e| anyhow::anyhow!("cannot install Ctrl-C handler: {e}"))?;
 
-    let code = if mode.config().hot_reload {
+    let code = if mode.config().vm_service {
         let result = attach(
             ctx,
             &*device,
             &app,
+            mode,
             &args.target,
             &args.defines.dart_defines,
             args.vm_service_info_file.as_deref(),
@@ -55,6 +56,7 @@ fn attach(
     ctx: &Ctx,
     device: &dyn device::Device,
     app: &RunningApp,
+    mode: crate::mode::BuildMode,
     target: &str,
     dart_defines: &[String],
     service_info_file: Option<&std::path::Path>,
@@ -74,6 +76,7 @@ fn attach(
         .args(["-t", target])
         .args(dart_defines.iter().map(|d| format!("--dart-define={d}")))
         .current_dir(&app.project.dir);
+    command.arg(format!("--{}", mode.name()));
     eprintln!("$ {}", describe(&command));
     let Some(path) = service_info_file else {
         return Ok(command.status()?.code().unwrap_or(1));

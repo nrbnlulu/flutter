@@ -1,15 +1,15 @@
 //! Build modes and every mode-dependent decision in one place.
 //!
-//! Profile mode is parsed (so the flag is stable) but rejected; adding it later
-//! means adding a [`BuildMode`] variant and a [`ModeConfig`] row.
+//! Profile uses AOT with a VM service and an optimized native runner.
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::Args;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BuildMode {
     Debug,
     Release,
+    Profile,
 }
 
 /// What a [`BuildMode`] means for each stage of a build or run.
@@ -23,6 +23,7 @@ pub struct ModeConfig {
     pub plugins_include_dev: bool,
     /// `rlutter run` attaches `flutter attach` (hot reload, DevTools).
     pub hot_reload: bool,
+    pub vm_service: bool,
     /// Gradle task for the Android build.
     pub gradle_task: &'static str,
 }
@@ -32,6 +33,7 @@ impl BuildMode {
         match self {
             BuildMode::Debug => "debug",
             BuildMode::Release => "release",
+            BuildMode::Profile => "profile",
         }
     }
 
@@ -42,13 +44,23 @@ impl BuildMode {
                 dart_aot: false,
                 plugins_include_dev: true,
                 hot_reload: true,
+                vm_service: true,
                 gradle_task: "assembleDebug",
+            },
+            BuildMode::Profile => ModeConfig {
+                cargo_release: true,
+                dart_aot: true,
+                plugins_include_dev: false,
+                hot_reload: false,
+                vm_service: true,
+                gradle_task: "assembleProfile",
             },
             BuildMode::Release => ModeConfig {
                 cargo_release: true,
                 dart_aot: true,
                 plugins_include_dev: false,
                 hot_reload: false,
+                vm_service: false,
                 gradle_task: "assembleRelease",
             },
         }
@@ -59,7 +71,16 @@ impl BuildMode {
     /// dependency are ignored by Cargo. Command-line config also fixes existing
     /// projects and independently built native plugin workspaces.
     pub fn cargo_args(self) -> &'static [&'static str] {
-        if self.config().cargo_release {
+        if self == Self::Profile {
+            &[
+                "--profile",
+                "flutter-profile",
+                "--config",
+                "profile.flutter-profile.inherits=\"release\"",
+                "--config",
+                "profile.flutter-profile.debug=true",
+            ]
+        } else if self.config().cargo_release {
             &["--release"]
         } else {
             &[
@@ -73,7 +94,11 @@ impl BuildMode {
 
     /// Directory Cargo puts artifacts in (`target/<this>/`).
     pub fn cargo_profile_dir(self) -> &'static str {
-        self.name()
+        if self == Self::Profile {
+            "flutter-profile"
+        } else {
+            self.name()
+        }
     }
 }
 
@@ -85,17 +110,16 @@ pub struct ModeArgs {
     /// Build a release (AOT) app.
     #[arg(long, group = "mode")]
     release: bool,
-    /// Not supported by the Rust shell yet.
-    #[arg(long, group = "mode", hide = true)]
+    /// Build a Linux profile (AOT with DevTools) app.
+    #[arg(long, group = "mode")]
     profile: bool,
 }
 
 impl ModeArgs {
     pub fn resolve(&self) -> Result<BuildMode> {
-        if self.profile {
-            bail!("profile mode is not supported by the Rust shell yet; use --debug or --release");
-        }
-        Ok(if self.release {
+        Ok(if self.profile {
+            BuildMode::Profile
+        } else if self.release {
             BuildMode::Release
         } else {
             BuildMode::Debug
@@ -155,8 +179,12 @@ mod tests {
     }
 
     #[test]
-    fn profile_is_rejected_with_a_clear_message() {
-        let error = args(false, false, true).resolve().unwrap_err().to_string();
-        assert!(error.contains("profile mode is not supported"), "{error}");
+    fn profile_is_aot_with_a_service_and_separate_native_outputs() {
+        let mode = args(false, false, true).resolve().unwrap();
+        assert_eq!(mode, BuildMode::Profile);
+        let config = mode.config();
+        assert!(config.dart_aot && config.vm_service && !config.hot_reload);
+        assert!(!config.plugins_include_dev);
+        assert_eq!(mode.cargo_profile_dir(), "flutter-profile");
     }
 }

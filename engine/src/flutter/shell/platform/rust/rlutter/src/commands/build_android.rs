@@ -39,6 +39,9 @@ pub fn build_android(
     abis: &[Abi],
     org: &str,
 ) -> Result<AndroidBuild> {
+    if mode == BuildMode::Profile {
+        bail!("profile mode is currently supported only on Linux");
+    }
     check_abis(abis)?;
     let project = Project::discover()?;
     project.require_rust_shell()?;
