@@ -398,7 +398,7 @@ jobs:
           "$android_sdk/cmdline-tools/latest/bin/sdkmanager" --install \
             "platforms;android-36" "ndk;28.2.13676358"
           mkdir -p .dart_tool/flutter_rs/sdk/lib/android-arm64
-          tar -xzf "$GITHUB_WORKSPACE/build/flutter-rust-arm64.tar.gz" \
+          tar -xzf "$GITHUB_WORKSPACE/build/flutter-rust-android-arm64.tar.gz" \
             -C .dart_tool/flutter_rs/sdk/lib/android-arm64
           "$XDG_CACHE_HOME/rlutter/flutter-BETA/bin/flutter" pub add \
             shared_preferences path_provider
