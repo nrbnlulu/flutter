@@ -30,8 +30,14 @@ mod vulkan {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
+    use std::time::Duration;
     #[cfg(target_os = "linux")]
     use std::time::Instant;
+
+    #[cfg(target_os = "linux")]
+    const ACQUIRE_BACKOFF_BASE: Duration = Duration::from_millis(500);
+    #[cfg(target_os = "linux")]
+    const ACQUIRE_BACKOFF_MAX: Duration = Duration::from_secs(8);
     use tokio::sync::mpsc;
 
     /// Application-scoped wgpu/Vulkan ownership shared by every native view.
@@ -412,6 +418,17 @@ mod vulkan {
         // `GpuBroker::recreate_surface` has replaced it. Acquiring or
         // presenting during this window would touch a dead swapchain.
         suspended: bool,
+        // `get_current_texture` blocks the raster thread for wgpu's fixed
+        // one-second frame timeout whenever the compositor is not releasing
+        // swapchain images (a hidden / occluded / tab-grouped window). All
+        // views share one raster thread, so every such view stalls every
+        // other view for a second per frame. After a timeout, further
+        // acquires fail fast until this deadline, which backs off
+        // exponentially while the view stays stalled.
+        acquire_stalled_until: Option<Instant>,
+        acquire_timeouts: u32,
+        // Diagnostics: acquires skipped by the backoff since the last probe.
+        acquire_skipped: u32,
     }
 
     #[cfg(target_os = "linux")]
@@ -1356,6 +1373,9 @@ mod vulkan {
                     deferred_configuration: None,
                     retired_frames: VecDeque::new(),
                     suspended: false,
+                    acquire_stalled_until: None,
+                    acquire_timeouts: 0,
+                    acquire_skipped: 0,
                 }),
                 presentation_stats,
             })
@@ -1603,6 +1623,14 @@ mod vulkan {
                 );
                 return None;
             }
+            if let Some(until) = state.acquire_stalled_until {
+                if Instant::now() < until {
+                    state.acquire_skipped += 1;
+                    return None;
+                }
+                // Backoff elapsed: probe the swapchain again below.
+                state.acquire_stalled_until = None;
+            }
             let presentable = self.presentable.read();
             let surface = presentable.surface.as_ref()?;
             // The dimensions Flutter passes here belong to the layer tree that
@@ -1658,6 +1686,8 @@ mod vulkan {
             let format = configuration.format;
             let vk_format = vulkan_format(format)?;
             let swapchain_started = started.map(|_| Instant::now());
+            let probe_started = Instant::now();
+            let skipped = std::mem::take(&mut state.acquire_skipped);
             let (surface_texture, suboptimal) = match surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(texture) => (texture, false),
                 wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
@@ -1675,12 +1705,36 @@ mod vulkan {
                     }
                 }
                 status => {
+                    if matches!(status, wgpu::CurrentSurfaceTexture::Timeout) {
+                        let backoff = ACQUIRE_BACKOFF_BASE
+                            .saturating_mul(1 << state.acquire_timeouts.min(4))
+                            .min(ACQUIRE_BACKOFF_MAX);
+                        state.acquire_timeouts = state.acquire_timeouts.saturating_add(1);
+                        state.acquire_stalled_until = Some(Instant::now() + backoff);
+                        // Nothing else would ask this view for another frame
+                        // if it stays idle, so schedule one probe.
+                        let window = Arc::clone(&presentable.window);
+                        std::thread::spawn(move || {
+                            std::thread::sleep(backoff);
+                            window.request_redraw();
+                        });
+                    }
                     eprintln!(
-                        "Flutter Rust Vulkan acquire ({requested_width}x{requested_height}): {status:?}"
+                        "Flutter Rust Vulkan acquire ({requested_width}x{requested_height}): {status:?} after {} ms, timeouts={}, frames skipped by backoff={skipped}",
+                        probe_started.elapsed().as_millis(),
+                        state.acquire_timeouts
                     );
                     return None;
                 }
             };
+            let probe_ms = probe_started.elapsed().as_millis();
+            if probe_ms > 100 || state.acquire_timeouts > 0 {
+                eprintln!(
+                    "Flutter Rust Vulkan acquire ({requested_width}x{requested_height}) ok after {probe_ms} ms, prior timeouts={}, frames skipped by backoff={skipped}",
+                    state.acquire_timeouts
+                );
+            }
+            state.acquire_timeouts = 0;
             let swapchain_us = swapchain_started.map_or(0, |t| t.elapsed().as_micros());
             if surface_texture.texture.width() != requested_width
                 || surface_texture.texture.height() != requested_height
@@ -1852,6 +1906,15 @@ mod vulkan {
 
         /// A presentation callback table whose `user_data` is this broker's
         /// address. The broker must outlive every use of the returned table.
+        /// Ends any acquire backoff so the next frame probes the swapchain
+        /// immediately. Call when the compositor signals the view is likely
+        /// visible again (e.g. it gained focus).
+        pub fn wake_acquire(&self) {
+            let mut state = self.surface_state.lock();
+            state.acquire_stalled_until = None;
+            state.acquire_timeouts = 0;
+        }
+
         pub fn presentation_callbacks(&self) -> FlutterRustVulkanPresentationCallbacks {
             FlutterRustVulkanPresentationCallbacks {
                 user_data: (self as *const Self).cast_mut().cast::<c_void>(),

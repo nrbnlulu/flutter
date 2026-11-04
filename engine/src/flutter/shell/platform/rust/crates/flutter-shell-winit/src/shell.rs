@@ -4830,6 +4830,9 @@ impl ApplicationHandler for ShellApplication {
                         .get_mut(&window_id)
                         .expect("known window disappeared");
                     view.focused = focused;
+                    if focused {
+                        view.gpu_broker.wake_acquire();
+                    }
                     // Releases of keys held across a focus loss go to
                     // whichever window gains focus, never to this one.
                     let released_keys = if focused {
