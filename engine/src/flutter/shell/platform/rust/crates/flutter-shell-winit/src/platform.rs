@@ -14,9 +14,9 @@ pub(crate) struct VsyncTiming {
     pub interval: Duration,
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 #[path = "platform/positioner.rs"]
-mod positioner;
+pub(crate) mod positioner;
 
 #[cfg(target_os = "linux")]
 #[path = "platform/linux.rs"]

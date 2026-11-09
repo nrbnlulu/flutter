@@ -8,8 +8,8 @@ Headless agent verification is now specified in
 [`flutter-rs-agent-plan.md`](flutter-rs-agent-plan.md), following a source review
 on 2026-11-09. It covers fully offscreen rendering, virtual multi-window behavior,
 semantics and optional widget assertions, input, screenshots, video and CI
-evidence. Phase 0 rendering feasibility is complete on Linux x64; the virtual
-host and agent runtime are not available yet.
+evidence. Phases 0 and 1 are complete on Linux x64. The display-free virtual
+host is available; agent observation/control and verification remain pending.
 
 ### Headless Phase 0 (2026-11-09)
 
@@ -33,9 +33,35 @@ Validation: 17 C++ tests, 1 core test, 6 wgpu tests and 52 winit tests passed;
 texture fixture passed with 17 presentations. Evidence is in the Rust
 workspace's `target/offscreen-probe/flutter-{hardware,software}-final/`.
 
-Next: shared display-free scheduling, virtual views, plugin services and CLI
-launch (Phase 1). Agent transport, semantics, input, assertions, screenshot
+The shared host, virtual views, plugin services and CLI launch follow in the
+Phase 1 entry below. Agent transport, semantics, input, assertions, screenshot
 observation boundaries, recordings and distribution remain pending.
+
+### Headless Phase 1 (2026-11-09)
+
+Added a display-free adapter sharing the task dispatcher, SDK registration and
+GPU texture backend with the native host. Condition-variable wakeups use the
+queue mutex; event/task batches are bounded. A single monotonic 60 Hz clock
+serves requested engine frames. Virtual regular/dialog/popup/tooltip/satellite
+views preserve asynchronous removal, owner cascades, focus, constraints,
+shrink wrapping, placement and satellite reparenting. Clipboard is session-local.
+Ordinary headless runs disable continuous GPU readback.
+
+`rlutter run -d linux --headless --size WIDTHxHEIGHT --pixel-ratio SCALE` builds
+and launches the current runner, preserving debugger attach. An extracted
+per-project SDK layout and generated runner passed the local-engine CLI path.
+
+The existing regular, owned and tooltip fixtures each completed 60 removals;
+explicit tooltip resize/anchor/partial-update geometry checks passed. The SDK
+pixel-texture fixture registered once, rendered correct pixels and reclaimed
+its resources across fresh-process shutdowns. llvmpipe passed the regular-view
+lifecycle gate too. Validation logs and display-socket traces were clean. A
+static owning UI thread used zero CPU ticks over the measured idle second.
+See the [host notes](engine/src/flutter/shell/platform/rust/docs/headless-host.md)
+for commands, limits and artifact locations. Validation also passed 55 winit
+tests, 6 wgpu tests and 109 CLI tests; the native texture regression passed
+with 22 presentations. Agent transport, semantics, input,
+assertions and production capture remain Phase 2/3 work.
 
 ## Current focus
 

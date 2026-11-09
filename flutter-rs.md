@@ -892,8 +892,9 @@ multi-window input, screenshots and recordings. It retains Impeller and the
 private engine integration, with one engine/root isolate and multiple virtual
 views. Linux is the first delivery target; native shell tests remain necessary
 for OS and compositor behavior. The plan includes a source review, protocol and
-frame-completion contracts, implementation phases and acceptance gates. This is
-planned work, not an available headless runtime.
+frame-completion contracts, implementation phases and acceptance gates. Linux rendering feasibility and the display-free virtual host (Phases 0 and 1)
+are implemented; agent observation/control, assertions and recordings remain
+pending. See the progress log for validation and current limitations.
 
 ## Delivery phases
 

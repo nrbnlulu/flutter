@@ -10,6 +10,10 @@ mod host_events;
 #[path = "platform.rs"]
 mod platform;
 
+#[cfg(target_os = "linux")]
+#[path = "headless.rs"]
+mod headless;
+
 use host_events::*;
 
 use engine::{CurrentEngine, EngineBridge};
@@ -1132,11 +1136,13 @@ pub enum RunError {
     EventLoop(winit::error::EventLoopError),
     /// The application's source-linked Rust plugins failed to register.
     PluginRegistration(PluginError),
+    Headless(String),
 }
 
 impl std::fmt::Display for RunError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Headless(error) => write!(formatter, "headless host failed: {error}"),
             Self::EventLoop(error) => write!(formatter, "native event loop failed: {error}"),
             Self::PluginRegistration(error) => {
                 write!(formatter, "Rust plugin registration failed: {error:?}")
@@ -1149,7 +1155,7 @@ impl std::error::Error for RunError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::EventLoop(error) => Some(error),
-            Self::PluginRegistration(_) => None,
+            Self::PluginRegistration(_) | Self::Headless(_) => None,
         }
     }
 }
@@ -1200,13 +1206,22 @@ impl TaskQueue {
     }
 
     pub fn take_due(&mut self, now: Instant) -> Vec<ScheduledTask> {
-        let tasks = std::mem::take(&mut self.tasks);
+        self.take_due_limit(now, usize::MAX)
+    }
+
+    fn take_due_limit(&mut self, now: Instant, limit: usize) -> Vec<ScheduledTask> {
         let mut due = Vec::new();
-        for (deadline, task_batons) in tasks {
-            if deadline <= now {
-                due.extend(task_batons);
-            } else {
-                self.tasks.insert(deadline, task_batons);
+        while due.len() < limit
+            && self
+                .tasks
+                .first_key_value()
+                .is_some_and(|(deadline, _)| *deadline <= now)
+        {
+            let (deadline, mut tasks) = self.tasks.pop_first().unwrap();
+            let count = tasks.len().min(limit - due.len());
+            due.extend(tasks.drain(..count));
+            if !tasks.is_empty() {
+                self.tasks.insert(deadline, tasks);
             }
         }
         due
@@ -1915,6 +1930,8 @@ impl TextInputCommand {
 
 struct TextInputInbox {
     commands: Mutex<VecDeque<TextInputCommand>>,
+    headless: bool,
+    local_clipboard: Mutex<String>,
     cursor_commands: Mutex<VecDeque<MouseCursorCommand>>,
     /// Titles requested by the app for its main window, oldest first.
     window_titles: Mutex<VecDeque<String>>,
@@ -1958,6 +1975,8 @@ impl TextInputInbox {
     fn new(wake_proxy: HostEventSender) -> Self {
         Self {
             commands: Mutex::new(VecDeque::new()),
+            headless: false,
+            local_clipboard: Mutex::new(String::new()),
             cursor_commands: Mutex::new(VecDeque::new()),
             window_titles: Mutex::new(VecDeque::new()),
             texture_fixture_messages: Mutex::new(VecDeque::new()),
@@ -3509,6 +3528,7 @@ impl TaskRunnerHost {
         }
     }
 
+    #[cfg(test)]
     pub fn take_due(&self, now: Instant) -> Vec<ScheduledTask> {
         self.queue.lock().take_due(now)
     }
@@ -3532,7 +3552,11 @@ impl TaskRunnerHost {
     }
 
     fn dispatch_due_tasks(&self) {
-        for task in self.take_due(Instant::now()) {
+        let due = self
+            .queue
+            .lock()
+            .take_due_limit(Instant::now(), MAX_HOST_EVENTS_PER_TURN);
+        for task in due {
             CurrentEngine::run_task(task.task_runner as *mut c_void, task.task_baton);
         }
     }
@@ -3765,6 +3789,19 @@ mod android_app {
 fn handle_desktop_clipboard_call(inbox: &TextInputInbox, call: &RawMethodCall) -> Option<Vec<u8>> {
     use serde_json::json;
 
+    if inbox.headless {
+        let mut clipboard = inbox.local_clipboard.lock();
+        let value = match call.method.as_str() {
+            "Clipboard.setData" => {
+                *clipboard = call.args.get("text")?.as_str()?.to_owned();
+                Value::Null
+            }
+            "Clipboard.getData" => json!({"text": *clipboard}),
+            "Clipboard.hasStrings" => json!({"value": !clipboard.is_empty()}),
+            _ => return None,
+        };
+        return serde_json::to_vec(&[value]).ok();
+    }
     let mut clipboard = inbox.clipboard.lock();
     if clipboard.is_none() {
         *clipboard = arboard::Clipboard::new().ok();
@@ -4033,6 +4070,10 @@ fn run_application_with_fixture(
     demo_fixture: Option<DemoTextureFixture>,
 ) -> Result<(), RunError> {
     init_logging();
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("FLUTTER_RUST_HEADLESS").is_some_and(|v| v == "1") {
+        return headless::run(config, register_application);
+    }
     #[cfg(target_os = "android")]
     let event_loop = {
         use winit::platform::android::EventLoopBuilderExtAndroid;

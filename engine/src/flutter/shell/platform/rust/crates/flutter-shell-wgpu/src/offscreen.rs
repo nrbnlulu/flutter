@@ -185,6 +185,7 @@ use std::{ffi::c_void, sync::mpsc::SyncSender};
 /// A completed probe frame. The raster-thread callback publishes owned bytes,
 /// never an in-flight image or a pointer into engine storage.
 pub struct OffscreenFrame {
+    pub view_id: i64,
     pub width: u32,
     pub height: u32,
     pub generation: u64,
@@ -199,6 +200,10 @@ pub struct OffscreenBroker {
     context: Arc<GpuContext>,
     state: Mutex<BrokerState>,
     frames: SyncSender<Result<OffscreenFrame, String>>,
+    capture: std::sync::atomic::AtomicBool,
+    view_id: std::sync::atomic::AtomicI64,
+    dimensions: std::sync::atomic::AtomicU64,
+    notification: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 struct BrokerState {
@@ -244,7 +249,38 @@ impl OffscreenBroker {
                 failed: false,
             }),
             frames,
+            capture: std::sync::atomic::AtomicBool::new(true),
+            view_id: std::sync::atomic::AtomicI64::new(0),
+            dimensions: std::sync::atomic::AtomicU64::new(0),
+            notification: Mutex::new(None),
         })
+    }
+
+    pub fn dimensions(&self) -> Option<(u32, u32)> {
+        let value = self.dimensions.load(std::sync::atomic::Ordering::Acquire);
+        (value != 0).then_some(((value >> 32) as u32, value as u32))
+    }
+
+    pub fn set_view_id(&self, view_id: i64) {
+        self.view_id
+            .store(view_id, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn set_notification(&self, notify: impl Fn() + Send + Sync + 'static) {
+        *self.notification.lock() = Some(Arc::new(notify));
+    }
+
+    fn notify(&self) {
+        if let Some(notify) = self.notification.lock().as_ref() {
+            notify();
+        }
+    }
+
+    /// Disable continuous readback for ordinary headless runs. The rendering
+    /// handoff remains synchronized, without mapping or encoding idle frames.
+    pub fn set_capture_enabled(&self, enabled: bool) {
+        self.capture
+            .store(enabled, std::sync::atomic::Ordering::Release);
     }
 
     /// # Safety
@@ -301,6 +337,11 @@ impl OffscreenBroker {
                 pending: false,
             });
             state.generation += 1;
+            self.dimensions.store(
+                (u64::from(width) << 32) | u64::from(height),
+                std::sync::atomic::Ordering::Release,
+            );
+            self.notify();
         }
         let target = state.target.as_mut().unwrap();
         let view = target.readback.texture.create_view(&Default::default());
@@ -350,7 +391,7 @@ impl OffscreenBroker {
         })
     }
 
-    fn present(&self, image: FlutterRustVulkanImage) -> Result<OffscreenFrame, String> {
+    fn present(&self, image: FlutterRustVulkanImage) -> Result<Option<OffscreenFrame>, String> {
         let mut state = self.state.lock();
         let target = state.target.as_mut().ok_or("offscreen target missing")?;
         if !target.pending || image.render_semaphore != target.render.as_raw() {
@@ -367,23 +408,29 @@ impl OffscreenBroker {
                 std::iter::empty(),
             )
             .ok_or("offscreen render wait submission failed")?;
+        if !self.capture.load(std::sync::atomic::Ordering::Acquire) {
+            target.pending = false;
+            return Ok(None);
+        }
         let rgba = target.readback.read_rgba(Duration::from_secs(10))?;
         target.pending = false;
         let (width, height) = (target.readback.width, target.readback.height);
         state.frame += 1;
-        Ok(OffscreenFrame {
+        Ok(Some(OffscreenFrame {
+            view_id: self.view_id.load(std::sync::atomic::Ordering::Acquire),
             width,
             height,
             generation: state.generation,
             frame: state.frame,
             rgba,
-        })
+        }))
     }
 
     fn fail(&self, error: String) {
         self.state.lock().failed = true;
         eprintln!("offscreen broker failure: {error}");
         let _ = self.frames.try_send(Err(error));
+        self.notify();
     }
 }
 
@@ -411,10 +458,15 @@ extern "C" fn probe_acquire(
 extern "C" fn probe_present(data: *mut c_void, image: FlutterRustVulkanImage) -> i32 {
     let broker = unsafe { &*data.cast::<OffscreenBroker>() };
     match broker.present(image) {
-        Ok(frame) => match broker.frames.try_send(Ok(frame)) {
-            Ok(()) | Err(std::sync::mpsc::TrySendError::Full(_)) => 1,
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => 0,
-        },
+        Ok(None) => 1,
+        Ok(Some(frame)) => {
+            let result = match broker.frames.try_send(Ok(frame)) {
+                Ok(()) | Err(std::sync::mpsc::TrySendError::Full(_)) => 1,
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => 0,
+            };
+            broker.notify();
+            result
+        }
         Err(error) => {
             broker.fail(error);
             0

@@ -55,8 +55,46 @@ pub(super) fn launch_desktop(
     build: crate::commands::build::DesktopBuild,
     mode: BuildMode,
 ) -> Result<RunningApp> {
+    launch_with_environment(build, mode, &[])
+}
+
+pub(crate) fn launch_headless(
+    build: crate::commands::build::DesktopBuild,
+    mode: BuildMode,
+    size: (u32, u32),
+    ratio: f64,
+) -> Result<RunningApp> {
+    // Host configuration uses logical dimensions; CLI size is physical.
+    launch_with_environment(
+        build,
+        mode,
+        &[
+            ("FLUTTER_RUST_HEADLESS", "1".into()),
+            (
+                "FLUTTER_RUST_HEADLESS_WIDTH",
+                (f64::from(size.0) / ratio).to_string(),
+            ),
+            (
+                "FLUTTER_RUST_HEADLESS_HEIGHT",
+                (f64::from(size.1) / ratio).to_string(),
+            ),
+            ("FLUTTER_RUST_HEADLESS_PIXEL_RATIO", ratio.to_string()),
+        ],
+    )
+}
+
+fn launch_with_environment(
+    build: crate::commands::build::DesktopBuild,
+    mode: BuildMode,
+    environment: &[(&str, String)],
+) -> Result<RunningApp> {
     eprintln!("Launching {}...", build.runner.display());
-    let mut child = Command::new(&build.runner)
+    let mut command = Command::new(&build.runner);
+    command.envs(environment.iter().map(|(key, value)| (*key, value)));
+    if !environment.is_empty() {
+        command.env_remove("DISPLAY").env_remove("WAYLAND_DISPLAY");
+    }
+    let mut child = command
         .current_dir(&build.project.dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

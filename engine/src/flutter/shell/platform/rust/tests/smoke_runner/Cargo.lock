@@ -410,6 +410,7 @@ dependencies = [
 name = "flutter-rust-shell-smoke"
 version = "0.1.0"
 dependencies = [
+ "flutter-plugin-sdk",
  "flutter-shell-winit",
 ]
 

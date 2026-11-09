@@ -48,7 +48,7 @@ fn constrain(
 
 /// All inputs/outputs use the parent's logical coordinate scale. Work-area
 /// origin can be negative for displays left of or above the primary display.
-pub(super) fn place(
+pub(crate) fn place(
     p: PopupPlacement,
     origin: (f64, f64),
     work: (f64, f64, f64, f64),

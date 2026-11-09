@@ -82,6 +82,7 @@ action("flutter_shell_winit_rust") {
     "crates/flutter-shell-winit/src/lib.rs",
     "crates/flutter-shell-winit/src/engine.rs",
     "crates/flutter-shell-winit/src/host_events.rs",
+    "crates/flutter-shell-winit/src/headless.rs",
     "crates/flutter-shell-winit/src/platform.rs",
     "crates/flutter-shell-winit/src/platform/android.rs",
     "crates/flutter-shell-winit/src/platform/linux.rs",

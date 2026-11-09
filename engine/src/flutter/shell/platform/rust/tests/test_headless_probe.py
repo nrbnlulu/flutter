@@ -63,8 +63,14 @@ def main():
     report = {'command': command, 'status': 'failed'}
     try:
         with (output / 'stdout.log').open('w') as stdout, (output / 'stderr.log').open('w') as stderr:
-            process = subprocess.run(command, env=environment, stdout=stdout,
-                                     stderr=stderr, timeout=60)
+            process = subprocess.Popen(command, env=environment, stdout=stdout,
+                                       stderr=stderr, start_new_session=True)
+            try:
+                process.wait(timeout=60)
+            finally:
+                if process.poll() is None:
+                    os.killpg(process.pid, 9)
+                    process.wait()
         report['exitCode'] = process.returncode
         logs = (output / 'stderr.log').read_text() + (output / 'stdout.log').read_text()
         assert process.returncode == 0, logs[-10000:]

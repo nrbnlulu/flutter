@@ -137,6 +137,18 @@ pub struct AndroidBuildArgs {
 
 #[derive(Args, Debug)]
 pub struct RunArgs {
+    /// Run without a display server or native windows (Linux x64).
+    #[arg(long)]
+    pub headless: bool,
+
+    /// Initial physical viewport dimensions.
+    #[arg(long, default_value = "1280x800", value_parser = parse_headless_size, requires = "headless")]
+    pub size: (u32, u32),
+
+    /// Logical-to-physical pixel scale.
+    #[arg(long, default_value = "1", value_parser = parse_pixel_ratio, requires = "headless")]
+    pub pixel_ratio: f64,
+
     #[command(flatten)]
     pub mode: ModeArgs,
 
@@ -157,6 +169,23 @@ pub struct RunArgs {
     pub device: Option<String>,
 }
 
+fn parse_headless_size(value: &str) -> Result<(u32, u32), String> {
+    let (width, height) = value.split_once('x').ok_or("size must be WIDTHxHEIGHT")?;
+    let width = width.parse::<u32>().map_err(|_| "invalid width")?;
+    let height = height.parse::<u32>().map_err(|_| "invalid height")?;
+    if width == 0 || height == 0 {
+        return Err("dimensions must be positive".into());
+    }
+    Ok((width, height))
+}
+fn parse_pixel_ratio(value: &str) -> Result<f64, String> {
+    let value = value.parse::<f64>().map_err(|_| "invalid pixel ratio")?;
+    if !value.is_finite() || value <= 0. {
+        return Err("pixel ratio must be finite and positive".into());
+    }
+    Ok(value)
+}
+
 #[derive(Args, Debug)]
 pub struct CleanArgs {
     /// Also run `flutter clean`, which deletes `.dart_tool` including the SDK.
@@ -170,6 +199,34 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
         Cli::try_parse_from(std::iter::once("rlutter").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn headless_options_validate_dimensions_and_scale() {
+        assert!(parse(&["run"]).is_ok());
+        for value in ["0x800", "800x0", "800", "NaNx800"] {
+            assert!(parse(&["run", "--headless", "--size", value]).is_err());
+        }
+        for value in ["0", "NaN", "inf"] {
+            assert!(parse(&["run", "--headless", "--pixel-ratio", value]).is_err());
+        }
+        assert!(parse(&["run", "--size", "800x600"]).is_err());
+        let Command::Run(args) = parse(&[
+            "run",
+            "--headless",
+            "--size",
+            "801x601",
+            "--pixel-ratio",
+            "1.25",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!()
+        };
+        assert!(args.headless);
+        assert_eq!(args.size, (801, 601));
+        assert_eq!(args.pixel_ratio, 1.25);
     }
 
     #[test]

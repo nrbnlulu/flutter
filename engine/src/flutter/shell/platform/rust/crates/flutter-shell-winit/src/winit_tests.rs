@@ -1346,3 +1346,34 @@ fn ime_cancel_and_recommit_preserve_utf16_replacement_and_suppress_key_echo() {
         assert_eq!(session.editing_state.text, "A\u{6f22}\u{5b57}!B");
     }
 }
+
+#[test]
+fn bounded_task_dispatch_preserves_due_work_and_deadline_order() {
+    let now = Instant::now();
+    let mut queue = TaskQueue::default();
+    for baton in 0..130 {
+        queue.schedule(
+            ScheduledTask {
+                task_runner: 1,
+                task_baton: baton,
+            },
+            now,
+        );
+    }
+    queue.schedule(
+        ScheduledTask {
+            task_runner: 1,
+            task_baton: 999,
+        },
+        now + Duration::from_secs(1),
+    );
+    let first = queue.take_due_limit(now, 64);
+    assert_eq!(first.len(), 64);
+    assert_eq!(first[63].task_baton, 63);
+    assert_eq!(queue.next_deadline(), Some(now));
+    let next = queue.take_due_limit(now, 64);
+    assert_eq!(next[0].task_baton, 64);
+    assert_eq!(next[63].task_baton, 127);
+    assert_eq!(queue.take_due_limit(now, 64).len(), 2);
+    assert_eq!(queue.next_deadline(), Some(now + Duration::from_secs(1)));
+}

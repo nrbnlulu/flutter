@@ -1,9 +1,11 @@
 # Rust shell headless agent verification plan
 
-Status: Phase 0 complete on Linux x64 (hardware Vulkan and llvmpipe),
-2026-11-09. The virtual host and agent runtime remain pending. See the
+Status: Phases 0 and 1 complete on Linux x64 (hardware Vulkan and llvmpipe),
+2026-11-09. The agent runtime remains pending. See the
 [feasibility audit](engine/src/flutter/shell/platform/rust/docs/offscreen-feasibility.md)
-for the validated ABI/layout contract and retained evidence.
+for the validated ABI/layout contract, and the
+[headless host notes](engine/src/flutter/shell/platform/rust/docs/headless-host.md)
+for virtual-window, plugin and CLI evidence.
 Base branch: `rust/flutter-rs-shell`.
 
 ## Goal and scope
@@ -310,7 +312,7 @@ visibly renders. A session option can redact known sensitive regions.
 
 ## Delivery phases and acceptance gates
 
-Phase 0 is complete on Linux x64. Phases 1–5 are pending. Each phase should be
+Phases 0 and 1 are complete on Linux x64. Phases 2–5 are pending. Each phase should be
 independently reviewable and preserve existing native shell behavior.
 
 ### Phase 0 Rendering feasibility and contracts

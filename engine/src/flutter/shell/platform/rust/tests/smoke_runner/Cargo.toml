@@ -8,6 +8,7 @@ publish = false
 [workspace]
 
 [dependencies]
+flutter-plugin-sdk = { path = "../../crates/flutter-plugin-sdk" }
 flutter-shell-winit = { path = "../../crates/flutter-shell-winit" }
 
 [patch.crates-io]
