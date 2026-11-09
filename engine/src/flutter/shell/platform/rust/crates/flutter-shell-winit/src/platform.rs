@@ -7,6 +7,10 @@ use winit::{
 
 use super::{NativeWindowKind, PopupPlacement};
 
+#[cfg(any(target_os = "windows", test))]
+#[path = "platform/positioner.rs"]
+mod positioner;
+
 #[cfg(target_os = "linux")]
 #[path = "platform/linux.rs"]
 mod linux;

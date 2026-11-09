@@ -36,9 +36,35 @@ unsafe extern "system" {
     fn GetWindowLongPtrW(hwnd: *mut c_void, index: i32) -> isize;
     fn GetKeyState(key: i32) -> i16;
     fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
+    fn MonitorFromWindow(hwnd: *mut c_void, flags: u32) -> *mut c_void;
+    fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MonitorInfo) -> i32;
+    fn ClientToScreen(hwnd: *mut c_void, point: *mut Point) -> i32;
+
 }
 
 pub(crate) struct WindowsPlatform;
+#[repr(C)]
+#[derive(Default)]
+struct Point {
+    x: i32,
+    y: i32,
+}
+#[repr(C)]
+#[derive(Default)]
+struct Rect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+#[repr(C)]
+#[derive(Default)]
+struct MonitorInfo {
+    size: u32,
+    monitor: Rect,
+    work: Rect,
+    flags: u32,
+}
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -182,7 +208,10 @@ impl PlatformBackend for WindowsPlatform {
     fn supports_window_kind(kind: NativeWindowKind) -> bool {
         matches!(
             kind,
-            NativeWindowKind::Regular | NativeWindowKind::Dialog | NativeWindowKind::Satellite
+            NativeWindowKind::Regular
+                | NativeWindowKind::Dialog
+                | NativeWindowKind::Satellite
+                | NativeWindowKind::Tooltip
         )
     }
 
@@ -230,12 +259,70 @@ impl PlatformBackend for WindowsPlatform {
     }
 
     fn create_popup(
-        _event_loop: &dyn ActiveEventLoop,
-        _parent: &dyn Window,
-        _placement: PopupPlacement,
-        _grab: bool,
+        event_loop: &dyn ActiveEventLoop,
+        parent: &dyn Window,
+        placement: PopupPlacement,
+        grab: bool,
     ) -> Result<Box<dyn Window>, String> {
-        Err("native popups are not implemented on Windows".to_owned())
+        if grab {
+            return Err("grabbing popups are not implemented on Windows".into());
+        }
+        let owner = hwnd(parent)?;
+        let mut origin = Point::default();
+        let mut monitor = MonitorInfo {
+            size: std::mem::size_of::<MonitorInfo>() as u32,
+            ..Default::default()
+        };
+        unsafe {
+            if ClientToScreen(owner, &mut origin) == 0
+                || GetMonitorInfoW(MonitorFromWindow(owner, 2), &mut monitor) == 0
+            {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+        }
+        let scale = parent.scale_factor();
+        let rect = &monitor.work;
+        let (x, y, width, height) = super::positioner::place(
+            placement,
+            (f64::from(origin.x) / scale, f64::from(origin.y) / scale),
+            (
+                f64::from(rect.left) / scale,
+                f64::from(rect.top) / scale,
+                f64::from(rect.right - rect.left) / scale,
+                f64::from(rect.bottom - rect.top) / scale,
+            ),
+        );
+        let window = event_loop
+            .create_window(
+                WindowAttributes::default()
+                    .with_visible(false)
+                    .with_active(false)
+                    .with_decorations(false)
+                    .with_resizable(false)
+                    .with_position(winit::dpi::PhysicalPosition::new(
+                        (x * scale).round() as i32,
+                        (y * scale).round() as i32,
+                    ))
+                    .with_surface_size(winit::dpi::LogicalSize::new(width, height))
+                    .with_platform_attributes(Box::new(
+                        WindowAttributesWindows::default()
+                            .with_owner_window(owner)
+                            .with_skip_taskbar(true),
+                    )),
+            )
+            .map_err(|error| error.to_string())?;
+        // Winit reapplies its extended styles when showing the window. Show
+        // without activation first, then install the permanent NOACTIVATE bit.
+        window.set_visible(true);
+        let handle = hwnd(window.as_ref())?;
+        let style = unsafe { GetWindowLongPtrW(handle, -16) };
+        set_window_long(handle, -16, (style & !0x00cf0000) | 0x80000000u32 as isize)?;
+        let extended = unsafe { GetWindowLongPtrW(handle, -20) };
+        set_window_long(handle, -20, (extended | 0x08000080) & !0x40000)?;
+        if unsafe { SetWindowPos(handle, std::ptr::null_mut(), 0, 0, 0, 0, 0x37) } == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(window)
     }
 
     fn set_dialog_parent(child: &dyn Window, parent: &dyn Window) -> Result<(), String> {
@@ -260,6 +347,7 @@ mod tests {
             fn GetWindow(hwnd: *mut c_void, command: u32) -> *mut c_void;
             fn ShowWindow(hwnd: *mut c_void, command: i32) -> i32;
             fn IsWindowVisible(hwnd: *mut c_void) -> i32;
+            fn GetForegroundWindow() -> *mut c_void;
         }
         struct Probe;
         impl ApplicationHandler for Probe {
@@ -315,6 +403,37 @@ mod tests {
                         assert_eq!(child.outer_position().unwrap(), position);
                     }
                 }
+                let foreground = unsafe { GetForegroundWindow() };
+                let tooltip = WindowsPlatform::create_popup(
+                    event_loop,
+                    parent.as_ref(),
+                    PopupPlacement {
+                        width: 80,
+                        height: 60,
+                        anchor_rect: (10, 10, 20, 20),
+                        anchor: super::super::super::PopupAnchor::BottomRight,
+                        gravity: super::super::super::PopupAnchor::BottomRight,
+                        offset: (0, 0),
+                        constraint_adjustment: 0x3f,
+                    },
+                    false,
+                )
+                .unwrap();
+                let tooltip_handle = hwnd(tooltip.as_ref()).unwrap();
+                assert_eq!(
+                    unsafe { GetWindow(tooltip_handle, 4) },
+                    hwnd(parent.as_ref()).unwrap()
+                );
+                assert_eq!(unsafe { GetForegroundWindow() }, foreground);
+                assert_ne!(
+                    unsafe { GetWindowLongPtrW(tooltip_handle, -16) } & 0x80000000u32 as isize,
+                    0
+                );
+                assert_ne!(
+                    unsafe { GetWindowLongPtrW(tooltip_handle, -20) } & 0x08000000,
+                    0
+                );
+                drop(tooltip);
                 event_loop.exit();
             }
             fn window_event(&mut self, _: &dyn ActiveEventLoop, _: WindowId, _: WindowEvent) {}

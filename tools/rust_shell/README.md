@@ -104,4 +104,13 @@ teardown. `task test-rust-shell-owned-windows` exercises dialogs, satellites and
 reparenting through Dart and the native adapter. Both require each retired view
 to present and retain logs/status/per-view statistics on success and failure.
 Windows ownership/tool-window/reparenting semantics are also checked by a native
-winit test in the ordinary host suite. Popups/tooltips remain unsupported.
+winit test in the ordinary host suite. Grabbing popups remain unsupported;
+initial tooltip support is described below.
+
+`task test-rust-shell-tooltips` renders owned no-activate tooltips alongside
+regular/dialog/satellite views and verifies 60 owner-driven removals and each
+view's presentations. Windows has initial monitor-work-area placement with
+unit-tested flip/slide/resize constraints; native tests check owner/style and
+foreground preservation. Reactive repositioning and grabbing-popup dismissal
+are still pending. The owned-window fixture now also uses parent-only destruction;
+native tests verify owned children hide/return on owner minimize/restore.

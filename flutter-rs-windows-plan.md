@@ -356,3 +356,11 @@ lifecycle and the new dialog/satellite/reparenting fixture pass with 60 retired
 views each under Vulkan validation. Win32 ownership/tool-window styles and
 position-preserving reparenting are checked natively. Popups/tooltips, parent
 cascade/minimization coverage and DWM pacing remain pending.
+
+## Parent lifecycle and initial tooltip checkpoint (2026-11-09)
+
+Parent-only cascade removal and native owner minimize/restore now pass. Windows
+supports initially positioned, owned no-activate tooltips through the shared
+positioner; the tooltip lifecycle fixture and native ownership/style tests pass.
+Reactive repositioning and grabbing-popup dismissal remain the next window-kind
+work before DWM pacing. These checks do not close IME/DPI-transition coverage.

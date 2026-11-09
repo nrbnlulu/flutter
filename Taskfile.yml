@@ -218,3 +218,9 @@ tasks:
     deps: [build-rust-shell]
     cmds:
       - '{{.RUST_TASK}} owned-windowing'
+
+  test-rust-shell-tooltips:
+    desc: Validate owned no-activate tooltips and parent teardown with rendered views.
+    deps: [build-rust-shell]
+    cmds:
+      - '{{.RUST_TASK}} tooltip-windowing'

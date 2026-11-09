@@ -119,8 +119,8 @@ pub(crate) enum PopupAnchor {
     BottomRight,
 }
 
-// The minimal Windows host rejects popups until its native positioner is ready.
-#[cfg_attr(target_os = "windows", allow(dead_code))]
+// Wayland forwards placement to its compositor; native desktop adapters can
+// resolve the same anchors and constraints against the monitor work area.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PopupPlacement {
     pub(crate) width: u32,

@@ -2007,3 +2007,39 @@ shows it again. The full ordinary suite passes (49 host tests, 17 C++ tests,
 core/queue/ordinary GPU checks and Python suites). This closes the previously
 unverified parent-cascade and native minimize/restore checks on this host;
 no production teardown change was required.
+
+### Initial Windows tooltip support and desktop positioner (2026-11-09)
+
+Added a pure desktop positioner for the shared ABI anchor/gravity/offset and
+per-axis flip, slide and resize flags, including negative monitor origins.
+Its tests cover unconstrained offsets, independent axes, flip-before-slide and
+oversized resizing. Windows converts parent client origin and monitor work area
+through the parent's scale before resolving placement; Wayland still delegates
+to its compositor. No Linux/Android runtime coverage is available here.
+
+Windows now accepts tooltip requests and creates owned, undecorated, nonresizable
+`WS_POPUP`/tool windows with permanent `WS_EX_NOACTIVATE`. A native test verifies
+owner, popup/no-activate styles and unchanged foreground window. This caught
+winit clearing the extended style while showing a window: the implementation
+now shows with activation disabled, then installs the permanent native styles.
+Grabbing popup requests remain explicitly unsupported.
+
+Added `task test-rust-shell-tooltips` using the shared Python lifecycle harness.
+Twelve cycles render two regular windows, a dialog, satellite and tooltip,
+resize/reparent the owned views, then destroy only the owners and require all
+60 descendant callbacks and per-view presentation records. The initial run
+passed with 193 primary presentations and clean Vulkan-validation shutdown:
+`%TEMP%/flutter-rust-windowing-ph67thyv`. The final native style fix passes the
+ordinary suite: 52 host tests, 17 C++ tests, core/queue/ordinary GPU checks,
+two build-helper tests, 14 accounting tests and all eight desktop tests.
+The tooltip fixture analyzes without issues.
+
+This verifies initial work-area placement and owner-driven lifetime on this
+host. Reactive repositioning after parent movement, DPI or content-size changes
+and grabbing-popup outside-click/activation-loss dismissal still require work;
+this is not full popup/tooltip parity. DWM pacing and rlutter tooling remain
+pending, as do real IME composition and display-scaling transition coverage.
+
+The final rebuilt tooltip runner also passes all 60 per-view checks with 191
+primary presentations and zero-status close under Vulkan validation. Evidence:
+`%TEMP%/flutter-rust-windowing-60vi5kmj`.
