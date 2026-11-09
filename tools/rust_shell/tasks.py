@@ -416,7 +416,12 @@ def main():
         'benchmark_windowing.py' if task == 'benchmark' else 'test_windowing.py', assets, *extra
     )
   elif task in ('texture', 'pixel-buffer', 'texture-lifecycle'):
-    assets = host.bundle(args.texture_example, 'lib/rust_shell_main.dart')
+    target = args.texture_example / 'lib/rust_shell_main.dart'
+    # This entry point only uses Flutter. Avoid resolving every example in
+    # the root pub workspace for the default integration fixture.
+    project = TESTS / 'smoke_fixture' if args.texture_example.resolve(
+    ) == (ROOT / 'examples/texture').resolve() else args.texture_example
+    assets = host.bundle(project, str(target.resolve()))
     flags = ['--pixel-buffer'] if task == 'pixel-buffer' else []
     if task == 'texture-lifecycle':
       flags += [f'--lifecycle-iterations={args.texture_lifecycle_iterations}']

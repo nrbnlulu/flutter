@@ -1896,3 +1896,20 @@ available. These remain parity checks, not completed conformance milestones.
 The final formatted fixture also passes through
 `python tools/rust_shell/tasks.py text-input`; repeat-run evidence is
 `%TEMP%/flutter-rust-input-seiwvefs`. Task v3.40.1 lists the new task correctly.
+
+### Windows texture checkpoint (2026-11-09)
+
+The shared Python texture tasks pass on Windows with Khronos Vulkan validation:
+wgpu animation (19 presentations), CPU pixel-buffer animation (20 presentations)
+and 40 live texture lifecycle rotations (279 presentations). Animation checks
+require changing captured pixels in the Flutter widget, not only frame counters.
+The lifecycle check verifies replacement between producer types, resize,
+unregistration/reclamation of all retired rings and exactly one context
+recreation, followed by clean status-zero close. No GPU/runtime diagnostic was
+reported. Successful texture runs clean their temporary captures by design.
+
+The default texture task now compiles the same example Dart entry point using
+the standalone smoke fixture's package configuration, avoiding dependency
+resolution for the entire Flutter example workspace. Custom texture-example
+projects retain their own package/bundle configuration. Linux/Android runtime
+coverage remains unavailable here. FRB dispatch is the next checkpoint.

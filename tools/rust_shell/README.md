@@ -92,3 +92,9 @@ coverage report explicitly separates current-scale checks from actual display
 scale transitions and installed-layout reporting from interactive IME
 composition. Neither composition nor cross-monitor DPI is inferred from a
 successful typing/clipboard test.
+
+The default texture tasks compile `examples/texture/lib/rust_shell_main.dart`
+through the standalone smoke package; they do not resolve the entire example
+workspace. A custom `RUST_TEXTURE_EXAMPLE` still uses that project's own package
+configuration. Windows wgpu/pixel-buffer animation and 40-rotation texture
+replacement/context-recreation checks have passed under Vulkan validation.
