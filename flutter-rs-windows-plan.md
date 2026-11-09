@@ -338,3 +338,13 @@ metrics on resize. It passes on the Windows host at 96 DPI. Native IME candidate
 composition and real display-scaling transitions remain unverified; the task's
 coverage report records those limits explicitly. See the progress log for
 retained captures and the separate full/delta-model IME protocol tests.
+
+## Texture/FRB checkpoints (2026-11-09)
+
+Windows wgpu and pixel-buffer animation, 40 texture lifecycle rotations with
+resize/context recreation/reclamation, and real FRB background-isolate dispatch
+with both texture producers now pass under Vulkan validation. The FRB Cargo
+fixture explicitly exports its pinned process ABI on Windows. See the progress
+log for the original lookup failure and retained successful-run evidence.
+Additional window kinds and DWM pacing are the next implementation checkpoints;
+IME composition and DPI-transition conformance remain coverage gaps.

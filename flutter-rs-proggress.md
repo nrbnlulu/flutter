@@ -1913,3 +1913,32 @@ the standalone smoke fixture's package configuration, avoiding dependency
 resolution for the entire Flutter example workspace. Custom texture-example
 projects retain their own package/bundle configuration. Linux/Android runtime
 coverage remains unavailable here. FRB dispatch is the next checkpoint.
+
+### Windows FRB dispatch checkpoint (2026-11-09)
+
+The first Cargo-linked FRB run built successfully but Dart process lookup failed
+on `frb_get_rust_content_hash`. Rust `no_mangle` symbols in the rlib were not PE
+exports of the final executable. The fixture build helper now uses explicit
+MSVC `/EXPORT:` arguments for the 15 entry points in pinned FRB 2.12.0's wire
+and MultiPackageCBinding. `llvm-readobj --coff-exports` confirms all 15 names.
+This is fixture linking support; general rlutter Windows packaging remains
+pending. The import-library link and staged engine DLL are unchanged.
+
+The direct fixture and a full `python tools/rust_shell/tasks.py frb` repeat both
+pass under Khronos Vulkan validation with wgpu validation/debugging enabled.
+The named background isolate executes its FRB call off the host thread; its
+callback runs on the main thread, and a callback enqueued by a synchronous call
+is deferred. Both isolates see the same distinct texture IDs (1 and 2).
+Both wgpu and pixel-buffer producer counters advance, each half-window capture
+changes independently, and native close returns zero without GPU diagnostics.
+Evidence is retained at `%TEMP%/flutter-rust-frb-w4uav6uo` and
+`%TEMP%/flutter-rust-frb-q509rxmi`; the original symbol failure is retained at
+`%TEMP%/flutter-rust-frb-l0_5anx0`.
+
+The FRB Python harness now preserves evidence on success and failure instead of
+deleting it while unwinding, and shares the texture diagnostic matcher (including
+panics and threading errors). Python compilation and formatting checks pass.
+Linux/Android runtime regression validation remains unavailable on this host.
+Windows texture/FRB smoke parity is now verified on the Intel HD 530 host;
+additional window kinds, DWM pacing and rlutter tooling remain next, with native
+IME composition and real DPI transitions still awaiting suitable coverage.
