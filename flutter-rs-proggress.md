@@ -2107,3 +2107,37 @@ The ordinary suite passes: 52 host tests, 17 C++ tests including paired ABI
 checks, core/queue/ordinary GPU tests and Python suites. The tooltip fixture
 analyzes cleanly. Grabbing-popup creation/dismissal remains the next checkpoint;
 real display-DPI transitions and Linux/Android runtime coverage are unavailable.
+
+### Windows grabbing-popup checkpoint (2026-11-09)
+
+Windows now accepts grabbing popups through the owned, no-activate WS_POPUP
+path with native mouse capture. Outside presses, Escape and owner focus loss
+request CloseRequested through the existing asynchronous Dart/raster/native
+teardown. Inside button release restores capture after winit releases its
+button grab. A dismissed marker prevents duplicate close callbacks; surviving
+popups reacquire capture after view removal. Capture acquisition fails explicitly
+without an active host input thread.
+
+The first activation-loss check failed: WM_NCACTIVATE delivers focus loss before
+GetForegroundWindow necessarily changes. Trusting winit's focus transition fixes
+that path. Diagnostic evidence: `%TEMP%/flutter-rust-windowing-25uwqxkl`.
+Temporary focus logging was removed from the final runner.
+
+Added `task test-rust-shell-popups` and the Dart popup fixture. Native automation
+verifies inside-click retention followed by outside-click dismissal, Escape,
+and activation of another regular host window. Twenty cycles require all 60
+views to present and report destruction; remaining cycles leave popup removal
+to owner teardown. The final run passes with 304 primary presentations, clean
+status-zero close and no Vulkan/framework diagnostics under Khronos validation.
+Evidence: `%TEMP%/flutter-rust-windowing-gzubypi8`.
+
+The ordinary suite passes: 52 host tests, 17 C++ tests, core/queue/ordinary GPU
+checks, two build-helper tests, 14 accounting tests and eight desktop tests.
+The popup fixture analyzes without issues. Rust formatting, Python compilation
+and diff whitespace checks pass.
+
+This verifies initial single-popup behavior on this Intel HD 530 Windows host.
+Nested-popup interaction and external-application activation are not covered by
+this fixture. Real IME composition, display-DPI transitions, other Windows GPUs
+and Linux/Android runtime coverage remain unavailable. DWM pacing is the next
+planned implementation checkpoint; rlutter tooling remains pending.

@@ -313,7 +313,7 @@ class Windows(Desktop):
   def chord(self, address, *keys):
     codes = {
         'CTRL': 0x11, 'SHIFT': 0x10, 'ALT': 0x12, 'TAB': 9, 'BACKSPACE': 8, 'ENTER': 13,
-        'LEFT': 0x25, 'RIGHT': 0x27
+        'ESCAPE': 0x1b, 'LEFT': 0x25, 'RIGHT': 0x27
     }
     values = [codes.get(key.upper(), ord(key.upper()) if len(key) == 1 else None) for key in keys]
     if None in values:

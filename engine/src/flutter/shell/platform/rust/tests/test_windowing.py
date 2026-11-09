@@ -6,6 +6,7 @@
 """Runs the native multi-view lifecycle fixture with Vulkan validation."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -23,6 +24,7 @@ def main():
   parser.add_argument("--icu", required=True, type=Path)
   parser.add_argument("--timeout", type=float, default=90)
   parser.add_argument("--tooltip-motion", action="store_true")
+  parser.add_argument("--popup-dismissal", action="store_true")
   args = parser.parse_args()
   directory = tempfile.mkdtemp(prefix="flutter-rust-windowing-")
   print(f"Windowing validation evidence: {directory}", flush=True)
@@ -40,6 +42,9 @@ def main():
   motion = Path(directory) / "motion"
   if args.tooltip_motion:
     environment['FLUTTER_RUST_TOOLTIP_MOTION'] = str(motion)
+  popup_status = Path(directory) / 'popup-status.json'
+  if args.popup_dismissal:
+    environment['FLUTTER_RUST_POPUP_STATUS'] = str(popup_status)
   log_path = Path(directory) / "runner.log"
   with log_path.open("w", encoding="utf-8") as log:
     process = subprocess.Popen([
@@ -51,6 +56,48 @@ def main():
                                stdout=log,
                                stderr=subprocess.STDOUT)
     try:
+      if args.popup_dismissal:
+        api = desktop()
+
+        def popup_state():
+          try:
+            return json.loads(popup_status.read_text())
+          except (OSError, ValueError):
+            return {}
+
+        for cycle in range(3):
+          if not wait_until(
+              lambda: popup_state().get('cycle') == cycle and popup_state().get('phase') == 'ready',
+              process, 20):
+            raise RuntimeError(f'Popup case {cycle} did not initialize')
+          clients = [c for c in api.clients() if c['pid'] == process.pid]
+          parent = next(c for c in clients if c['title'] == f'Popup parent {cycle}')
+          other = next(c for c in clients if c['title'] == f'Popup other {cycle}')
+          api.action('focus', parent['address'])
+          if cycle == 0:
+            popup = next(c for c in api.owned_windows(parent['address']) if c['pid'] == process.pid)
+            api.click(
+                parent['address'], popup['at'][0] + popup['size'][0] // 2,
+                popup['at'][1] + popup['size'][1] // 2
+            )
+            time.sleep(.2)
+            if popup_state().get('dismissed') != 0:
+              raise RuntimeError('Inside click dismissed the popup')
+            (Path(directory) / 'popup-inside.json').write_text(json.dumps(popup))
+            # Inside the owner but outside the popup's anchored client area.
+            api.click(
+                parent['address'], parent['at'][0] + parent['size'][0] - 25,
+                parent['at'][1] + parent['size'][1] - 25
+            )
+          elif cycle == 1:
+            api.chord(parent['address'], 'Escape')
+          else:
+            api.action('focus', other['address'])
+          if not wait_until(lambda: popup_state().get('dismissed', 0) >= cycle + 1, process):
+            raise RuntimeError(f'Popup did not dismiss for case {cycle}')
+        print(
+            'Inside click retained popup; outside-click, Escape and owner activation-loss dismissal passed.'
+        )
       if args.tooltip_motion:
         api = desktop()
 

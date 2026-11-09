@@ -4457,6 +4457,8 @@ struct ViewWindow {
     kind: NativeWindowKind,
     parent_view_id: Option<FlutterRustViewId>,
     popup_placement: Option<PopupPlacement>,
+    #[cfg(target_os = "windows")]
+    popup_dismissed: bool,
     // Stable callback owner. Raster releases its swapchain before the host
     // receives removal completion and drops this view's native window.
     gpu_broker: Arc<GpuBroker>,
@@ -4491,6 +4493,48 @@ enum NativeWindowKind {
 }
 
 impl ShellApplication {
+    #[cfg(target_os = "windows")]
+    fn active_popup(&self) -> Option<(FlutterRustViewId, Arc<dyn Window>)> {
+        let windows = self.windows.borrow();
+        windows
+            .views
+            .values()
+            .filter(|view| {
+                view.kind == NativeWindowKind::Popup
+                    && !view.popup_dismissed
+                    && !windows.removing_views.contains(&view.view_id)
+            })
+            .max_by_key(|view| view.view_id)
+            .map(|view| (view.view_id, Arc::clone(&view.window)))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn dismiss_popup(&mut self, id: FlutterRustViewId) {
+        let callback = {
+            let mut windows = self.windows.borrow_mut();
+            if windows.removing_views.contains(&id) {
+                return;
+            }
+            let Some(window_id) = windows.view_windows.get(&id).copied() else {
+                return;
+            };
+            let Some(view) = windows.views.get_mut(&window_id) else {
+                return;
+            };
+            if view.kind != NativeWindowKind::Popup || view.popup_dismissed {
+                return;
+            }
+            view.popup_dismissed = true;
+            CurrentPlatform::release_popup(view.window.as_ref());
+            windows.window_event_callback
+        };
+        // Follow Wayland's popup_done path: Dart requests removal, and raster
+        // releases the view before the HWND and its Vulkan surface are dropped.
+        if let Some(callback) = callback {
+            callback(id, FlutterRustWindowEvent::CloseRequested);
+        }
+    }
+
     fn pacing_window(&self) -> Option<Arc<dyn Window>> {
         let windows = self.windows.borrow();
         windows
@@ -4825,6 +4869,8 @@ impl ApplicationHandler for ShellApplication {
                     kind: NativeWindowKind::Regular,
                     parent_view_id: None,
                     popup_placement: None,
+                    #[cfg(target_os = "windows")]
+                    popup_dismissed: false,
                     gpu_broker,
                     window,
                     _parent_window: None,
@@ -4965,6 +5011,33 @@ impl ApplicationHandler for ShellApplication {
                 }
             }
             WindowEvent::Focused(focused) => {
+                #[cfg(target_os = "windows")]
+                if !focused {
+                    // WM_NCACTIVATE can arrive before GetForegroundWindow
+                    // changes. Trust winit's focus transition here.
+                    let dismiss = {
+                        let windows = self.windows.borrow();
+                        windows
+                            .views
+                            .values()
+                            .filter(|view| view.kind == NativeWindowKind::Popup)
+                            .filter(|view| {
+                                let mut parent = view.parent_view_id;
+                                while let Some(id) = parent {
+                                    if id == view_id {
+                                        return true;
+                                    }
+                                    parent = windows.view(id).and_then(|view| view.parent_view_id);
+                                }
+                                false
+                            })
+                            .map(|view| view.view_id)
+                            .collect::<Vec<_>>()
+                    };
+                    for popup in dismiss {
+                        self.dismiss_popup(popup);
+                    }
+                }
                 let (any_focused, released_keys) = {
                     let mut windows = self.windows.borrow_mut();
                     let view = windows
@@ -5017,6 +5090,15 @@ impl ApplicationHandler for ShellApplication {
                 is_synthetic,
                 ..
             } => {
+                #[cfg(target_os = "windows")]
+                if event.state == ElementState::Pressed
+                    && event.logical_key == Key::Named(NamedKey::Escape)
+                {
+                    if let Some((id, _)) = self.active_popup() {
+                        self.dismiss_popup(id);
+                        return;
+                    }
+                }
                 let (committed_text, processed) = {
                     let mut windows = self.windows.borrow_mut();
                     let keyboard = &mut windows
@@ -5151,6 +5233,37 @@ impl ApplicationHandler for ShellApplication {
                 button,
                 ..
             } => {
+                #[cfg(target_os = "windows")]
+                {
+                    let popup = {
+                        let windows = self.windows.borrow();
+                        windows
+                            .view(view_id)
+                            .filter(|view| {
+                                view.kind == NativeWindowKind::Popup && !view.popup_dismissed
+                            })
+                            .map(|view| (Arc::clone(&view.window), view.window.surface_size()))
+                    };
+                    if let Some((window, size)) = popup {
+                        if state == ElementState::Pressed
+                            && (position.x < 0.0
+                                || position.y < 0.0
+                                || position.x >= f64::from(size.width)
+                                || position.y >= f64::from(size.height))
+                        {
+                            self.dismiss_popup(view_id);
+                            return;
+                        }
+                        // Winit releases capture before dispatching the last
+                        // button-up. Retain the popup grab after an inside click.
+                        if state == ElementState::Released {
+                            if CurrentPlatform::grab_popup(window.as_ref()).is_err() {
+                                self.dismiss_popup(view_id);
+                                return;
+                            }
+                        }
+                    }
+                }
                 let mut windows = self.windows.borrow_mut();
                 let pointer = &mut windows
                     .views
@@ -5276,6 +5389,12 @@ impl ApplicationHandler for ShellApplication {
                         // more winit events. Drop it only after releasing the
                         // registry's RefCell borrow.
                         drop(removed);
+                        #[cfg(target_os = "windows")]
+                        if let Some((id, window)) = self.active_popup() {
+                            if CurrentPlatform::grab_popup(window.as_ref()).is_err() {
+                                self.dismiss_popup(id);
+                            }
+                        }
                         if let Some(callback) = _callback {
                             callback(view_id, FlutterRustWindowEvent::Destroyed);
                         }
@@ -5696,6 +5815,8 @@ impl WindowRegistry {
                 kind,
                 parent_view_id,
                 popup_placement: None,
+                #[cfg(target_os = "windows")]
+                popup_dismissed: false,
                 gpu_broker,
                 window,
                 _parent_window: parent_window,
@@ -5785,6 +5906,8 @@ impl WindowRegistry {
                 kind: request.kind,
                 parent_view_id: Some(request.parent_view_id),
                 popup_placement: Some(placement),
+                #[cfg(target_os = "windows")]
+                popup_dismissed: false,
                 gpu_broker,
                 window,
                 _parent_window: Some(parent_window),

@@ -224,3 +224,9 @@ tasks:
     deps: [build-rust-shell]
     cmds:
       - '{{.RUST_TASK}} tooltip-windowing'
+
+  test-rust-shell-popups:
+    desc: Validate grabbing popup dismissal and repeated owner-driven teardown.
+    deps: [build-rust-shell]
+    cmds:
+      - '{{.RUST_TASK}} popup-windowing'

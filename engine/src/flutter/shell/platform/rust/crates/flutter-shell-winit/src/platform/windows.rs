@@ -36,6 +36,11 @@ unsafe extern "system" {
     fn GetWindowLongPtrW(hwnd: *mut c_void, index: i32) -> isize;
     fn GetKeyState(key: i32) -> i16;
     fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
+    fn SetCapture(hwnd: *mut c_void) -> *mut c_void;
+    fn GetCapture() -> *mut c_void;
+    fn ReleaseCapture() -> i32;
+    fn GetForegroundWindow() -> *mut c_void;
+    fn GetWindowThreadProcessId(hwnd: *mut c_void, pid: *mut u32) -> u32;
     fn MonitorFromWindow(hwnd: *mut c_void, flags: u32) -> *mut c_void;
     fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MonitorInfo) -> i32;
     fn ClientToScreen(hwnd: *mut c_void, point: *mut Point) -> i32;
@@ -70,6 +75,7 @@ struct MonitorInfo {
 unsafe extern "system" {
     fn SetLastError(error: u32);
     fn GetLastError() -> u32;
+    fn GetCurrentThreadId() -> u32;
 }
 
 fn hwnd(window: &dyn Window) -> Result<*mut c_void, String> {
@@ -141,6 +147,33 @@ unsafe extern "system" fn wake_timer(hwnd: *mut c_void, _: u32, id: usize, _: u3
 }
 
 impl WindowsPlatform {
+    pub(crate) fn grab_popup(window: &dyn Window) -> Result<(), String> {
+        let handle = hwnd(window)?;
+        // Win32 only captures outside clicks for the foreground input thread.
+        unsafe {
+            if GetWindowThreadProcessId(GetForegroundWindow(), std::ptr::null_mut())
+                != GetCurrentThreadId()
+            {
+                return Err("Popup mouse capture requires an active host window".into());
+            }
+            SetCapture(handle);
+            if GetCapture() != handle {
+                return Err("Failed to capture popup mouse input".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn release_popup(window: &dyn Window) {
+        if let Ok(handle) = hwnd(window) {
+            unsafe {
+                if GetCapture() == handle {
+                    ReleaseCapture();
+                }
+            }
+        }
+    }
+
     pub(crate) fn arm_wake(window: &dyn Window, deadline: Option<Instant>) {
         let Ok(handle) = window.window_handle() else {
             return;
@@ -249,6 +282,7 @@ impl PlatformBackend for WindowsPlatform {
                 | NativeWindowKind::Dialog
                 | NativeWindowKind::Satellite
                 | NativeWindowKind::Tooltip
+                | NativeWindowKind::Popup
         )
     }
 
@@ -301,9 +335,6 @@ impl PlatformBackend for WindowsPlatform {
         placement: PopupPlacement,
         grab: bool,
     ) -> Result<Box<dyn Window>, String> {
-        if grab {
-            return Err("grabbing popups are not implemented on Windows".into());
-        }
         let owner = hwnd(parent)?;
         let (x, y, width, height) = popup_geometry(parent, placement)?;
         let window = event_loop
@@ -332,6 +363,9 @@ impl PlatformBackend for WindowsPlatform {
         set_window_long(handle, -20, (extended | 0x08000080) & !0x40000)?;
         if unsafe { SetWindowPos(handle, std::ptr::null_mut(), 0, 0, 0, 0, 0x37) } == 0 {
             return Err(std::io::Error::last_os_error().to_string());
+        }
+        if grab {
+            Self::grab_popup(window.as_ref())?;
         }
         Ok(window)
     }

@@ -372,3 +372,21 @@ and explicit size-constraint changes. Native movement and anchored resizing pass
 inside the Python-backed 60-view lifecycle test. Actual DPI transitions,
 framework `updatePosition` anchor changes, and grabbing-popup dismissal remain
 pending before considering full popup/tooltip parity complete.
+
+## Explicit anchor and grabbing-popup checkpoint (2026-11-09)
+
+Framework `updatePosition` now updates the existing Windows tooltip/popup HWND
+through private shell ABI 14. Anchor/positioner and positioner-only movement
+passed the tooltip fixture; see the progress log for retained geometry evidence.
+
+Windows now accepts grabbing popups. Native capture keeps inside clicks in the
+popup and dismisses outside clicks; Escape and owner focus loss request removal
+through the existing asynchronous view teardown. `task test-rust-shell-popups`
+passes inside-click retention, the three dismissal paths, all 60 per-view
+presentation/destruction checks and clean shutdown under Vulkan validation.
+Evidence: `%TEMP%/flutter-rust-windowing-gzubypi8`.
+
+This completes the initial single-popup checkpoint on this host. Nested-popup
+interaction and external-application activation are not covered by this fixture.
+DWM pacing is the next planned implementation checkpoint. Native IME composition,
+real DPI transitions, broader GPU/platform coverage and rlutter tooling remain.

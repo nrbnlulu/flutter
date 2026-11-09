@@ -104,25 +104,30 @@ teardown. `task test-rust-shell-owned-windows` exercises dialogs, satellites and
 reparenting through Dart and the native adapter. Both require each retired view
 to present and retain logs/status/per-view statistics on success and failure.
 Windows ownership/tool-window/reparenting semantics are also checked by a native
-winit test in the ordinary host suite. Grabbing popups remain unsupported;
-initial tooltip support is described below.
+winit test in the ordinary host suite. Tooltip and popup checks are described
+below.
 
 `task test-rust-shell-tooltips` renders owned no-activate tooltips alongside
 regular/dialog/satellite views and verifies 60 owner-driven removals and each
 view's presentations. Windows has initial monitor-work-area placement with
 unit-tested flip/slide/resize constraints; native tests check owner/style and
-foreground preservation. Reactive repositioning and grabbing-popup dismissal
-are still pending. The owned-window fixture now also uses parent-only destruction;
+foreground preservation. The owned-window fixture also uses parent-only destruction;
 native tests verify owned children hide/return on owner minimize/restore.
 
 The Windows tooltip task additionally drives owner movement through the Python
 platform API and checks that the owned tooltip follows. A Dart/host handshake
 changes size constraints and verifies the same anchor remains fixed. Geometry
 snapshots are retained with the lifecycle evidence. The host reacts to native
-move/resize/DPI notifications; actual DPI transitions and explicit framework
-anchor updates are not yet validated/implemented respectively. Grabbing-popup
-dismissal remains pending.
+move/resize/DPI notifications; actual display-DPI transitions remain unverified.
 
 The Windows tooltip motion check also exercises explicit anchor/positioner and
 positioner-only updates on the same native window. This uses private shell ABI
 14; rebuild the matching engine and Rust runner together after the ABI change.
+
+`task test-rust-shell-popups` exercises Windows grabbing popups with native mouse
+and keyboard input. An inside click must retain the popup and its grab; an
+outside click, Escape and owner activation loss must dismiss it. Twenty cycles
+require all 60 views to present and report destruction, including owner-driven
+popup removal, with Vulkan validation and clean exit. Evidence remains in the
+reported temporary directory. Nested popups and switching to an external
+application are not covered by this fixture.

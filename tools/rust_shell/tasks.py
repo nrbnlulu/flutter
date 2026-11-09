@@ -407,6 +407,9 @@ def main():
   elif task == 'run':
     assets = host.bundle(args.windowing_example, args.target, True)
     host.run([host.runner(), assets, host.out / 'icudtl.dat'])
+  elif task == 'popup-windowing':
+    assets = host.bundle(TESTS / 'windowing_fixture', 'lib/popups.dart', True)
+    host.fixture('test_windowing.py', assets, '--popup-dismissal')
   elif task == 'tooltip-windowing':
     assets = host.bundle(TESTS / 'windowing_fixture', 'lib/tooltips.dart', True)
     host.fixture('test_windowing.py', assets, *(['--tooltip-motion'] if host.windows else []))
