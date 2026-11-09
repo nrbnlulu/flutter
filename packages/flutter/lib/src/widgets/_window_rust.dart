@@ -668,9 +668,20 @@ class TooltipWindowControllerRust extends TooltipWindowController
 
   @override
   void updatePosition({Rect? anchorRect, WindowPositioner? positioner}) {
+    if (_destroyed || _destroyRequested) {
+      return;
+    }
     _anchorRect = anchorRect ?? _anchorRect;
     _positioner = positioner ?? _positioner;
-    // The Linux windowing contract permits position updates to be ignored.
+    _RustWindowing.updatePopupPosition(
+      engineId: _owner._engineId,
+      viewId: rootView.viewId,
+      kind: _PopupWindowKind.tooltip,
+      parentViewId: parent.rootView.viewId,
+      constraints: _constraints,
+      anchorRect: _anchorRect,
+      positioner: _positioner,
+    );
   }
 
   @override
@@ -760,8 +771,20 @@ class PopupWindowControllerRust extends PopupWindowController implements _RustLi
 
   @override
   void updatePosition({Rect? anchorRect, WindowPositioner? positioner}) {
+    if (_destroyed || _destroyRequested) {
+      return;
+    }
     _anchorRect = anchorRect ?? _anchorRect;
     _positioner = positioner ?? _positioner;
+    _RustWindowing.updatePopupPosition(
+      engineId: _owner._engineId,
+      viewId: rootView.viewId,
+      kind: _PopupWindowKind.popup,
+      parentViewId: parent.rootView.viewId,
+      constraints: _constraints,
+      anchorRect: _anchorRect,
+      positioner: _positioner,
+    );
   }
 
   @override
@@ -1142,9 +1165,8 @@ final class _RustWindowing {
     required bool resizable,
   }) {
     final List<int> titleBytes = utf8.encode(title);
-    final ffi.Pointer<_RegularWindowRequest> request = _malloc(
-      ffi.sizeOf<_RegularWindowRequest>(),
-    ).cast<_RegularWindowRequest>();
+    final ffi.Pointer<_RegularWindowRequest> request = _malloc(ffi.sizeOf<_RegularWindowRequest>())
+        .cast<_RegularWindowRequest>();
     if (request == ffi.nullptr) {
       throw StateError('Native allocation failed.');
     }
@@ -1183,9 +1205,8 @@ final class _RustWindowing {
     required int? parentViewId,
   }) {
     final List<int> titleBytes = utf8.encode(title);
-    final ffi.Pointer<_DialogWindowRequest> request = _malloc(
-      ffi.sizeOf<_DialogWindowRequest>(),
-    ).cast<_DialogWindowRequest>();
+    final ffi.Pointer<_DialogWindowRequest> request = _malloc(ffi.sizeOf<_DialogWindowRequest>())
+        .cast<_DialogWindowRequest>();
     if (request == ffi.nullptr) {
       throw StateError('Native allocation failed.');
     }
@@ -1226,9 +1247,54 @@ final class _RustWindowing {
     required Rect anchorRect,
     required WindowPositioner positioner,
   }) {
-    final ffi.Pointer<_PopupWindowRequest> request = _malloc(
-      ffi.sizeOf<_PopupWindowRequest>(),
-    ).cast<_PopupWindowRequest>();
+    final ffi.Pointer<_PopupWindowRequest> request = _popupRequest(
+      kind: kind,
+      parentViewId: parentViewId,
+      constraints: constraints,
+      anchorRect: anchorRect,
+      positioner: positioner,
+    );
+    try {
+      return _createPopup(engineId, request);
+    } finally {
+      _free(request.cast());
+    }
+  }
+
+  static void updatePopupPosition({
+    required int engineId,
+    required int viewId,
+    required _PopupWindowKind kind,
+    required int parentViewId,
+    required BoxConstraints constraints,
+    required Rect anchorRect,
+    required WindowPositioner positioner,
+  }) {
+    final ffi.Pointer<_PopupWindowRequest> request = _popupRequest(
+      kind: kind,
+      parentViewId: parentViewId,
+      constraints: constraints,
+      anchorRect: anchorRect,
+      positioner: positioner,
+    );
+    try {
+      if (_updatePopupPosition(engineId, viewId, request) == 0) {
+        throw StateError('The Rust shell rejected the popup position update.');
+      }
+    } finally {
+      _free(request.cast());
+    }
+  }
+
+  static ffi.Pointer<_PopupWindowRequest> _popupRequest({
+    required _PopupWindowKind kind,
+    required int parentViewId,
+    required BoxConstraints constraints,
+    required Rect anchorRect,
+    required WindowPositioner positioner,
+  }) {
+    final ffi.Pointer<_PopupWindowRequest> request = _malloc(ffi.sizeOf<_PopupWindowRequest>())
+        .cast<_PopupWindowRequest>();
     if (request == ffi.nullptr) {
       throw StateError('Native allocation failed.');
     }
@@ -1255,11 +1321,7 @@ final class _RustWindowing {
           (adjustment.flipY ? 8 : 0) |
           (adjustment.resizeX ? 16 : 0) |
           (adjustment.resizeY ? 32 : 0);
-    try {
-      return _createPopup(engineId, request);
-    } finally {
-      _free(request.cast());
-    }
+    return request;
   }
 
   static int createSatelliteWindow({
@@ -1325,9 +1387,8 @@ final class _RustWindowing {
   }
 
   static RustWindowState getWindowState(int engineId, int viewId) {
-    final ffi.Pointer<_WindowState> state = _malloc(
-      ffi.sizeOf<_WindowState>(),
-    ).cast<_WindowState>();
+    final ffi.Pointer<_WindowState> state = _malloc(ffi.sizeOf<_WindowState>())
+        .cast<_WindowState>();
     if (state == ffi.nullptr) {
       throw StateError('Native allocation failed.');
     }
@@ -1405,6 +1466,15 @@ final class _RustWindowing {
     symbol: 'FlutterRustShellWindowCreatePopup',
   )
   external static int _createPopup(int engineId, ffi.Pointer<_PopupWindowRequest> request);
+
+  @ffi.Native<ffi.Int32 Function(ffi.Int64, ffi.Int64, ffi.Pointer<_PopupWindowRequest>)>(
+    symbol: 'FlutterRustShellWindowUpdatePopupPosition',
+  )
+  external static int _updatePopupPosition(
+    int engineId,
+    int viewId,
+    ffi.Pointer<_PopupWindowRequest> request,
+  );
 
   @ffi.Native<ffi.Int64 Function(ffi.Int64, ffi.Pointer<_SatelliteWindowRequest>)>(
     symbol: 'FlutterRustShellWindowCreateSatellite',

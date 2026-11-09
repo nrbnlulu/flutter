@@ -11,7 +11,7 @@
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 13;
+pub const SHELL_ABI_VERSION: u32 = 14;
 /// Plugin SDK API version expected by this lockstep private runtime.
 pub const PLUGIN_SDK_API_VERSION: u32 = 1;
 
@@ -166,6 +166,9 @@ pub struct FlutterRustWindowingCallbacks {
         Option<extern "C" fn(*mut c_void, Option<FlutterRustWindowEventCallback>)>,
     pub set_window_parent:
         Option<extern "C" fn(*mut c_void, FlutterRustViewId, FlutterRustViewId) -> i32>,
+    pub update_popup_position: Option<
+        extern "C" fn(*mut c_void, FlutterRustViewId, *const FlutterRustPopupWindowRequest) -> i32,
+    >,
 }
 
 #[repr(u32)]

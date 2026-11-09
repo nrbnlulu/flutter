@@ -697,6 +697,47 @@ extern "C" fn set_window_parent_callback(
         .is_some_and(|result| result.is_ok())
         .into()
 }
+extern "C" fn update_popup_position_callback(
+    _user_data: *mut c_void,
+    view_id: FlutterRustViewId,
+    request: *const FlutterRustPopupWindowRequest,
+) -> i32 {
+    if request.is_null() {
+        return 0;
+    }
+    // SAFETY: the synchronous private ABI caller retains a readable request.
+    let Some(request) = decode_popup_request(unsafe { &*request }) else {
+        return 0;
+    };
+    with_window_registry(|windows| {
+        if windows.removing_views.contains(&view_id) {
+            return false;
+        }
+        let Some(window_id) = windows.view_windows.get(&view_id).copied() else {
+            return false;
+        };
+        let Some(view) = windows.views.get_mut(&window_id) else {
+            return false;
+        };
+        if view.kind != request.kind || view.parent_view_id != Some(request.parent_view_id) {
+            return false;
+        }
+        let Some(placement) = &mut view.popup_placement else {
+            return false;
+        };
+        placement.anchor_rect = request.anchor_rect;
+        placement.anchor = request.parent_anchor;
+        placement.gravity = request.gravity;
+        placement.offset = request.offset;
+        placement.constraint_adjustment = request.constraint_adjustment;
+        #[cfg(target_os = "windows")]
+        windows.reposition_popups(view_id);
+        true
+    })
+    .unwrap_or(false)
+    .into()
+}
+
 fn windowing_callbacks() -> FlutterRustWindowingCallbacks {
     FlutterRustWindowingCallbacks {
         user_data: std::ptr::null_mut(),
@@ -715,6 +756,7 @@ fn windowing_callbacks() -> FlutterRustWindowingCallbacks {
         set_window_fullscreen: Some(set_window_fullscreen_callback),
         set_window_event_callback: Some(set_window_event_callback),
         set_window_parent: Some(set_window_parent_callback),
+        update_popup_position: Some(update_popup_position_callback),
     }
 }
 extern "C" fn complete_view_operation(

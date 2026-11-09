@@ -86,6 +86,19 @@ class _WindowingFixtureState extends State<_WindowingFixture> with SingleTickerP
         }
         tooltip.setConstraints(const BoxConstraints.tightFor(width: 200, height: 120));
         signal.writeAsStringSync('resized');
+        while (signal.readAsStringSync() != 'anchor' && DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        tooltip.updatePosition(
+          anchorRect: const Rect.fromLTWH(50, 45, 20, 20),
+          positioner: const WindowPositioner(offset: Offset(7, 9)),
+        );
+        signal.writeAsStringSync('anchored');
+        while (signal.readAsStringSync() != 'partial' && DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        tooltip.updatePosition(positioner: const WindowPositioner(offset: Offset(-3, 2)));
+        signal.writeAsStringSync('partial complete');
         while (signal.readAsStringSync() != 'complete' && DateTime.now().isBefore(deadline)) {
           await Future<void>.delayed(const Duration(milliseconds: 20));
         }

@@ -116,8 +116,30 @@ def main():
         # Wait for Dart's acknowledgement before overwriting the shared signal.
         if not wait_until(lambda: motion.read_text() == 'resized', process):
           raise RuntimeError('Dart did not acknowledge tooltip constraint change')
+        motion.write_text('anchor')
+
+        def offset_matches(before, dx, dy):
+          child = current_tooltip()
+          return child and all(
+              abs(child['at'][axis] - before['at'][axis] - delta * scale) <= 1
+              for axis, delta in enumerate((dx, dy))
+          )
+
+        if not wait_until(lambda: offset_matches(after_resize, 27, 24), process):
+          raise RuntimeError('Explicit anchor/positioner update did not move the same tooltip')
+        after_anchor = current_tooltip()
+        (Path(directory) / 'anchor-after.txt').write_text(str(after_anchor))
+        if not wait_until(lambda: motion.read_text() == 'anchored', process):
+          raise RuntimeError('Dart did not acknowledge anchor update')
+        motion.write_text('partial')
+        if not wait_until(lambda: offset_matches(after_anchor, -10, -7), process):
+          raise RuntimeError('Positioner-only update did not preserve the previous anchor')
+        if not wait_until(lambda: motion.read_text() == 'partial complete', process):
+          raise RuntimeError('Dart did not acknowledge partial position update')
         motion.write_text('complete')
-        print('Tooltip followed parent movement and size changes while preserving its anchor.')
+        print(
+            'Tooltip parent movement, anchored resizing and explicit/partial position updates passed.'
+        )
       returncode = process.wait(timeout=args.timeout)
     finally:
       if process.poll() is None:

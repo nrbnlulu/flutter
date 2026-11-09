@@ -122,3 +122,7 @@ snapshots are retained with the lifecycle evidence. The host reacts to native
 move/resize/DPI notifications; actual DPI transitions and explicit framework
 anchor updates are not yet validated/implemented respectively. Grabbing-popup
 dismissal remains pending.
+
+The Windows tooltip motion check also exercises explicit anchor/positioner and
+positioner-only updates on the same native window. This uses private shell ABI
+14; rebuild the matching engine and Rust runner together after the ABI change.

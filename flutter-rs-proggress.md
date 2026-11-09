@@ -2082,3 +2082,28 @@ checkpoint before DWM pacing. Linux/Android runtime coverage is unavailable.
 The final shared task repeat also passes (184 primary presentations) with
 DPI-scaled geometry expectations and retained movement/resize snapshots:
 `%TEMP%/flutter-rust-windowing-qaribdlc`.
+
+### Explicit popup/tooltip anchor updates (2026-11-09)
+
+Added the private `FlutterRustShellWindowUpdatePopupPosition` operation and an
+appended host callback, bumping the lockstep shell ABI from 13 to 14 (plugin SDK
+API remains 1). The request reuses the existing decoder's placement validation;
+the host rejects missing/removing views or a changed kind/parent and preserves
+the desired size while replacing anchor, gravity, offset and adjustment flags.
+The Windows path repositions the existing native view. Linux continues to allow
+position updates to be ignored. Engine DLL, Cargo runner and C++ tests were
+rebuilt together; PE export inspection confirms the new window function.
+
+Both Dart tooltip and popup controllers now route `updatePosition` through the
+operation, using a shared request allocator with creation and ignoring calls on
+controllers already being destroyed. The native fixture changes the anchor and
+positioner, verifies an exact 27x24 logical-pixel movement of the same HWND,
+then changes only the positioner and verifies a -10x-7 shift while retaining the
+previous anchor. Parent movement, anchored resizing, all 60 presented views,
+owner cascade and clean shutdown also pass under Vulkan validation (203 primary
+presentations). Evidence: `%TEMP%/flutter-rust-windowing-v9zodnid`.
+
+The ordinary suite passes: 52 host tests, 17 C++ tests including paired ABI
+checks, core/queue/ordinary GPU tests and Python suites. The tooltip fixture
+analyzes cleanly. Grabbing-popup creation/dismissal remains the next checkpoint;
+real display-DPI transitions and Linux/Android runtime coverage are unavailable.
