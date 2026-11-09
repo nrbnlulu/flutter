@@ -91,8 +91,10 @@ class Host:
 
   def build(self):
     self.configure()
-    targets = ['flutter_rust_engine.dll'
-              ] if self.windows else ['flutter_rust_shell_runner', 'libflutter_rust_engine.so']
+    targets = [
+        'flutter_rust_engine.dll', 'gen_snapshot.exe', 'font-subset.exe', 'impellerc.exe',
+        'libtessellator.dll', 'flutter_patched_sdk', 'flutter/sky/packages/sky_engine:sky_engine'
+    ] if self.windows else ['flutter_rust_shell_runner', 'libflutter_rust_engine.so']
     self.run(['ninja', '-C', self.out, *targets, 'dart_sdk', 'frontend_server_aot'])
 
   def smoke(self):
@@ -479,6 +481,14 @@ def main():
     host.fixture('test_frb_dispatch.py', assets, runner=runner)
   elif task in ('lifecycle', 'stress'):
     runtime(host, task == 'stress')
+  elif task == 'rlutter-aot':
+    aot_mode = 'release' if args.mode == 'debug' else args.mode
+    cli = SHELL / 'rlutter/target/release' / ('rlutter' + host.exe)
+    with tempfile.TemporaryDirectory(prefix='rlutter-aot-project-') as work:
+      project = Path(work) / 'aot_probe'
+      host.run([cli, 'create', project, f'--flutter-root={ROOT}'])
+      host.run([sys.executable, TESTS / 'test_rlutter_aot.py', f'--cli={cli}',
+                f'--flutter-root={ROOT}', f'--project={project}', f'--mode={aot_mode}'])
   elif task == 'rlutter-runtime':
     cli = SHELL / 'rlutter/target/release' / ('rlutter' + host.exe)
     host.run([sys.executable, TESTS / 'test_rlutter.py', f'--cli={cli}',

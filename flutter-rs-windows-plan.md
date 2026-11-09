@@ -287,7 +287,7 @@ authoritative clock.
 - `util.rs`: junction or copy fallback instead of `os::unix::fs::symlink`.
 - `device/windows.rs` (modelled on `linux.rs`) and `build windows`. Bundle:
   executable, engine DLL, `icudtl.dat`, `data/flutter_assets`, and release
-  `app.so` (Windows AOT already uses ELF `app.so`).
+  `app.so` (current Windows x64 AOT uses a PE/COFF DLL with this filename).
 - Add `windows` to `PLATFORMS` and `--rust-platforms`.
 
 ### W5: CI and tests
@@ -470,3 +470,24 @@ This covers one source breakpoint and local-expression scope on the Windows host
 not full DAP/editor conformance or Linux execution of the new debugger probe.
 Managed SDK/release/AOT/plugin packaging and CI remain planned work, as do real
 IME composition and display-scale transition coverage.
+
+
+## Windows release/AOT checkpoint (2026-11-09)
+
+The matching Windows host_release engine DLL, Dart SDK, frontend server, AOT
+compiler, shader compiler, font subsetter and sky_engine package build from the
+post-main checkout. The normal Windows build task now requests these compiler
+artifacts; its release Cargo smoke runner also links successfully.
+
+`test-rlutter-aot` creates and builds a disposable release app, requires app.so
+and no debug kernel, relocates executable/DLL/data, launches from an unrelated
+working directory, checks the exact initial and clicked frame colors, and
+requires native close with status zero under Vulkan validation. The Windows
+runtime check passes; retained evidence is `%TEMP%/flutter-rust-release-0f6axvzj`
+(build/runtime logs, full captures, relocated bundle and result.json).
+
+Current upstream Windows x64 AOT emits a PE/COFF DLL named app.so. The original
+plan's ELF note and an initial probe assertion were corrected; the initial
+format-rejected run was not counted as a runtime pass. The native engine already
+loads this library correctly, so no AOT engine change was needed. Profile is not
+covered by this release run. SDK distribution and input follow as separate phases.

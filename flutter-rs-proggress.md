@@ -2324,3 +2324,24 @@ host. The new debugger probe has not run on Linux; the user's existing Linux
 coverage above remains distinct. Full DAP/editor behavior, Windows managed SDK,
 release/profile/AOT and general plugin packaging, CI, real IME composition and
 monitor-scale transitions remain follow-ups.
+
+
+## Windows release/AOT checkpoint (2026-11-09)
+
+The matching Windows host_release engine DLL, Dart SDK, frontend server, AOT
+compiler, shader compiler, font subsetter and sky_engine package build from the
+post-main checkout. The normal Windows build task now requests these compiler
+artifacts; its release Cargo smoke runner also links successfully.
+
+`test-rlutter-aot` creates and builds a disposable release app, requires app.so
+and no debug kernel, relocates executable/DLL/data, launches from an unrelated
+working directory, checks the exact initial and clicked frame colors, and
+requires native close with status zero under Vulkan validation. The Windows
+runtime check passes; retained evidence is `%TEMP%/flutter-rust-release-0f6axvzj`
+(build/runtime logs, full captures, relocated bundle and result.json).
+
+Current upstream Windows x64 AOT emits a PE/COFF DLL named app.so. The original
+plan's ELF note and an initial probe assertion were corrected; the initial
+format-rejected run was not counted as a runtime pass. The native engine already
+loads this library correctly, so no AOT engine change was needed. Profile is not
+covered by this release run. SDK distribution and input follow as separate phases.

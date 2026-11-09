@@ -241,3 +241,9 @@ tasks:
     deps: [build-rust-shell, build-rlutter]
     cmds:
       - '{{.RUST_TASK}} rlutter-runtime'
+
+  test-rlutter-aot:
+    desc: Build and relocate a release AOT bundle, then verify native input and clean close.
+    deps: [build-rust-shell-release, build-rlutter]
+    cmds:
+      - '{{.RUST_TASK}} rlutter-aot --engine host_release --mode release'
