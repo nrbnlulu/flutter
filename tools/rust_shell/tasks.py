@@ -451,6 +451,10 @@ def main():
     host.fixture('test_frb_dispatch.py', assets, runner=runner)
   elif task in ('lifecycle', 'stress'):
     runtime(host, task == 'stress')
+  elif task == 'rlutter-runtime':
+    cli = SHELL / 'rlutter/target/release' / ('rlutter' + host.exe)
+    host.run([sys.executable, TESTS / 'test_rlutter.py', f'--cli={cli}',
+              f'--flutter-root={ROOT}'])
   elif task == 'rlutter-e2e':
     with tempfile.TemporaryDirectory(prefix='rlutter-e2e-') as work:
       cli = SHELL / 'rlutter/target/release' / ('rlutter' + host.exe)

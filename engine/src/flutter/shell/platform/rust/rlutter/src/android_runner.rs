@@ -1,6 +1,6 @@
 //! Making a `runner-rs/` project buildable for Android.
 //!
-//! Projects start Linux-only. Building for Android adds, idempotently:
+//! Projects start with a desktop runner. Building for Android adds, idempotently:
 //! - a generated block of Android-only dependencies in `Cargo.toml`,
 //! - `mod flutter_android;` in `src/lib.rs`, and
 //! - the tool-owned `src/flutter_android.rs` entry point.
@@ -32,30 +32,67 @@ flutter-shell-android = { path = "../.dart_tool/flutter_rs/sdk/crates/flutter-sh
 const MODULE_LINE: &str = "mod flutter_android;";
 const WINIT_DEPENDENCY: &str =
     "flutter-shell-winit = { path = \"../.dart_tool/flutter_rs/sdk/crates/flutter-shell-winit\" }";
-const LINUX_DEPENDENCIES: &str = "[target.'cfg(target_os = \"linux\")'.dependencies]";
+const DESKTOP_DEPENDENCIES: &str = "[target.'cfg(not(target_os = \"android\"))'.dependencies]";
 
 /// Moves older runners' desktop shell dependency out of Android's graph.
-fn with_linux_only_winit(manifest: &str) -> String {
+fn with_desktop_winit(manifest: &str) -> String {
+    let manifest = manifest.replace("\r\n", "\n");
     if !manifest.lines().any(|line| line == WINIT_DEPENDENCY) {
         return manifest.to_owned();
     }
+    let old_table = "[target.'cfg(target_os = \"linux\")'.dependencies]";
+    let manifest = if !manifest.contains(DESKTOP_DEPENDENCIES) {
+        manifest.replace(old_table, DESKTOP_DEPENDENCIES)
+    } else {
+        manifest.to_owned()
+    };
     let mut manifest = manifest.replace(&format!("{WINIT_DEPENDENCY}\n"), "");
-    if manifest.contains(LINUX_DEPENDENCIES) {
+    if manifest.contains(DESKTOP_DEPENDENCIES) {
         manifest = manifest.replacen(
-            LINUX_DEPENDENCIES,
-            &format!("{LINUX_DEPENDENCIES}\n{WINIT_DEPENDENCY}"),
+            DESKTOP_DEPENDENCIES,
+            &format!("{DESKTOP_DEPENDENCIES}\n{WINIT_DEPENDENCY}"),
             1,
         );
     } else {
-        manifest.push_str(&format!("\n{LINUX_DEPENDENCIES}\n{WINIT_DEPENDENCY}\n"));
+        manifest.push_str(&format!("\n{DESKTOP_DEPENDENCIES}\n{WINIT_DEPENDENCY}\n"));
     }
     manifest
+}
+
+/// Upgrade the tool-owned desktop dependency table on existing runners.
+pub fn ensure_desktop(project: &Project) -> Result<()> {
+    let path = project.runner_dir().join("Cargo.toml");
+    let original = fs::read_to_string(&path)?;
+    let mut updated = with_shared_plugins(&with_desktop_winit(&original));
+    let hal_header = "[patch.\"https://github.com/gfx-rs/wgpu.git\"]";
+    let hal_dependency =
+        "wgpu-hal = { path = \"../.dart_tool/flutter_rs/sdk/third_party/wgpu-hal\" }";
+    let needs_hal = !updated
+        .lines()
+        .any(|line| line.trim_start().starts_with("wgpu-hal ="));
+    if needs_hal {
+        if updated.contains(hal_header) {
+            updated = updated.replacen(hal_header, &format!("{hal_header}\n{hal_dependency}"), 1);
+        } else {
+            updated.push_str(&format!("\n{hal_header}\n{hal_dependency}\n"));
+        }
+    }
+    write_if_changed(&path, &updated)?;
+    if needs_hal && project.runner_dir().join("Cargo.lock").is_file() {
+        // Retain existing dependency pins while switching only the required HAL.
+        crate::util::run(
+            std::process::Command::new("cargo")
+                .args(["update", "--offline", "-p", "wgpu-hal"])
+                .current_dir(project.runner_dir()),
+        )?;
+    }
+    Ok(())
 }
 
 /// Fix runners generated while the plugin block followed the Linux table.
 fn with_shared_plugins(manifest: &str) -> String {
     let (Some(linux), Some(begin), Some(end)) = (
-        manifest.find(LINUX_DEPENDENCIES),
+        manifest.find(DESKTOP_DEPENDENCIES),
         manifest.find(PLUGINS_BEGIN),
         manifest.find(PLUGINS_END),
     ) else {
@@ -64,7 +101,7 @@ fn with_shared_plugins(manifest: &str) -> String {
     if begin < linux || end < begin {
         return manifest.to_owned();
     }
-    if manifest[linux + LINUX_DEPENDENCIES.len()..begin]
+    if manifest[linux + DESKTOP_DEPENDENCIES.len()..begin]
         .lines()
         .any(|line| line.starts_with('['))
     {
@@ -74,7 +111,7 @@ fn with_shared_plugins(manifest: &str) -> String {
     let block = updated[begin..end + PLUGINS_END.len()].to_owned();
     updated.replace_range(begin..end + PLUGINS_END.len(), "");
     let linux = updated
-        .find(LINUX_DEPENDENCIES)
+        .find(DESKTOP_DEPENDENCIES)
         .expect("table was retained");
     updated.insert_str(linux, &format!("{block}\n\n"));
     updated
@@ -183,7 +220,7 @@ pub fn ensure(project: &Project) -> Result<()> {
         .map_err(|e| anyhow!("cannot read {}: {e}", cargo_toml.display()))?;
     let manifest_changed = write_if_changed(
         &cargo_toml,
-        &with_android_dependencies(&with_shared_plugins(&with_linux_only_winit(&manifest))),
+        &with_android_dependencies(&with_shared_plugins(&with_desktop_winit(&manifest))),
     )?;
 
     let lib = fs::read_to_string(&lib_rs)
@@ -212,6 +249,38 @@ mod tests {
     const MANIFEST: &str = "[package]\nname = \"demo\"\n\n[lints.rust]\nx = 1\n";
 
     #[test]
+    fn desktop_migration_installs_the_required_hal_patch_once() {
+        let dir = crate::util::testing::tempdir("desktop_hal_migration");
+        let project = Project {
+            dir,
+            name: "demo".into(),
+            rust_shell: true,
+        };
+        fs::create_dir_all(project.runner_dir()).unwrap();
+        let manifest = project.runner_dir().join("Cargo.toml");
+        fs::write(&manifest, format!("[dependencies]\n{WINIT_DEPENDENCY}\n")).unwrap();
+        ensure_desktop(&project).unwrap();
+        let first = fs::read_to_string(&manifest).unwrap();
+        assert!(first.contains("sdk/third_party/wgpu-hal"));
+        assert_eq!(first.matches("wgpu-hal =").count(), 1);
+        ensure_desktop(&project).unwrap();
+        assert_eq!(fs::read_to_string(manifest).unwrap(), first);
+    }
+
+    #[test]
+    fn linux_runner_table_is_upgraded_without_changing_shared_plugins() {
+        let old = format!(
+            "[dependencies]\n{PLUGINS_BEGIN}\nplugin = \"x\"\n{PLUGINS_END}\n\n[target.'cfg(target_os = \"linux\")'.dependencies]\n{WINIT_DEPENDENCY}\n"
+        );
+        let updated = with_desktop_winit(&old);
+        assert!(updated.contains(DESKTOP_DEPENDENCIES));
+        assert_eq!(updated.matches(WINIT_DEPENDENCY).count(), 1);
+        assert!(updated.find(PLUGINS_END) < updated.find(DESKTOP_DEPENDENCIES));
+        assert_eq!(with_desktop_winit(&updated), updated);
+        assert_eq!(with_desktop_winit(&updated.replace("\n", "\r\n")), updated);
+    }
+
+    #[test]
     fn android_dependencies_are_appended_once() {
         let once = with_android_dependencies(MANIFEST);
         assert!(once.starts_with(MANIFEST) && once.contains("flutter-shell-android"));
@@ -220,21 +289,22 @@ mod tests {
     }
 
     #[test]
-    fn existing_runner_moves_winit_to_linux_only() {
+    fn existing_runner_moves_winit_to_desktop_only() {
         let old = format!("[dependencies]\n{WINIT_DEPENDENCY}\n\n[workspace]\n");
-        let updated = with_linux_only_winit(&old);
+        let updated = with_desktop_winit(&old);
         assert_eq!(updated.matches(WINIT_DEPENDENCY).count(), 1);
-        assert!(updated.contains(&format!("{LINUX_DEPENDENCIES}\n{WINIT_DEPENDENCY}")));
-        assert_eq!(with_linux_only_winit(&updated), updated);
+        assert!(updated.contains(&format!("{DESKTOP_DEPENDENCIES}\n{WINIT_DEPENDENCY}")));
+        assert_eq!(with_desktop_winit(&updated), updated);
+        assert_eq!(with_desktop_winit(&updated.replace("\n", "\r\n")), updated);
     }
 
     #[test]
     fn plugin_dependencies_remain_shared_after_migration() {
         let old = format!(
-            "[dependencies]\nflutter-plugin-sdk = \"x\"\n\n{LINUX_DEPENDENCIES}\n{WINIT_DEPENDENCY}\n\n{PLUGINS_BEGIN}\nplugin = \"x\"\n{PLUGINS_END}\n\n[patch.crates-io]\n"
+            "[dependencies]\nflutter-plugin-sdk = \"x\"\n\n{DESKTOP_DEPENDENCIES}\n{WINIT_DEPENDENCY}\n\n{PLUGINS_BEGIN}\nplugin = \"x\"\n{PLUGINS_END}\n\n[patch.crates-io]\n"
         );
         let updated = with_shared_plugins(&old);
-        assert!(updated.find(PLUGINS_BEGIN) < updated.find(LINUX_DEPENDENCIES));
+        assert!(updated.find(PLUGINS_BEGIN) < updated.find(DESKTOP_DEPENDENCIES));
         assert!(updated.contains("plugin = \"x\""));
         assert_eq!(with_shared_plugins(&updated), updated);
     }

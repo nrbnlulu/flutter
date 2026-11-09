@@ -33,11 +33,22 @@ pub fn build_linux(
     build_desktop(ctx, mode, target, dart_defines, "linux")
 }
 
-pub fn build_windows(ctx: &Ctx, mode: BuildMode, target: &str, dart_defines: &[String]) -> Result<DesktopBuild> {
+pub fn build_windows(
+    ctx: &Ctx,
+    mode: BuildMode,
+    target: &str,
+    dart_defines: &[String],
+) -> Result<DesktopBuild> {
     build_desktop(ctx, mode, target, dart_defines, "windows")
 }
 
-fn build_desktop(ctx: &Ctx, mode: BuildMode, target: &str, dart_defines: &[String], platform: &str) -> Result<DesktopBuild> {
+fn build_desktop(
+    ctx: &Ctx,
+    mode: BuildMode,
+    target: &str,
+    dart_defines: &[String],
+    platform: &str,
+) -> Result<DesktopBuild> {
     if std::env::consts::OS != platform || !cfg!(target_arch = "x86_64") {
         bail!("{platform} desktop builds require a native {platform} x64 host");
     }
@@ -127,7 +138,11 @@ fn stage_bundle(
         .context("cannot copy icudtl.dat")?;
 
     // Keep Windows DLLs beside the executable; Linux uses its rpath directory.
-    let libs = if cfg!(windows) { runner_dir.to_owned() } else { runner_dir.join("libs") };
+    let libs = if cfg!(windows) {
+        runner_dir.to_owned()
+    } else {
+        runner_dir.join("libs")
+    };
     fs::create_dir_all(&libs)?;
     copy_if_changed(
         &engine.target.join(crate::sdk::host_engine_library()),
@@ -150,15 +165,23 @@ fn stage_bundle(
         // The executable directory also contains Cargo outputs and application data.
         // Prune only DLLs previously staged by this tool.
         let record = runner_dir.join(".rlutter-dlls.json");
-        let previous: Vec<PathBuf> = fs::read_to_string(&record).ok()
-            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let previous: Vec<PathBuf> = match fs::read_to_string(&record) {
+            Ok(s) => serde_json::from_str(&s).context("invalid staged DLL record")?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e).context("cannot read staged DLL record"),
+        };
         for name in previous {
             if name.components().count() == 1 && name.extension().is_some_and(|ext| ext == "dll") {
                 let path = runner_dir.join(name);
-                if !keep.contains(&path) { crate::util::remove_path(&path)?; }
+                if !keep.contains(&path) {
+                    crate::util::remove_path(&path)?;
+                }
             }
         }
-        let names: Vec<_> = keep.iter().filter_map(|p| p.file_name()).collect();
+        let names: Vec<PathBuf> = keep
+            .iter()
+            .filter_map(|p| p.file_name().map(PathBuf::from))
+            .collect();
         fs::write(record, serde_json::to_vec(&names)?)?;
     } else {
         retain_files(&libs, &keep)?;
@@ -192,7 +215,10 @@ mod tests {
         );
         assert_eq!(
             runner_binary(&p, BuildMode::Profile),
-            p.dir.join("runner-rs/target/flutter-profile/demo")
+            p.dir.join(format!(
+                "runner-rs/target/flutter-profile/demo{}",
+                std::env::consts::EXE_SUFFIX
+            ))
         );
     }
 
@@ -201,11 +227,17 @@ mod tests {
         let p = project("build_binary");
         assert_eq!(
             runner_binary(&p, BuildMode::Debug),
-            p.dir.join("runner-rs/target/debug/demo")
+            p.dir.join(format!(
+                "runner-rs/target/debug/demo{}",
+                std::env::consts::EXE_SUFFIX
+            ))
         );
         assert_eq!(
             runner_binary(&p, BuildMode::Release),
-            p.dir.join("runner-rs/target/release/demo")
+            p.dir.join(format!(
+                "runner-rs/target/release/demo{}",
+                std::env::consts::EXE_SUFFIX
+            ))
         );
     }
 
@@ -248,33 +280,43 @@ mod tests {
 
         let native = native_libs::staging_dir(&p, BuildMode::Debug, None);
         fs::create_dir_all(&native).unwrap();
-        fs::write(native.join("libplug.so"), "p").unwrap();
+        fs::write(native.join("plug.dll"), "p").unwrap();
 
         let runner = runner_binary(&p, BuildMode::Debug);
         fs::create_dir_all(runner.parent().unwrap()).unwrap();
         fs::write(&runner, "bin").unwrap();
+        fs::write(runner.parent().unwrap().join("user.txt"), "keep").unwrap();
 
         stage_bundle(&p, BuildMode::Debug, &engine, &assets, &runner).unwrap();
         let dir = runner.parent().unwrap();
-        let staged_engine = dir.join("libs/libflutter_rust_engine.so");
+        let libs = if cfg!(windows) {
+            dir.to_owned()
+        } else {
+            dir.join("libs")
+        };
+        let staged_engine = libs.join(crate::sdk::host_engine_library());
         let sentinel = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
-        fs::File::open(&staged_engine)
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&staged_engine)
             .unwrap()
             .set_modified(sentinel)
             .unwrap();
-        fs::remove_file(native.join("libplug.so")).unwrap();
+        fs::remove_file(native.join("plug.dll")).unwrap();
         stage_bundle(&p, BuildMode::Debug, &engine, &assets, &runner).unwrap();
         assert_eq!(
             fs::metadata(staged_engine).unwrap().modified().unwrap(),
             sentinel
         );
-        assert!(!dir.join("libs/libplug.so").exists());
+        assert!(!libs.join("plug.dll").exists());
+        assert_eq!(fs::read_to_string(&runner).unwrap(), "bin");
+        assert!(dir.join("user.txt").is_file());
         assert!(dir.join("data/flutter_assets/AssetManifest.bin").is_file());
         assert!(!dir.join("data/flutter_assets/.last_build_id").exists());
         assert_eq!(
             fs::read_to_string(dir.join("data/icudtl.dat")).unwrap(),
             "icu"
         );
-        assert!(dir.join("libs/libflutter_rust_engine.so").is_file());
+        assert!(libs.join(crate::sdk::host_engine_library()).is_file());
     }
 }

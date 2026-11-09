@@ -19,7 +19,7 @@ flutter-plugin-sdk = { path = "../.dart_tool/flutter_rs/sdk/crates/flutter-plugi
 # === BEGIN FLUTTER GENERATED RUST PLUGINS ===
 # === END FLUTTER GENERATED RUST PLUGINS ===
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(not(target_os = "android"))'.dependencies]
 flutter-shell-winit = { path = "../.dart_tool/flutter_rs/sdk/crates/flutter-shell-winit" }
 
 [patch.crates-io]
@@ -35,3 +35,6 @@ debug = true
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(frb_expand)"] }
+
+[patch."https://github.com/gfx-rs/wgpu.git"]
+wgpu-hal = { path = "../.dart_tool/flutter_rs/sdk/third_party/wgpu-hal" }

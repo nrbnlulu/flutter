@@ -55,9 +55,19 @@ fn run() -> Result<()> {
             }
             command.args(args.args);
             #[cfg(unix)]
-            { Err(command.exec()).context("failed to start bundled Dart") }
+            {
+                Err(command.exec()).context("failed to start bundled Dart")
+            }
             #[cfg(windows)]
-            { std::process::exit(command.status().context("failed to start bundled Dart")?.code().unwrap_or(1)); }
+            {
+                std::process::exit(
+                    command
+                        .status()
+                        .context("failed to start bundled Dart")?
+                        .code()
+                        .unwrap_or(1),
+                );
+            }
         }
         Command::Create(args) => commands::create::run_create(&ctx, &args),
         Command::Clean(args) => commands::clean::run_clean(&ctx, &args),
@@ -70,8 +80,12 @@ fn run() -> Result<()> {
             )
             .map(drop),
             BuildTarget::Windows(args) => commands::build::build_windows(
-                &ctx, args.mode.resolve()?, &args.target, &args.defines.dart_defines,
-            ).map(drop),
+                &ctx,
+                args.mode.resolve()?,
+                &args.target,
+                &args.defines.dart_defines,
+            )
+            .map(drop),
             BuildTarget::Android(args) => commands::build_android::build_android(
                 &ctx,
                 args.build.mode.resolve()?,

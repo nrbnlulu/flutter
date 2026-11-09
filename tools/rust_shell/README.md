@@ -144,3 +144,43 @@ The DWM API requires a null HWND on supported Windows versions, so this clock
 is composition-wide. Mixed-refresh monitors, VRR and physical presentation
 latency require separate measurements; a passing resize/lifecycle test verifies
 liveness and teardown rather than precise display scanout timing.
+
+Windows local-engine rlutter debug workflows are available:
+
+```powershell
+cargo +1.93.1 build --locked --manifest-path engine/src/flutter/shell/platform/rust/rlutter/Cargo.toml
+# Create outside the Flutter SDK; Flutter rejects nested projects.
+rlutter create C:/work/my_app --rust-platforms windows --flutter-root C:/path/to/flutter
+# From the generated application:
+rlutter build windows --debug --flutter-root C:/path/to/flutter
+rlutter run -d windows --flutter-root C:/path/to/flutter
+```
+
+Use the executable built by Cargo above, or add its directory to PATH. Windows
+currently requires an explicit local Flutter checkout (`--local-engine-src` can
+override its engine/src); managed Windows SDK downloads are not published yet.
+The Windows bundle is `runner-rs/target/debug/<name>.exe`, engine/plugin DLLs
+beside it, and `data/{icudtl.dat,flutter_assets}`. The executable contains a
+PerMonitorV2/UTF-8/common-controls manifest. Icon/version resources and Windows
+release/profile/AOT packaging remain separate work.
+
+Runner version 10 updates the desktop dependency table, MSVC link arguments and
+the required vendored wgpu-hal patch. Migrating an existing runner with a lockfile
+updates only wgpu-hal offline. Windows uses symlinks where possible and copy
+fallback otherwise; the small flutter_patched_sdk directory is always physical
+because the AOT frontend rejects its directory symlink in the tested setup.
+
+`task test-rlutter-runtime` creates a disposable desktop project, runs it through
+rlutter/Flutter attach, clicks its widget, verifies changed rendered output and
+preserved state on hot reload, then verifies hot restart resets state. It also
+copies the bundle, launches it from an unrelated working directory, compares the
+centered widget pixels and requires status-zero native close. Logs, service URI,
+state observations, screenshots and copied bundle remain in a reported
+`flutter-rust-rlutter-*` directory. The script accepts `--project` to reuse a
+disposable generated project, with its fixture in `lib/rlutter_probe.dart`.
+
+Debugger attach and VM field inspection work in this checkpoint. VM source
+expression evaluation reports no compilation service and remains a follow-up;
+this test does not claim expression-evaluation or breakpoint conformance.
+Windows symlink-denied fallback, Linux/Android runtime, native IME composition
+and display-scale transitions were not exercised here.

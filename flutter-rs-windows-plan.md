@@ -414,3 +414,30 @@ null-HWND clock is composition-wide. Invalid timing samples are covered by unit 
 unavailable-compositor runtime were not exercised here.
 Linux/Android runtime coverage remains unavailable. Next: rlutter Windows
 create/run/build support and hot reload, followed by release/packaging/CI.
+
+## rlutter local-engine debug tooling checkpoint (2026-11-09)
+
+Windows x64 device discovery, `create --rust-platforms windows`, `build windows
+--debug` and `run -d windows` now work with an explicit local Flutter checkout.
+Shared desktop staging places Windows DLLs beside the executable and assets/ICU
+under data/. The runner's embedded manifest enables PerMonitorV2 DPI, UTF-8 and
+common controls. Runner version 10 migrates existing desktop dependency tables,
+normalizes CRLF and retains the fork's required vendored wgpu-hal patch, updating
+only that lockfile package when needed. Native plugins use Windows DLL names;
+Android cross-build names retain .so.
+
+The 108 applicable rlutter tests and Clippy pass on Windows. A generated project
+built successfully. The runtime harness passes native-click state changes,
+rendered hot reload with state preservation, hot restart with reset state,
+Flutter-attach quit/owned-process cleanup, and a relocated standalone bundle
+rendering the same centered widget before status-zero native close under Vulkan
+validation. Evidence: `%TEMP%/flutter-rust-rlutter-em7ezyx4`; project:
+`%TEMP%/rlutter-windows-0833f1b8`. PE resource inspection confirms the manifest.
+
+This is debug/JIT local-engine tooling coverage. Managed Windows SDK downloads,
+release/profile/AOT builds, icon/version resources, general plugin/FRB packaging
+and CI remain pending. VM source expression evaluation reports no compilation
+service despite successful attach/reload/VM field inspection; debugger expression
+and breakpoint conformance remain follow-ups. Symlink-denied copy fallback and
+Linux/Android runtime regressions are not host-validated here. Real IME and
+DPI-transition coverage remain open.

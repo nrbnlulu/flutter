@@ -28,7 +28,7 @@ pub const PLUGINS_END: &str = "# === END FLUTTER GENERATED RUST PLUGINS ===";
 
 /// Version of the tool-owned runner files (`build.rs`, `src/main.rs`). Keep in
 /// sync with the `flutter-rust-runner-version` marker in the templates.
-pub const RUNNER_VERSION: u32 = 9;
+pub const RUNNER_VERSION: u32 = 10;
 const RUNNER_VERSION_MARKER: &str = "// flutter-rust-runner-version: ";
 
 pub const TEMPLATE_BUILD_RS: &str = include_str!("../templates/runner-rs/build.rs.tmpl");
@@ -62,8 +62,12 @@ pub struct NativeLibrary {
 }
 
 impl NativeLibrary {
-    pub fn file_name(&self) -> String {
-        format!("lib{}.so", self.library_name)
+    pub fn file_name_for(&self, platform: &str) -> String {
+        if platform == "windows" {
+            format!("{}.dll", self.library_name)
+        } else {
+            format!("lib{}.so", self.library_name)
+        }
     }
 }
 
@@ -162,7 +166,17 @@ fn percent_decode(text: &str) -> String {
 /// path relative to the config file's directory).
 fn resolve_root_uri(config_dir: &Path, root_uri: &str) -> PathBuf {
     match root_uri.strip_prefix("file://") {
-        Some(path) => PathBuf::from(percent_decode(path)),
+        Some(path) => {
+            let decoded = percent_decode(path);
+            if cfg!(windows) && decoded.as_bytes().get(2) == Some(&b':') && decoded.starts_with('/')
+            {
+                PathBuf::from(&decoded[1..])
+            } else if cfg!(windows) && !decoded.starts_with('/') {
+                PathBuf::from(format!("//{decoded}"))
+            } else {
+                PathBuf::from(decoded)
+            }
+        }
         None => normalize(&config_dir.join(percent_decode(root_uri))),
     }
 }
@@ -391,7 +405,10 @@ fn regenerate_runner_if_outdated(project: &Project) -> Result<()> {
     if has_runner_version(&build_rs) && has_runner_version(&main_rs) {
         return Ok(());
     }
-    write_if_changed(&build_rs, TEMPLATE_BUILD_RS)?;
+    write_if_changed(
+        &build_rs,
+        &TEMPLATE_BUILD_RS.replace("{{projectName}}", &project.name),
+    )?;
     write_if_changed(
         &main_rs,
         &TEMPLATE_MAIN_RS.replace("{{projectName}}", &project.name),
@@ -515,6 +532,19 @@ mod tests {
     }"#;
 
     #[test]
+    #[cfg(windows)]
+    fn windows_file_uris_preserve_drive_and_unc_roots() {
+        assert_eq!(
+            resolve_root_uri(Path::new("C:/app/.dart_tool"), "file:///C:/packages/a%20b"),
+            PathBuf::from("C:/packages/a b")
+        );
+        assert_eq!(
+            resolve_root_uri(Path::new("C:/app/.dart_tool"), "file://server/share/a"),
+            PathBuf::from("//server/share/a")
+        );
+    }
+
+    #[test]
     fn debug_includes_dev_dependencies_transitively() {
         let names = dependency_names(&graph(GRAPH), true).unwrap();
         assert!(names.contains("dev_tool") && names.contains("dev_only_dep"));
@@ -607,7 +637,14 @@ mod tests {
         let text =
             r#"[{"package":"p","manifest":"/m/Cargo.toml","library":"p_ffi","rustflags":["-Cx"]}]"#;
         let libs: Vec<NativeLibrary> = serde_json::from_str(text).unwrap();
-        assert_eq!(libs[0].file_name(), "libp_ffi.so");
+        assert_eq!(
+            libs[0].file_name_for(if cfg!(windows) { "windows" } else { "linux" }),
+            if cfg!(windows) {
+                "p_ffi.dll"
+            } else {
+                "libp_ffi.so"
+            }
+        );
         assert_eq!(libs[0].rustflags, ["-Cx"]);
     }
 

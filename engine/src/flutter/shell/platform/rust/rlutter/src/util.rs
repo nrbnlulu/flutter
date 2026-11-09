@@ -48,23 +48,35 @@ pub fn replace_link(link: &Path, target: &Path) -> Result<()> {
 /// Prefer native links; copy when Windows developer-mode symlinks are unavailable.
 #[cfg(windows)]
 pub fn replace_link(link: &Path, target: &Path) -> Result<()> {
-    let target = if target.is_absolute() { target.to_owned() } else {
+    let target = if target.is_absolute() {
+        target.to_owned()
+    } else {
         link.parent().context("link has no parent")?.join(target)
     };
     if fs::symlink_metadata(link).is_ok_and(|meta| meta.file_type().is_symlink()) {
-        if fs::read_link(link)? == target && link.exists() { return Ok(()); }
+        if fs::read_link(link)? == target && link.exists() {
+            return Ok(());
+        }
         remove_path(link)?;
     }
     if !link.exists() {
-        if let Some(parent) = link.parent() { fs::create_dir_all(parent)?; }
+        if let Some(parent) = link.parent() {
+            fs::create_dir_all(parent)?;
+        }
         let result = if target.is_dir() {
             std::os::windows::fs::symlink_dir(&target, link)
         } else {
             std::os::windows::fs::symlink_file(&target, link)
         };
-        if result.is_ok() { return Ok(()); }
+        if result.is_ok() {
+            return Ok(());
+        }
     }
-    if target.is_dir() { copy_dir(&target, link) } else { copy_if_changed(&target, link) }
+    if target.is_dir() {
+        copy_dir(&target, link)
+    } else {
+        copy_if_changed(&target, link)
+    }
 }
 
 /// Removes a file, symlink or directory tree; missing paths are fine.
@@ -194,7 +206,9 @@ mod tests {
         fs::write(source.join("change"), "old!").unwrap();
         copy_dir(&source, &destination).unwrap();
         let sentinel = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
-        fs::File::open(destination.join("nested/keep"))
+        fs::OpenOptions::new()
+            .write(true)
+            .open(destination.join("nested/keep"))
             .unwrap()
             .set_modified(sentinel)
             .unwrap();

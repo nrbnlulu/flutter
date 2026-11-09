@@ -230,3 +230,9 @@ tasks:
     deps: [build-rust-shell]
     cmds:
       - '{{.RUST_TASK}} popup-windowing'
+
+  test-rlutter-runtime:
+    desc: Validate generated desktop apps, rendered hot reload, hot restart and shutdown.
+    deps: [build-rust-shell, build-rlutter]
+    cmds:
+      - '{{.RUST_TASK}} rlutter-runtime'

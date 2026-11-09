@@ -2187,3 +2187,57 @@ destruction checks, 305 primary presentations and clean validation shutdown.
 Evidence: `%TEMP%/flutter-rust-windowing-pqi5pq5t`. Rust formatting and diff
 whitespace checks pass. Native API failure/fallback recovery was not forced in
 this runtime; the unit coverage exercises invalid timing samples.
+
+### rlutter Windows local-engine debug checkpoint (2026-11-09)
+
+Ported rlutter's native desktop path to Windows: Windows device discovery and
+selection, create/build/run commands, .bat/.exe Flutter/Dart paths, SDK DLL/import
+library artifacts, Windows native-library names and shared desktop process
+lifetime. Unix-only permissions/process/symlink code is gated. Windows links
+have a copy fallback; directory symlinks are removed with the correct native
+operation. Host build commands reject cross-host desktop builds explicitly.
+Windows managed SDK downloads report that a local checkout is required.
+
+Runner version 10 adds the Windows engine variant, MSVC import-library linkage
+and embedded PerMonitorV2/UTF-8/common-controls manifest while retaining Linux
+rpath and Android linking behavior. DLL staging tracks only tool-owned DLLs so
+obsolete plugins are removed without deleting executables, data or unrelated
+files. Windows drive/UNC package URIs resolve correctly. Android cross-library
+naming remains .so. Applicable Android tooling unit tests also pass on Windows;
+this is not Android runtime validation.
+
+The first real build exposed two portability failures that unit fixtures had
+not exercised: the AOT frontend rejects a symlinked flutter_patched_sdk root,
+and CRLF prevented dependency-line replacement, duplicating flutter-shell-winit.
+The SDK layout now copies the small patched-SDK directory on Windows and the
+migration normalizes line endings. Generated apps also need the workspace's
+vendored wgpu-hal patch to preserve the Intel workaround; templates/migration
+now install it. Existing lockfiles update only that package offline. SDK cache
+completeness now requires its HAL sources. Tests cover the migration, CRLF,
+physical patched-SDK directory, path handling and selective DLL pruning.
+
+A real `rlutter create --rust-platforms windows` project outside the SDK and
+`rlutter build windows --debug` succeeded. Added `task test-rlutter-runtime` with
+retained evidence: Flutter attach publishes its DDS URI; a native click increments
+the counter; hot reload changes the rendered label while preserving state=1;
+hot restart applies the changed source with state=0; quit detaches and removes
+the owned native process. The relocated executable/DLL/data bundle renders the
+same centered widget from an unrelated working directory and closes with status
+zero under Khronos Vulkan validation. Evidence:
+`%TEMP%/flutter-rust-rlutter-em7ezyx4`; generated project:
+`%TEMP%/rlutter-windows-0833f1b8`. PE inspection confirms the embedded manifest.
+
+All 108 applicable rlutter tests pass; Clippy with warnings denied, Rust
+formatting and Python compilation pass. The Linux-only managed-download test
+remains Linux-gated. The native runtime harness compares the centered widget
+because desktop corner/off-screen pixels vary between native window positions.
+An early restart check was tightened to wait for the first post-restart build.
+
+A VM expression-evaluation probe reports `_compileExpression: No compilation
+service available`; successful attach, field inspection and hot reload do not
+close that debugger gap. Initial probe evidence remains at
+`%TEMP%/flutter-rust-rlutter-ykutnpz6`. Source expressions and breakpoint
+conformance, managed SDK downloads, release/profile/AOT builds, general plugin/
+FRB packaging, icon/version resources and Windows CI remain follow-ups.
+Symlink-denied fallback, Linux/Android runtime regressions and broader Windows
+GPU/display coverage remain unverified; real IME/DPI-transition gaps are unchanged.
