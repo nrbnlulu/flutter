@@ -407,6 +407,9 @@ def main():
   elif task == 'run':
     assets = host.bundle(args.windowing_example, args.target, True)
     host.run([host.runner(), assets, host.out / 'icudtl.dat'])
+  elif task == 'owned-windowing':
+    assets = host.bundle(TESTS / 'windowing_fixture', 'lib/owned.dart', True)
+    host.fixture('test_windowing.py', assets)
   elif task in ('windowing', 'benchmark'):
     assets = host.bundle(
         TESTS / 'windowing_fixture',

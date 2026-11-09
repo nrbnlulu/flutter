@@ -98,3 +98,10 @@ through the standalone smoke package; they do not resolve the entire example
 workspace. A custom `RUST_TEXTURE_EXAMPLE` still uses that project's own package
 configuration. Windows wgpu/pixel-buffer animation and 40-rotation texture
 replacement/context-recreation checks have passed under Vulkan validation.
+
+`task test-rust-shell-windowing` validates regular multi-view creation/resize/
+teardown. `task test-rust-shell-owned-windows` exercises dialogs, satellites and
+reparenting through Dart and the native adapter. Both require each retired view
+to present and retain logs/status/per-view statistics on success and failure.
+Windows ownership/tool-window/reparenting semantics are also checked by a native
+winit test in the ordinary host suite. Popups/tooltips remain unsupported.

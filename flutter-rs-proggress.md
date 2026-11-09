@@ -1961,3 +1961,36 @@ retains logs/status/statistics, including timeout failures, and accepts a bounde
 timeout override for diagnosis. The original owner-selection error is retained
 at `%TEMP%/flutter-rust-windowing-z2j8_nl9`. This checkpoint verifies regular
 multi-view routing/lifetime, not additional window-kind parity.
+
+### Windows dialogs and satellites checkpoint (2026-11-09)
+
+The Windows adapter now accepts regular, dialog and satellite window requests.
+Dialog/satellite parenting uses `SetWindowLongPtrW(GWLP_HWNDPARENT)` for owned
+top-levels, including satellite reparenting. It clears/checks last-error to
+correctly distinguish successful zero-valued previous ownership from failure.
+Satellites use winit skip-taskbar behavior plus `WS_EX_TOOLWINDOW`, clear
+`WS_EX_APPWINDOW`, and apply a frame-change notification. Shared creation now
+calls a platform configuration hook; Linux/Android keep a default no-op.
+
+A real Win32/winit native test verifies dialog ownership, absence of WS_CHILD,
+satellite tool-window styling and reparenting without moving the window.
+The full ordinary check suite passes (49 host tests, 17 C++ tests, core/queue
+and ordinary GPU checks, two build-helper tests, 14 accounting tests and all
+eight native desktop tests).
+
+Added `task test-rust-shell-owned-windows` backed by the shared Python runner
+and `windowing_fixture/lib/owned.dart`. Fifteen cycles create two regular
+parents, an owned dialog and a satellite, render/resize them, reparent the
+satellite to the other regular parent and then to the dialog, unmount and
+release all four, and verify 60 destruction callbacks. It passes under Vulkan
+validation with 252 primary presentations and status-zero close. Evidence:
+`%TEMP%/flutter-rust-windowing-adefi6up`. The harness additionally requires a
+presentation record for every retired view, rather than inferring child frames
+from primary activity. Popups/tooltips are still explicitly unsupported;
+parent-close cascade/minimization behavior is not claimed validated by this
+fixture. Other Windows GPUs and Linux/Android runtime coverage remain unavailable.
+
+The strengthened harness repeat passes with all 60 per-view presentation files
+nonempty and 238 primary presentations; evidence:
+`%TEMP%/flutter-rust-windowing-9r7ln04s`. The owned-window Dart fixture analyzes
+without issues. Python compilation/format checks pass.

@@ -5595,6 +5595,7 @@ impl WindowRegistry {
                 .create_window(attributes)
                 .map_err(|error| error.to_string())?,
         );
+        CurrentPlatform::configure_native_window(window.as_ref(), kind)?;
         if let Some(parent_window) = parent_window.as_ref() {
             CurrentPlatform::set_dialog_parent(window.as_ref(), parent_window.as_ref())?;
         }

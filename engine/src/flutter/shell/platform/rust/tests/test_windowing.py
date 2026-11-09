@@ -53,6 +53,10 @@ def main():
   if re.search(r"VUID-|VALIDATION \[|Validation Error|panicked|\[ERROR\]|EXCEPTION CAUGHT", output,
                re.IGNORECASE):
     raise RuntimeError("GPU or framework diagnostics during multi-view lifecycle")
+  for view_id in range(1, 61):
+    view_stats = Path(str(stats) + f".view-{view_id}")
+    if not view_stats.exists() or not view_stats.read_text().strip():
+      raise RuntimeError(f"Created view {view_id} did not present a frame")
   frames = stats.read_text().splitlines()
   if len(frames) < 60:
     raise RuntimeError(f"primary view only presented {len(frames)} frames")

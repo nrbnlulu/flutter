@@ -71,6 +71,13 @@ pub(crate) trait PlatformBackend {
         kind: NativeWindowKind,
     ) -> WindowAttributes;
 
+    fn configure_native_window(
+        _window: &dyn Window,
+        _kind: NativeWindowKind,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     fn is_wayland(event_loop: &dyn ActiveEventLoop) -> bool;
 
     fn create_popup(

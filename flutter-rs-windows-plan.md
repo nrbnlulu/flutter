@@ -348,3 +348,11 @@ fixture explicitly exports its pinned process ABI on Windows. See the progress
 log for the original lookup failure and retained successful-run evidence.
 Additional window kinds and DWM pacing are the next implementation checkpoints;
 IME composition and DPI-transition conformance remain coverage gaps.
+
+## Owned-window checkpoint (2026-11-09)
+
+Windows now selects the symbol-probed Rust framework owner. Regular multi-view
+lifecycle and the new dialog/satellite/reparenting fixture pass with 60 retired
+views each under Vulkan validation. Win32 ownership/tool-window styles and
+position-preserving reparenting are checked natively. Popups/tooltips, parent
+cascade/minimization coverage and DWM pacing remain pending.

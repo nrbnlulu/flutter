@@ -212,3 +212,9 @@ tasks:
     deps: [build-rust-shell]
     cmds:
       - '{{.RUST_TASK}} text-input'
+
+  test-rust-shell-owned-windows:
+    desc: Validate dialogs, satellites, reparenting and repeated view teardown.
+    deps: [build-rust-shell]
+    cmds:
+      - '{{.RUST_TASK}} owned-windowing'
