@@ -1,6 +1,5 @@
 use std::{
     fs, io,
-    os::unix::fs::symlink,
     path::{Component, Path, PathBuf},
     process::Command,
 };
@@ -27,6 +26,7 @@ pub fn run(command: &mut Command) -> Result<()> {
 
 /// Points `link` at `target`, replacing whatever is there. A link that already
 /// has the right target is left alone so file times stay stable.
+#[cfg(unix)]
 pub fn replace_link(link: &Path, target: &Path) -> Result<()> {
     match fs::symlink_metadata(link) {
         Ok(meta) => {
@@ -41,8 +41,53 @@ pub fn replace_link(link: &Path, target: &Path) -> Result<()> {
     if let Some(parent) = link.parent() {
         fs::create_dir_all(parent)?;
     }
-    symlink(target, link)
+    std::os::unix::fs::symlink(target, link)
         .with_context(|| format!("link {} -> {}", link.display(), target.display()))
+}
+
+/// Prefer native links; copy when Windows developer-mode symlinks are unavailable.
+#[cfg(windows)]
+pub fn replace_link(link: &Path, target: &Path) -> Result<()> {
+    replace_link_with(link, target, |target, link| {
+        if target.is_dir() {
+            std::os::windows::fs::symlink_dir(target, link)
+        } else {
+            std::os::windows::fs::symlink_file(target, link)
+        }
+    })
+}
+
+#[cfg(windows)]
+fn replace_link_with(
+    link: &Path,
+    target: &Path,
+    symlink: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> Result<()> {
+    let target = if target.is_absolute() {
+        target.to_owned()
+    } else {
+        link.parent().context("link has no parent")?.join(target)
+    };
+    if fs::symlink_metadata(link).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        if fs::read_link(link)? == target && link.exists() {
+            return Ok(());
+        }
+        remove_path(link)?;
+    }
+    if !link.exists() {
+        if let Some(parent) = link.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let result = symlink(&target, link);
+        if result.is_ok() {
+            return Ok(());
+        }
+    }
+    if target.is_dir() {
+        copy_dir(&target, link)
+    } else {
+        copy_if_changed(&target, link)
+    }
 }
 
 /// Removes a file, symlink or directory tree; missing paths are fine.
@@ -52,6 +97,13 @@ pub fn remove_path(path: &Path) -> Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error).with_context(|| format!("stat {}", path.display())),
     };
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if meta.file_type().is_symlink_dir() {
+            return fs::remove_dir(path).with_context(|| format!("remove {}", path.display()));
+        }
+    }
     if meta.is_dir() {
         fs::remove_dir_all(path)
     } else {
@@ -156,6 +208,30 @@ mod tests {
     use super::{testing::tempdir, *};
 
     #[test]
+    #[cfg(windows)]
+    fn denied_symlinks_copy_and_refresh_without_stale_files() {
+        let root = testing::tempdir("link_denied");
+        let source = root.join("source");
+        let link = root.join("copy");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("old"), "old").unwrap();
+        let denied = |_: &Path, _: &Path| Err(io::Error::from_raw_os_error(1314));
+        replace_link_with(&link, &source, denied).unwrap();
+        assert!(!link.is_symlink());
+        assert_eq!(fs::read_to_string(link.join("old")).unwrap(), "old");
+        fs::remove_file(source.join("old")).unwrap();
+        fs::write(source.join("new"), "updated").unwrap();
+        replace_link_with(&link, &source, denied).unwrap();
+        assert!(!link.join("old").exists());
+        assert_eq!(fs::read_to_string(link.join("new")).unwrap(), "updated");
+        let file = root.join("file-copy");
+        replace_link_with(&file, &source.join("new"), denied).unwrap();
+        fs::write(source.join("new"), "changed").unwrap();
+        replace_link_with(&file, &source.join("new"), denied).unwrap();
+        assert_eq!(fs::read_to_string(file).unwrap(), "changed");
+    }
+
+    #[test]
     fn staging_preserves_unchanged_files_and_removes_obsolete_entries() {
         let dir = tempdir("incremental_staging");
         let source = dir.join("source");
@@ -165,7 +241,9 @@ mod tests {
         fs::write(source.join("change"), "old!").unwrap();
         copy_dir(&source, &destination).unwrap();
         let sentinel = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
-        fs::File::open(destination.join("nested/keep"))
+        fs::OpenOptions::new()
+            .write(true)
+            .open(destination.join("nested/keep"))
             .unwrap()
             .set_modified(sentinel)
             .unwrap();

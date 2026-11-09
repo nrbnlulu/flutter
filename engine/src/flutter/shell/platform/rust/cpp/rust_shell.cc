@@ -593,6 +593,17 @@ bool RustShell::GetWindowState(FlutterRustViewId view_id,
                                                view_id, state) != 0;
 }
 
+bool RustShell::UpdatePopupPosition(
+    FlutterRustViewId view_id,
+    const FlutterRustPopupWindowRequest* request) {
+  if (view_id <= kFlutterImplicitViewId || !request ||
+      !windowing_callbacks_.update_popup_position) {
+    return false;
+  }
+  return windowing_callbacks_.update_popup_position(
+             windowing_callbacks_.user_data, view_id, request) != 0;
+}
+
 void RustShell::SetWindowSize(FlutterRustViewId view_id,
                               double width,
                               double height) {
@@ -1018,6 +1029,15 @@ extern "C" int FlutterRustShellWindowGetState(int64_t engine_id,
              view_id, state)
              ? 1
              : 0;
+}
+
+extern "C" int FlutterRustShellWindowUpdatePopupPosition(
+    int64_t engine_id,
+    FlutterRustViewId view_id,
+    const FlutterRustPopupWindowRequest* request) {
+  return engine_id != 0 &&
+         reinterpret_cast<flutter::RustShell*>(engine_id)->UpdatePopupPosition(
+             view_id, request);
 }
 
 extern "C" void FlutterRustShellWindowSetSize(int64_t engine_id,

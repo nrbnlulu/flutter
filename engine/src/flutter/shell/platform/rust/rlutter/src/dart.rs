@@ -79,6 +79,7 @@ fn assemble_args(
 
 /// Compiles the app's Dart code and assets for `platform` (a Flutter target
 /// platform name such as `linux-x64`) into `output`.
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_bundle(
     flutter: &Flutter,
     project: &Project,

@@ -119,6 +119,8 @@ pub(crate) enum PopupAnchor {
     BottomRight,
 }
 
+// Wayland forwards placement to its compositor; native desktop adapters can
+// resolve the same anchors and constraints against the monitor work area.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PopupPlacement {
     pub(crate) width: u32,
@@ -580,7 +582,10 @@ extern "C" fn set_window_constraints_callback(
     max_height: f64,
 ) {
     let _ = with_window_registry(|windows| {
-        let Some(view) = windows.view(view_id) else {
+        let Some(window_id) = windows.view_windows.get(&view_id).copied() else {
+            return;
+        };
+        let Some(view) = windows.views.get_mut(&window_id) else {
             return;
         };
         if has_constraints == 0 {
@@ -591,11 +596,21 @@ extern "C" fn set_window_constraints_callback(
         if !valid_constraints(min_width, min_height, max_width, max_height) {
             return;
         }
+        if let Some(placement) = &mut view.popup_placement {
+            placement.width = f64::from(placement.width)
+                .clamp(min_width.max(1.0), finite_maximum(max_width).max(1.0))
+                .round() as u32;
+            placement.height = f64::from(placement.height)
+                .clamp(min_height.max(1.0), finite_maximum(max_height).max(1.0))
+                .round() as u32;
+        }
         view.window
             .set_min_surface_size(Some(LogicalSize::new(min_width, min_height).into()));
         view.window.set_max_surface_size(Some(
             LogicalSize::new(finite_maximum(max_width), finite_maximum(max_height)).into(),
         ));
+        #[cfg(target_os = "windows")]
+        windows.reposition_popups(view_id);
     });
 }
 extern "C" fn set_window_title_callback(
@@ -682,6 +697,47 @@ extern "C" fn set_window_parent_callback(
         .is_some_and(|result| result.is_ok())
         .into()
 }
+extern "C" fn update_popup_position_callback(
+    _user_data: *mut c_void,
+    view_id: FlutterRustViewId,
+    request: *const FlutterRustPopupWindowRequest,
+) -> i32 {
+    if request.is_null() {
+        return 0;
+    }
+    // SAFETY: the synchronous private ABI caller retains a readable request.
+    let Some(request) = decode_popup_request(unsafe { &*request }) else {
+        return 0;
+    };
+    with_window_registry(|windows| {
+        if windows.removing_views.contains(&view_id) {
+            return false;
+        }
+        let Some(window_id) = windows.view_windows.get(&view_id).copied() else {
+            return false;
+        };
+        let Some(view) = windows.views.get_mut(&window_id) else {
+            return false;
+        };
+        if view.kind != request.kind || view.parent_view_id != Some(request.parent_view_id) {
+            return false;
+        }
+        let Some(placement) = &mut view.popup_placement else {
+            return false;
+        };
+        placement.anchor_rect = request.anchor_rect;
+        placement.anchor = request.parent_anchor;
+        placement.gravity = request.gravity;
+        placement.offset = request.offset;
+        placement.constraint_adjustment = request.constraint_adjustment;
+        #[cfg(target_os = "windows")]
+        windows.reposition_popups(view_id);
+        true
+    })
+    .unwrap_or(false)
+    .into()
+}
+
 fn windowing_callbacks() -> FlutterRustWindowingCallbacks {
     FlutterRustWindowingCallbacks {
         user_data: std::ptr::null_mut(),
@@ -700,6 +756,7 @@ fn windowing_callbacks() -> FlutterRustWindowingCallbacks {
         set_window_fullscreen: Some(set_window_fullscreen_callback),
         set_window_event_callback: Some(set_window_event_callback),
         set_window_parent: Some(set_window_parent_callback),
+        update_popup_position: Some(update_popup_position_callback),
     }
 }
 extern "C" fn complete_view_operation(
@@ -1859,7 +1916,7 @@ struct TextInputInbox {
     texture_fixture_messages: Mutex<VecDeque<String>>,
     wake_proxy: HostEventSender,
     exit: Arc<ApplicationExitCoordinator>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     clipboard: Mutex<Option<arboard::Clipboard>>,
 }
 struct ApplicationExitCoordinator {
@@ -1905,7 +1962,7 @@ impl TextInputInbox {
                 pending: AtomicBool::new(false),
                 wake_proxy,
             }),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             clipboard: Mutex::new(None),
         }
     }
@@ -1973,9 +2030,9 @@ extern "C" fn handle_platform_message(
             );
             return FlutterRustPlatformMessageDisposition::Pending;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         if let Ok(call) = serde_json::from_slice::<RawMethodCall>(message)
-            && let Some(envelope) = handle_linux_clipboard_call(inbox, &call)
+            && let Some(envelope) = handle_desktop_clipboard_call(inbox, &call)
         {
             if response_handle.0.is_null() {
                 return FlutterRustPlatformMessageDisposition::Success;
@@ -2703,7 +2760,15 @@ const SYNCED_MODIFIERS: [(ModifiersState, NamedKey, &[KeyCode]); 4] = [
         NamedKey::Control,
         &[KeyCode::ControlLeft, KeyCode::ControlRight],
     ),
-    (ModifiersState::ALT, NamedKey::Alt, &[KeyCode::AltLeft]),
+    (
+        ModifiersState::ALT,
+        NamedKey::Alt,
+        &[
+            KeyCode::AltLeft,
+            #[cfg(target_os = "windows")]
+            KeyCode::AltRight,
+        ],
+    ),
     (
         ModifiersState::META,
         NamedKey::Meta,
@@ -2732,6 +2797,8 @@ struct KeyboardState {
     /// NumLock state Flutter's `HardwareKeyboard` believes: it starts
     /// unlocked and flips on every NumLock key-down it receives.
     flutter_num_lock: bool,
+    flutter_caps_lock: bool,
+    flutter_scroll_lock: bool,
 }
 
 impl KeyboardState {
@@ -2741,6 +2808,8 @@ impl KeyboardState {
             modifiers: ModifiersState::empty(),
             pressed: HashMap::new(),
             flutter_num_lock: false,
+            flutter_caps_lock: false,
+            flutter_scroll_lock: false,
         }
     }
 
@@ -2836,6 +2905,51 @@ impl KeyboardState {
         events
     }
 
+    fn sync_locks(
+        &mut self,
+        state: [bool; 3],
+        own_physical: u64,
+        pressed: bool,
+    ) -> Vec<FlutterRustKeyEvent> {
+        let mut events = Vec::new();
+        for (index, (code, named)) in [
+            (KeyCode::CapsLock, NamedKey::CapsLock),
+            (KeyCode::NumLock, NamedKey::NumLock),
+            (KeyCode::ScrollLock, NamedKey::ScrollLock),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let key = PhysicalKey::Code(code);
+            let (Some(physical), Some(logical)) =
+                (physical_key_id(key), named_logical_key(named, key))
+            else {
+                continue;
+            };
+            // GetKeyState already includes the current key-down's toggle.
+            let target = state[index] ^ (pressed && own_physical == physical);
+            let current = match index {
+                0 => self.flutter_caps_lock,
+                1 => self.flutter_num_lock,
+                _ => self.flutter_scroll_lock,
+            };
+            if current != target {
+                events.push(self.synthesized_event(
+                    FlutterRustKeyEventType::Down,
+                    physical,
+                    logical,
+                ));
+                events.push(self.synthesized_event(FlutterRustKeyEventType::Up, physical, logical));
+                match index {
+                    0 => self.flutter_caps_lock = target,
+                    1 => self.flutter_num_lock = target,
+                    _ => self.flutter_scroll_lock = target,
+                };
+            }
+        }
+        events
+    }
+
     /// Infers the OS NumLock state from a numpad key. xkb has already applied
     /// it: an unshifted numpad key yields its digit (or `.`) with NumLock on
     /// and its navigation key with NumLock off. Returns `None` for keys that
@@ -2857,8 +2971,14 @@ impl KeyboardState {
         Some(matches!(logical_key, Key::Character(_)))
     }
 
+    fn text_modifiers(&self) -> ModifiersState {
+        let right_alt = physical_key_id(PhysicalKey::Code(KeyCode::AltRight))
+            .is_some_and(|physical| self.pressed.contains_key(&physical));
+        CurrentPlatform::text_modifiers(self.modifiers, right_alt)
+    }
+
     fn committed_text<'a>(&self, event: &'a WinitKeyEvent) -> Option<&'a str> {
-        committed_key_text(self.modifiers, event.state, event.text.as_deref())
+        committed_key_text(self.text_modifiers(), event.state, event.text.as_deref())
     }
 
     /// Translates one winit key event into the packets Flutter needs to stay
@@ -2882,11 +3002,18 @@ impl KeyboardState {
             repeat,
             synthesized,
         )?;
-        if let Some(shortcut_key) = shortcut_logical_key(self.modifiers, event.physical) {
+        if let Some(shortcut_key) = shortcut_logical_key(self.text_modifiers(), event.physical) {
             event.logical = shortcut_key;
         }
 
         let mut before = self.sync_modifiers(Some(event.physical), true);
+        if let Some(locks) = CurrentPlatform::lock_state() {
+            before.extend(self.sync_locks(
+                locks,
+                event.physical,
+                state == ElementState::Pressed && !repeat,
+            ));
+        }
 
         let num_lock_physical = physical_key_id(PhysicalKey::Code(KeyCode::NumLock));
         let num_lock_logical = named_logical_key(NamedKey::NumLock, physical_key);
@@ -2911,6 +3038,12 @@ impl KeyboardState {
                         logical,
                     ));
                 }
+                if Some(event.physical) == physical_key_id(PhysicalKey::Code(KeyCode::CapsLock)) {
+                    self.flutter_caps_lock = !self.flutter_caps_lock;
+                }
+                if Some(event.physical) == physical_key_id(PhysicalKey::Code(KeyCode::ScrollLock)) {
+                    self.flutter_scroll_lock = !self.flutter_scroll_lock;
+                }
                 if Some(event.physical) == num_lock_physical {
                     self.flutter_num_lock = !self.flutter_num_lock;
                 }
@@ -2927,7 +3060,8 @@ impl KeyboardState {
             },
         };
 
-        let raw_message = self.raw_event_message(&event);
+        let raw_message = CurrentPlatform::legacy_key_message(physical_key, &event)
+            .unwrap_or_else(|| self.raw_event_message(&event));
         Some(ProcessedKey {
             before,
             event: send.then_some(event),
@@ -3622,8 +3756,8 @@ mod android_app {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn handle_linux_clipboard_call(inbox: &TextInputInbox, call: &RawMethodCall) -> Option<Vec<u8>> {
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn handle_desktop_clipboard_call(inbox: &TextInputInbox, call: &RawMethodCall) -> Option<Vec<u8>> {
     use serde_json::json;
 
     let mut clipboard = inbox.clipboard.lock();
@@ -3939,6 +4073,7 @@ fn run_application_with_fixture(
         vsync_host,
         vsync_armed: false,
         next_vsync: None,
+        native_vsync_interval: None,
         text_input_inbox,
         text_input_session: TextInputSession::default(),
         lifecycle_state: LifecycleState::new(),
@@ -3966,6 +4101,7 @@ struct ShellApplication {
     vsync_host: Box<VsyncHost>,
     vsync_armed: bool,
     next_vsync: Option<Instant>,
+    native_vsync_interval: Option<Duration>,
     text_input_inbox: Box<TextInputInbox>,
     text_input_session: TextInputSession,
     lifecycle_state: LifecycleState,
@@ -4322,6 +4458,9 @@ struct ViewWindow {
     view_id: FlutterRustViewId,
     kind: NativeWindowKind,
     parent_view_id: Option<FlutterRustViewId>,
+    popup_placement: Option<PopupPlacement>,
+    #[cfg(target_os = "windows")]
+    popup_dismissed: bool,
     // Stable callback owner. Raster releases its swapchain before the host
     // receives removal completion and drops this view's native window.
     gpu_broker: Arc<GpuBroker>,
@@ -4356,6 +4495,48 @@ enum NativeWindowKind {
 }
 
 impl ShellApplication {
+    #[cfg(target_os = "windows")]
+    fn active_popup(&self) -> Option<(FlutterRustViewId, Arc<dyn Window>)> {
+        let windows = self.windows.borrow();
+        windows
+            .views
+            .values()
+            .filter(|view| {
+                view.kind == NativeWindowKind::Popup
+                    && !view.popup_dismissed
+                    && !windows.removing_views.contains(&view.view_id)
+            })
+            .max_by_key(|view| view.view_id)
+            .map(|view| (view.view_id, Arc::clone(&view.window)))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn dismiss_popup(&mut self, id: FlutterRustViewId) {
+        let callback = {
+            let mut windows = self.windows.borrow_mut();
+            if windows.removing_views.contains(&id) {
+                return;
+            }
+            let Some(window_id) = windows.view_windows.get(&id).copied() else {
+                return;
+            };
+            let Some(view) = windows.views.get_mut(&window_id) else {
+                return;
+            };
+            if view.kind != NativeWindowKind::Popup || view.popup_dismissed {
+                return;
+            }
+            view.popup_dismissed = true;
+            CurrentPlatform::release_popup(view.window.as_ref());
+            windows.window_event_callback
+        };
+        // Follow Wayland's popup_done path: Dart requests removal, and raster
+        // releases the view before the HWND and its Vulkan surface are dropped.
+        if let Some(callback) = callback {
+            callback(id, FlutterRustWindowEvent::CloseRequested);
+        }
+    }
+
     fn pacing_window(&self) -> Option<Arc<dyn Window>> {
         let windows = self.windows.borrow();
         windows
@@ -4372,9 +4553,14 @@ impl ShellApplication {
             return;
         }
         self.vsync_armed = false;
-        let interval = self.pacing_window().map_or(16_666_667, |window| {
-            window_frame_interval_nanos(window.as_ref())
-        });
+        let interval = self.native_vsync_interval.map_or_else(
+            || {
+                self.pacing_window().map_or(16_666_667, |window| {
+                    window_frame_interval_nanos(window.as_ref())
+                })
+            },
+            |interval| interval.as_nanos() as u64,
+        );
         self.next_vsync = Some(now + Duration::from_nanos(interval));
         let shell = self.windows.borrow().shell;
         if let Some(shell) = shell {
@@ -4596,7 +4782,7 @@ impl ApplicationHandler for ShellApplication {
                 let platform_message_callbacks = self.text_input_inbox.callbacks();
                 let vsync_callbacks = self
                     .vsync_host
-                    .callbacks(CurrentPlatform::is_wayland(event_loop));
+                    .callbacks(CurrentPlatform::uses_host_vsync(event_loop));
                 let task_runner_handle = self.task_runner_host.task_runner_handle();
                 let shell = gpu_broker
                     .with_vulkan_context(|context_data| {
@@ -4689,6 +4875,9 @@ impl ApplicationHandler for ShellApplication {
                     view_id: FlutterRustViewId::IMPLICIT,
                     kind: NativeWindowKind::Regular,
                     parent_view_id: None,
+                    popup_placement: None,
+                    #[cfg(target_os = "windows")]
+                    popup_dismissed: false,
                     gpu_broker,
                     window,
                     _parent_window: None,
@@ -4766,6 +4955,8 @@ impl ApplicationHandler for ShellApplication {
             return;
         };
         match event {
+            #[cfg(target_os = "windows")]
+            WindowEvent::Moved(_) => self.windows.borrow().reposition_popups(view_id),
             WindowEvent::SurfaceResized(size) => {
                 let (metrics, visible) = {
                     let mut windows = self.windows.borrow_mut();
@@ -4784,6 +4975,8 @@ impl ApplicationHandler for ShellApplication {
                     (metrics, windows.aggregate_window_state().0)
                 };
                 self.windows.borrow().update_satellite_visibility(view_id);
+                #[cfg(target_os = "windows")]
+                self.windows.borrow().reposition_popups(view_id);
                 if let Some(shell) = { self.windows.borrow().shell } {
                     set_cpp_shell_viewport_metrics(shell, view_id, metrics);
                 }
@@ -4812,6 +5005,8 @@ impl ApplicationHandler for ShellApplication {
                         .expect("winit Vulkan surface reconfiguration failed");
                     WindowMetrics::from_window(view.window.as_ref(), _scale_factor)
                 };
+                #[cfg(target_os = "windows")]
+                self.windows.borrow().reposition_popups(view_id);
                 if let Some(shell) = { self.windows.borrow().shell } {
                     set_cpp_shell_viewport_metrics(shell, view_id, metrics);
                 }
@@ -4823,6 +5018,33 @@ impl ApplicationHandler for ShellApplication {
                 }
             }
             WindowEvent::Focused(focused) => {
+                #[cfg(target_os = "windows")]
+                if !focused {
+                    // WM_NCACTIVATE can arrive before GetForegroundWindow
+                    // changes. Trust winit's focus transition here.
+                    let dismiss = {
+                        let windows = self.windows.borrow();
+                        windows
+                            .views
+                            .values()
+                            .filter(|view| view.kind == NativeWindowKind::Popup)
+                            .filter(|view| {
+                                let mut parent = view.parent_view_id;
+                                while let Some(id) = parent {
+                                    if id == view_id {
+                                        return true;
+                                    }
+                                    parent = windows.view(id).and_then(|view| view.parent_view_id);
+                                }
+                                false
+                            })
+                            .map(|view| view.view_id)
+                            .collect::<Vec<_>>()
+                    };
+                    for popup in dismiss {
+                        self.dismiss_popup(popup);
+                    }
+                }
                 let (any_focused, released_keys) = {
                     let mut windows = self.windows.borrow_mut();
                     let view = windows
@@ -4875,6 +5097,15 @@ impl ApplicationHandler for ShellApplication {
                 is_synthetic,
                 ..
             } => {
+                #[cfg(target_os = "windows")]
+                if event.state == ElementState::Pressed
+                    && event.logical_key == Key::Named(NamedKey::Escape)
+                {
+                    if let Some((id, _)) = self.active_popup() {
+                        self.dismiss_popup(id);
+                        return;
+                    }
+                }
                 let (committed_text, processed) = {
                     let mut windows = self.windows.borrow_mut();
                     let keyboard = &mut windows
@@ -5009,6 +5240,37 @@ impl ApplicationHandler for ShellApplication {
                 button,
                 ..
             } => {
+                #[cfg(target_os = "windows")]
+                {
+                    let popup = {
+                        let windows = self.windows.borrow();
+                        windows
+                            .view(view_id)
+                            .filter(|view| {
+                                view.kind == NativeWindowKind::Popup && !view.popup_dismissed
+                            })
+                            .map(|view| (Arc::clone(&view.window), view.window.surface_size()))
+                    };
+                    if let Some((window, size)) = popup {
+                        if state == ElementState::Pressed
+                            && (position.x < 0.0
+                                || position.y < 0.0
+                                || position.x >= f64::from(size.width)
+                                || position.y >= f64::from(size.height))
+                        {
+                            self.dismiss_popup(view_id);
+                            return;
+                        }
+                        // Winit releases capture before dispatching the last
+                        // button-up. Retain the popup grab after an inside click.
+                        if state == ElementState::Released {
+                            if CurrentPlatform::grab_popup(window.as_ref()).is_err() {
+                                self.dismiss_popup(view_id);
+                                return;
+                            }
+                        }
+                    }
+                }
                 let mut windows = self.windows.borrow_mut();
                 let pointer = &mut windows
                     .views
@@ -5052,6 +5314,10 @@ impl ApplicationHandler for ShellApplication {
                 self.send_pointer_events(events);
             }
             WindowEvent::RedrawRequested => {
+                // WaitUntil does not run while Win32 owns the modal sizing
+                // loop. A one-shot HWND timer posts this event at our deadline.
+                #[cfg(target_os = "windows")]
+                self.about_to_wait(event_loop);
                 self.deliver_vsync();
             }
             WindowEvent::CloseRequested => {
@@ -5095,13 +5361,25 @@ impl ApplicationHandler for ShellApplication {
                 HostEvent::TaskScheduled => {}
                 HostEvent::VsyncRequested => {
                     if self.vsync_host.take_request() && !self.windows.borrow().views.is_empty() {
+                        if !self.vsync_armed {
+                            let timing = self
+                                .pacing_window()
+                                .and_then(|window| CurrentPlatform::next_vsync(window.as_ref()));
+                            self.native_vsync_interval =
+                                timing.as_ref().map(|timing| timing.interval);
+                            if let Some(timing) = timing {
+                                self.next_vsync = Some(timing.deadline);
+                            }
+                        }
                         self.vsync_armed = true;
                         // Vsync is engine-wide. Idle views have no pending
                         // Wayland frame callback and redraw immediately, so
                         // requesting every view can continuously wake the UI
                         // thread while raster is still presenting a frame.
-                        if let Some(window) = self.pacing_window() {
-                            window.request_redraw();
+                        if CurrentPlatform::is_wayland(event_loop) {
+                            if let Some(window) = self.pacing_window() {
+                                window.request_redraw();
+                            }
                         }
                     }
                 }
@@ -5130,6 +5408,12 @@ impl ApplicationHandler for ShellApplication {
                         // more winit events. Drop it only after releasing the
                         // registry's RefCell borrow.
                         drop(removed);
+                        #[cfg(target_os = "windows")]
+                        if let Some((id, window)) = self.active_popup() {
+                            if CurrentPlatform::grab_popup(window.as_ref()).is_err() {
+                                self.dismiss_popup(id);
+                            }
+                        }
                         if let Some(callback) = _callback {
                             callback(view_id, FlutterRustWindowEvent::Destroyed);
                         }
@@ -5179,6 +5463,8 @@ impl ApplicationHandler for ShellApplication {
                 }
             }
         }
+        #[cfg(target_os = "windows")]
+        self.about_to_wait(event_loop);
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -5424,6 +5710,10 @@ impl ApplicationHandler for ShellApplication {
             let poll_deadline = Instant::now() + Duration::from_millis(16);
             next_deadline = Some(next_deadline.map_or(poll_deadline, |d| d.min(poll_deadline)));
         }
+        #[cfg(target_os = "windows")]
+        if let Some(window) = self.pacing_window() {
+            CurrentPlatform::arm_wake(window.as_ref(), next_deadline);
+        }
         match next_deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -5444,6 +5734,11 @@ impl WindowRegistry {
         kind: NativeWindowKind,
         parent_view_id: Option<FlutterRustViewId>,
     ) -> Result<CreatedRegularView, String> {
+        if !CurrentPlatform::supports_window_kind(kind) {
+            return Err(format!(
+                "{kind:?} windows are not implemented on this platform"
+            ));
+        }
         let shrink_wrap = request.shrink_wrap;
         let layout_constraints =
             request
@@ -5501,6 +5796,7 @@ impl WindowRegistry {
                 .create_window(attributes)
                 .map_err(|error| error.to_string())?,
         );
+        CurrentPlatform::configure_native_window(window.as_ref(), kind)?;
         if let Some(parent_window) = parent_window.as_ref() {
             CurrentPlatform::set_dialog_parent(window.as_ref(), parent_window.as_ref())?;
         }
@@ -5537,6 +5833,9 @@ impl WindowRegistry {
                 view_id,
                 kind,
                 parent_view_id,
+                popup_placement: None,
+                #[cfg(target_os = "windows")]
+                popup_dismissed: false,
                 gpu_broker,
                 window,
                 _parent_window: parent_window,
@@ -5586,18 +5885,19 @@ impl WindowRegistry {
         let (min_width, min_height, max_width, max_height) = request.constraints;
         let initial_width = min_width.max(1.0).min(finite_maximum(max_width)).round() as u32;
         let initial_height = min_height.max(1.0).min(finite_maximum(max_height)).round() as u32;
+        let placement = PopupPlacement {
+            width: initial_width,
+            height: initial_height,
+            anchor_rect: request.anchor_rect,
+            anchor: request.parent_anchor,
+            gravity: request.gravity,
+            offset: request.offset,
+            constraint_adjustment: request.constraint_adjustment,
+        };
         let window: Arc<dyn Window> = Arc::from(CurrentPlatform::create_popup(
             event_loop,
             parent_window.as_ref(),
-            PopupPlacement {
-                width: initial_width,
-                height: initial_height,
-                anchor_rect: request.anchor_rect,
-                anchor: request.parent_anchor,
-                gravity: request.gravity,
-                offset: request.offset,
-                constraint_adjustment: request.constraint_adjustment,
-            },
+            placement,
             matches!(request.kind, NativeWindowKind::Popup),
         )?);
         let view_id = FlutterRustViewId(self.next_view_id);
@@ -5624,6 +5924,9 @@ impl WindowRegistry {
                 view_id,
                 kind: request.kind,
                 parent_view_id: Some(request.parent_view_id),
+                popup_placement: Some(placement),
+                #[cfg(target_os = "windows")]
+                popup_dismissed: false,
                 gpu_broker,
                 window,
                 _parent_window: Some(parent_window),
@@ -5758,6 +6061,37 @@ impl WindowRegistry {
         self.update_satellite_visibility(parent_view_id);
         Ok(())
     }
+    #[cfg(target_os = "windows")]
+    fn reposition_popups(&self, changed: FlutterRustViewId) {
+        let mut pending = vec![changed];
+        while let Some(view_id) = pending.pop() {
+            if self.removing_views.contains(&view_id) {
+                continue;
+            }
+            let Some(view) = self.view(view_id) else {
+                continue;
+            };
+            if let (Some(placement), Some(parent_id)) = (view.popup_placement, view.parent_view_id)
+            {
+                if let Some(parent) = self.view(parent_id) {
+                    if let Err(error) = CurrentPlatform::reposition_popup(
+                        view.window.as_ref(),
+                        parent.window.as_ref(),
+                        placement,
+                    ) {
+                        log::error!("Failed to reposition native popup: {error}");
+                    }
+                }
+            }
+            pending.extend(
+                self.views
+                    .values()
+                    .filter(|child| child.parent_view_id == Some(view_id))
+                    .map(|child| child.view_id),
+            );
+        }
+    }
+
     fn update_satellite_visibility(&self, parent_view_id: FlutterRustViewId) {
         let Some(parent) = self.view(parent_view_id) else {
             return;

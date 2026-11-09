@@ -5,6 +5,8 @@
 
 """End-to-end animated wgpu texture test for the Flutter Rust shell."""
 
+from native_desktop import desktop
+
 import argparse
 import json
 import os
@@ -21,38 +23,26 @@ DIAGNOSTIC = re.compile(
     re.IGNORECASE,
 )
 
-
-def clients() -> list[dict[str, object]]:
-  result = subprocess.run(
-      ["hyprctl", "clients", "-j"],
-      check=True,
-      capture_output=True,
-      text=True,
-  )
-  return json.loads(result.stdout)
+_desktop = None
 
 
-def dispatch_window(action: str, address: str, *, width=0, height=0, check=True):
-  # Hyprland 0.55+ interprets dispatch arguments as Lua. Detect capabilities
-  # without executing an action; never fall back after a failed close request.
-  probe = subprocess.run(
-      ["hyprctl", "eval", 'assert(type(hl.dsp.window.close) == "function")'],
-      capture_output=True,
-      text=True,
-  )
-  selector = f"address:{address}"
-  if probe.returncode == 0:
-    options = f"window = {json.dumps(selector)}"
-    if action == "resize":
-      options += f", x = {width}, y = {height}, relative = false"
-    elif action == "float":
-      options += ', action = "enable"'
-    command = ["hyprctl", "dispatch", f"hl.dsp.window.{action}({{{options}}})"]
-  else:
-    legacy = {"close": "closewindow", "float": "togglefloating", "resize": "resizewindowpixel"}
-    argument = f"exact {width} {height},{selector}" if action == "resize" else selector
-    command = ["hyprctl", "dispatch", legacy[action], argument]
-  return subprocess.run(command, check=check, capture_output=True, text=True)
+def native():
+  global _desktop
+  if _desktop is None:
+    _desktop = desktop()
+  return _desktop
+
+
+def clients():
+  return native().clients()
+
+
+def dispatch_window(action, address, *, width=0, height=0, check=True):
+  try:
+    native().action(action, address, width=width, height=height)
+  except (OSError, RuntimeError, subprocess.CalledProcessError):
+    if check:
+      raise
 
 
 def presentation_count(path: Path) -> int:
@@ -193,14 +183,13 @@ def main() -> None:
           client = next(item for item in clients() if str(item.get("address")) == address)
           x, y = client["at"]
           width, height = client["size"]
-          geometry = f"{x},{y} {width}x{height}"
-          subprocess.run(["grim", "-g", geometry, str(first_capture)], check=True)
+          native().capture_window(address, first_capture)
           if not wait_until(
               lambda: presentation_count(presentations) >= baseline + 10,
               process,
           ):
             raise RuntimeError("animated texture stopped presenting")
-          subprocess.run(["grim", "-g", geometry, str(second_capture)], check=True)
+          native().capture_window(address, second_capture)
           if first_capture.read_bytes() == second_capture.read_bytes():
             raise RuntimeError("presentations advanced but captured pixels did not change")
 

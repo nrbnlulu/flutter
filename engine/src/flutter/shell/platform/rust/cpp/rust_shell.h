@@ -113,6 +113,8 @@ class RustShell final {
       const FlutterRustSatelliteWindowRequest* request);
   void DestroyWindow(FlutterRustViewId view_id);
   bool GetWindowState(FlutterRustViewId view_id, FlutterRustWindowState* state);
+  bool UpdatePopupPosition(FlutterRustViewId view_id,
+                           const FlutterRustPopupWindowRequest* request);
   void SetWindowSize(FlutterRustViewId view_id, double width, double height);
   void SetWindowConstraints(FlutterRustViewId view_id,
                             int32_t has_constraints,

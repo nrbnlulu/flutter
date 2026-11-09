@@ -252,6 +252,8 @@ class FakeFlutterView extends Fake implements FlutterView {
   @override
   final int viewId;
   @override
+  PlatformDispatcher get platformDispatcher => PlatformDispatcher.instance;
+  @override
   double devicePixelRatio;
   @override
   Size physicalSize;

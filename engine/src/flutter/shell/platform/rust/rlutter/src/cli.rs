@@ -57,6 +57,7 @@ pub struct PassthroughArgs {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum RustPlatform {
     Linux,
+    Windows,
     Android,
 }
 
@@ -66,7 +67,7 @@ pub struct CreateArgs {
     pub dir: PathBuf,
 
     /// Rust shells to generate.
-    #[arg(long, value_enum, value_delimiter = ',', default_value = "linux")]
+    #[arg(long, value_enum, value_delimiter = ',', default_value = if cfg!(windows) { "windows" } else { "linux" })]
     pub rust_platforms: Vec<RustPlatform>,
 
     /// Organization, forwarded to `flutter create`.
@@ -87,6 +88,8 @@ pub struct CreateArgs {
 pub enum BuildTarget {
     /// Build for the Linux host.
     Linux(BuildArgs),
+    /// Build for the Windows x64 host.
+    Windows(BuildArgs),
     /// Build an Android APK.
     Android(AndroidBuildArgs),
 }
@@ -144,11 +147,11 @@ pub struct RunArgs {
     #[arg(short = 't', long, default_value = "lib/main.dart")]
     pub target: String,
 
-    /// Write VM service details for an editor debugger (Linux debug mode).
+    /// Write VM service details for a desktop editor debugger.
     #[arg(long, value_name = "FILE")]
     pub vm_service_info_file: Option<PathBuf>,
 
-    /// Device id from `rlutter devices`, or a platform (`android`, `linux`) to
+    /// Device id from `rlutter devices`, or a platform (`android`, `linux`, `windows`) to
     /// choose among its devices. Several candidates open a picker.
     #[arg(short = 'd', long)]
     pub device: Option<String>,
@@ -221,7 +224,14 @@ mod tests {
         };
         assert_eq!(args.flutter_args, ["--platforms=android", "--empty"]);
         assert_eq!(args.org.as_deref(), Some("com.x"));
-        assert_eq!(args.rust_platforms, [RustPlatform::Linux]);
+        assert_eq!(
+            args.rust_platforms,
+            [if cfg!(windows) {
+                RustPlatform::Windows
+            } else {
+                RustPlatform::Linux
+            }]
+        );
     }
 
     #[test]

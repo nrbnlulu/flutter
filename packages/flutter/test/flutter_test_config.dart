@@ -7,6 +7,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
+// ignore: implementation_imports
+import 'package:flutter/src/foundation/_features.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:leak_tracker_flutter_testing/leak_tracker_flutter_testing.dart';
 
@@ -32,6 +34,11 @@ bool _isLeakTrackingEnabled() {
 ///
 /// See https://api.flutter.dev/flutter/flutter_test/flutter_test-library.html.
 Future<void> testExecutable(FutureOr<void> Function() testMain) {
+  // Tests opt into experimental windowing explicitly. A developer's global
+  // flutter config must not initialize a native window owner in flutter_tester.
+  // ignore: invalid_use_of_internal_member
+  isWindowingEnabled = false;
+
   // Enable checks because there are many implementations of [RenderBox] in this
   // package can benefit from the additional validations.
   debugCheckIntrinsicSizes = true;

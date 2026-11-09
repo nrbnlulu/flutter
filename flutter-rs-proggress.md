@@ -4,6 +4,13 @@ This file records implementation progress for the architecture in
 [`flutter-rs.md`](flutter-rs.md). It is an implementation log, not a replacement
 for the architectural plan.
 
+Headless agent verification is now specified in
+[`flutter-rs-agent-plan.md`](flutter-rs-agent-plan.md), following a source review
+on 2026-11-09. It covers fully offscreen rendering, virtual multi-window behavior,
+semantics and optional widget assertions, input, screenshots, video and CI
+evidence. All implementation phases remain pending; the existing headless GPU
+device constructor is not a headless application host.
+
 ## Current focus
 
 Android hardware-buffer textures have an experimental SDK capability and a
@@ -1526,3 +1533,873 @@ The `build-rust-shell-profile` task now configures `host_profile` automatically
 when `args.gn` is absent, with fontconfig enabled. Existing configurations are
 preserved. Verified from a missing output directory: GN generated the build
 successfully and Ninja started compiling the profile engine.
+
+
+## Windows engine build preparation (2026-11-08)
+
+W0 is started, but the engine DLL has not been built. GN now selects MSVC
+Rust target triples and `.lib` archives on Windows, and omits the GN-owned
+standalone runner there so Cargo can own the executable link. Unix `dl` and
+`pthread` libraries are Linux-only. The build helper stages `.lib`/`.dll`
+outputs using the target platform, including cross-builds. Existing C ABI
+functions, including window exports, already have `dllexport` declarations.
+
+The Windows GN entry point now passes its Python interpreter explicitly:
+`.gn` hardcodes the Unix hermetic `bin/python3` layout, which cannot execute
+on this host. The pinned GN binary was installed locally from DEPS.
+
+Source inspection corrected the Windows plan: Windows JIT snapshots already
+use static symbol references in `runtime/dart_snapshot.cc`; new snapshot
+callbacks and changes to Linux snapshot exports are unnecessary.
+
+Verification: the Python build-helper tests pass (target naming and staging
+in debug/profile/release), GN formatting and diff checks pass. A real minimal
+Cargo crate built with Rust 1.93.1 for `x86_64-pc-windows-msvc`; the helper
+staged its static library and DLL, and loading the DLL and calling its export
+returned the expected value. This verifies build-helper plumbing only.
+
+Engine generation stops in Windows toolchain setup: the engine requires
+Windows SDK `10.0.22621.0`, but this host has `10.0.26100.0`. Visual Studio
+Build Tools 2022 is installed and requires an explicit path for this version
+of the engine's detection script. The pinned engine Clang package is also
+absent. Install/sync these prerequisites before resuming from PowerShell:
+
+```powershell
+$env:DEPOT_TOOLS_WIN_TOOLCHAIN = '0'
+$env:GYP_MSVS_VERSION = '2022'
+$env:GYP_MSVS_OVERRIDE_PATH = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools'
+python engine/src/flutter/tools/gn --runtime-mode debug --no-goma --no-prebuilt-dart-sdk
+ninja -C engine/src/out/host_debug flutter_rust_engine.dll
+```
+
+Full GN generation, C++ compilation/linking, engine exports, and C++ tests
+remain unverified. The Windows winit adapter, GPU cfg changes, first frame,
+rlutter support, packaging, and runtime validation remain pending.
+
+
+### Windows build prerequisites installed
+
+Installed Windows SDK 10.0.22621.0 and its Debugging Tools for Windows, plus
+the DEPS-pinned Windows Clang package. With the Build Tools override and
+`--no-prebuilt-dart-sdk` command above, GN generation succeeded and Ninja
+started compiling `flutter_rust_engine.dll`. The engine build must still
+complete before the DLL or runtime can be considered verified.
+
+
+### Windows W0 engine DLL verified (2026-11-08)
+
+Resumed the incremental Windows x64 debug/JIT build with the documented
+Visual Studio environment. All 2,739 remaining Ninja steps completed, including
+the private C++ bridge and DLL link. No engine compiler or linker fix was
+needed beyond the existing W0 preparation. Clang emitted ignored
+`-fno-omit-frame-pointer` warnings during Dart compilation.
+
+Artifacts in `engine/src/out/host_debug`:
+
+- `flutter_rust_engine.dll`: 36,725,760 bytes.
+- `flutter_rust_engine.dll.lib`: 41,230 bytes; use this import library for Cargo.
+- `flutter_rust_engine.dll.pdb`: debug symbols.
+
+`llvm-readobj.exe --coff-exports --coff-imports` confirmed the x64 PE format,
+Windows system DLL imports, and 39 private `FlutterRustShell*` exports, including
+15 window functions. Python ctypes successfully loaded the DLL and resolved
+every private ABI export. Calling `FlutterRustShellRunTask(nullptr, 0)` returned
+zero as expected. No separate runtime DLL had to be staged for this host load.
+This verifies DLL loading and symbol lookup, not Dart/Vulkan initialization.
+Windows JIT retains the existing statically linked snapshot path.
+
+The C++ test executable initially failed to link because Flutter's testing
+support references `flutter::testing::GetFixturesPath`. Added the standard
+`//flutter/testing:testing_fixtures` dependency to the Rust shell test target.
+Rebuilding and running `flutter_rust_shell_unittests.exe` then passed all 17
+tests across platform-view ABI forwarding, external textures, and task runners.
+The Rust core static archive built with the pinned 1.93.1 toolchain and linked
+without additional Rust system-library flags. The two focused Python
+build-helper tests also pass.
+
+Commands (after setting the environment documented above):
+
+```powershell
+ninja -C engine/src/out/host_debug flutter_rust_engine.dll
+ninja -C engine/src/out/host_debug flutter_rust_shell_unittests
+engine/src/out/host_debug/flutter_rust_shell_unittests.exe
+python engine/src/flutter/shell/platform/rust/build_rust_test.py
+engine/src/flutter/buildtools/windows-x64/clang/bin/llvm-readobj.exe --coff-exports --coff-imports engine/src/out/host_debug/flutter_rust_engine.dll
+```
+
+Local build logs are `engine/src/out/host_debug/rust-windows-build.log` and
+`rust-windows-tests-build.log`; the PE inspection is `rust-windows-pe.txt`.
+These generated outputs are not checked in. W1 (Windows Rust Vulkan cfgs and
+dependencies) is next. The Windows host, Cargo smoke runner, first frame,
+resize/input/validation checks, and Linux/Android regression builds remain
+unverified.
+
+
+### Windows W1 Vulkan broker and Intel descriptor-pool fix (2026-11-08)
+
+Enabled Windows dependencies in the GPU broker, shared queue, and winit host
+manifests. Desktop surface and presentation cfgs now include Linux and Windows;
+shared Vulkan texture/queue code includes Android as before. Vulkan-only
+backend selection, surface-compatible adapter selection, FIFO presentation,
+and the existing queue mutex/semaphore ownership are preserved. Failure to
+find a compatible adapter now explains the Vulkan driver requirement.
+
+Pinned Rust 1.93.1 Windows checks pass for `flutter-shell-wgpu` and
+`flutter-gpu-queue`. Five GPU unit tests and the raw-queue-access integration
+test pass (four hardware/benchmark tests are ignored in the ordinary run).
+The three non-benchmark hardware tests were also run explicitly under
+`VK_LAYER_KHRONOS_validation`, `WGPU_VALIDATION=1`, and `WGPU_DEBUG=1`.
+
+Hardware validation exposed an access violation during device creation on
+Intel HD Graphics 530 (PCI 8086:1912, Windows driver 31.0.101.2111, Vulkan
+1.3.215). CDB located it inside `igvk64.dll` during `vkCreateDescriptorPool`
+for wgpu's internal empty bind-group layout. An independent Vulkan-only
+ctypes reproduction crashed with `poolSizeCount=0` and succeeded with one
+unused sampler descriptor. This occurs before shell upload/presentation.
+
+Vendored `third_party/wgpu-hal` from the exact workspace revision
+`014d9e84813a2946febfa4888694c0b70565b2f5`, retaining its licenses and
+normalizing Cargo workspace inheritance. The only source change adds one
+unused sampler descriptor to otherwise empty pools. Workspace and fixture
+Git-source patches retain all other wgpu crates at the same revision.
+See `third_party/wgpu-hal/README.flutter` for provenance and the local delta.
+With this fix, direct padded-row upload/readback, aligned/unaligned slot reuse,
+and slow-writer/shutdown tests pass on this GPU under driver validation.
+The slot-reuse test intentionally catches producer panics as part of its
+reservation-recovery coverage; those expected panic messages are not failures.
+
+Commands from `engine/src/flutter/shell/platform/rust`:
+
+```powershell
+cargo +1.93.1 check --locked --target x86_64-pc-windows-msvc -p flutter-shell-wgpu -p flutter-gpu-queue
+cargo +1.93.1 test --locked --target x86_64-pc-windows-msvc -p flutter-shell-wgpu -p flutter-gpu-queue
+$env:VK_INSTANCE_LAYERS = 'VK_LAYER_KHRONOS_validation'
+$env:WGPU_VALIDATION = '1'
+$env:WGPU_DEBUG = '1'
+cargo +1.93.1 test --locked --target x86_64-pc-windows-msvc -p flutter-shell-wgpu direct_pixel_upload_preserves_padded_rows_and_can_mix_with_staged_writes -- --ignored --nocapture
+cargo +1.93.1 test --locked --target x86_64-pc-windows-msvc -p flutter-shell-wgpu pixel_upload_reuses_aligned_and_unaligned_slots -- --ignored --nocapture
+cargo +1.93.1 test --locked --target x86_64-pc-windows-msvc -p flutter-shell-wgpu slow_pixel_writer_allows_other_slots_and_shutdown -- --ignored --nocapture
+```
+
+This validates device creation and texture transfers, not a Win32 swapchain or
+Flutter frame. Linux/Android builds and device regressions have not been run
+on this Windows host. The minimal Windows host is the next checkpoint.
+
+
+### Windows W2 subset and portable validation harness (2026-11-08)
+
+The Windows platform adapter now compiles with the pinned Rust 1.93.1 toolchain.
+Ordinary windows use the existing merged winit platform/UI runner, timer
+pacing, pointer/metrics/focus/close handling, and shared Vulkan synchronization.
+Other window kinds return explicit unsupported errors for this first-build
+subset. Desktop clipboard handling is shared with Linux. Windows legacy key
+JSON uses native virtual keys/scans, Windows modifier bits and character code
+points; AltGr text is distinguished from Ctrl+LeftAlt shortcuts. Native lock
+state is read with GetKeyState and reconciled before key packets, including
+avoiding a double toggle on the lock key's own down event.
+
+All 47 Windows host unit tests pass, including Windows key-message encoding,
+lock reconciliation and AltGr. MSVC retains C ABI references in the Rust test
+executable, so the harness explicitly links the matching engine import library.
+All 17 C++ shell tests and both Python build-helper tests pass through the
+portable task runner. The benchmark accounting suite passes all 14 tests.
+Basic native desktop tests create a temporary Tk window and verify PID-scoped
+lookup, resizing, minimize/restore, deterministic capture and clean close.
+Modal drag is a separate test and reports a skip when foreground input is
+unavailable; the real stress task treats unavailable input as a failure.
+
+`Taskfile.yml` now delegates its shell/build/test orchestration to
+`tools/rust_shell/tasks.py`. Lifecycle and GPU/input/resize stress loops are
+Python, with process exit checks and retained evidence instead of Bash, jq,
+pgrep and status-file wrappers. Native desktop and benchmark operations have
+Hyprland and Win32 adapters. Texture and FRB pixel checks use the same adapters;
+Win32 captures reject occlusion so overlapping windows cannot produce a false
+pixel-change pass. Host-independent benchmark accounting remains shared.
+See `tools/rust_shell/README.md` for commands, overrides and coverage limits.
+No Linux/Android runtime regression coverage was available on this host.
+
+The portable Windows build also completed the matching Dart SDK and frontend
+server targets. Dart's SDK helper initially found the Windows Store python3
+alias; the runner now generates a build-local python3.cmd pointing at its own
+Python interpreter, without changing machine configuration. The root Flutter
+CLI bootstrapped successfully. Task itself was tested using a local v3.40.1
+binary in the ignored GN output tree.
+
+### Cargo smoke runner and first-frame investigation (2026-11-08)
+
+Added a small Cargo fixture in `tests/smoke_runner` and a counter/text-field
+Flutter app in `tests/smoke_fixture`. The runner uses the same C entry point as
+the Linux GN executable, including presentation-statistics and texture-fixture
+environment switches. The Windows bundle in `out/host_debug/rust-smoke` holds
+the executable, engine DLL and ICU data. Its import-library link and checked-in
+lockfile use the matching engine and pinned workspace dependency revisions.
+The FRB fixture's build helper also selects the Windows import library instead
+of Unix rpath/export-dynamic arguments.
+
+`python tools/rust_shell/tasks.py lifecycle --lifecycle-iterations 1` built the
+Dart bundle, started a VM service, recorded two 800x600 presentations and closed
+with status zero under Khronos validation. This proves startup/presentation/
+close, not correct rendered output. The first desktop capture was obscured by
+the Windows Start menu, which also prevented foreground input from the test
+process; running outside the sandbox did not remove that foreground restriction.
+The API now detects occluded captures, and the real stress task refuses to
+claim input or modal-resize success when it cannot obtain foreground access.
+
+An independent LunarG screenshot-layer run captured the application's own
+swapchain (`out/host_debug/rust-swapchain-capture/0.ppm` and `1.ppm`, with a PNG
+conversion for inspection). It shows genuine corrupted text/colors, independent
+of desktop occlusion. This rendering failure remains unresolved. That diagnostic
+run also exceeded its close timeout and was terminated; it is not a shutdown
+pass. The normal validation-only lifecycle run did close cleanly. No Vulkan
+validation VUID accompanied the corrupted frame in the retained runner logs.
+
+**The readable, interactive first-frame milestone is not complete.** Investigate
+the Impeller/shared-device rendering corruption before claiming W3/first-frame
+success. Keyboard/live-resize automation also needs an unobstructed interactive
+desktop. Full window-kind parity, DWM pacing, rlutter Windows support, release
+packaging and CI remain pending.
+
+Git author identity was configured from the authenticated GitHub account on
+2026-11-09, allowing the verified checkpoints to be committed separately.
+
+### Windows frame diagnostics and window enumeration (2026-11-09)
+
+The Win32 desktop adapter now excludes visible zero-sized event-loop helper
+windows from application enumeration. A focused regression test covers the
+filter. Closing only the main window exits with status zero under both ordinary
+Vulkan validation and the screenshot layer; the earlier diagnostic timeout
+resulted from also closing the helper HWND, not demonstrated renderer teardown
+failure. Native desktop tests: seven passed, one foreground/modal-input skip.
+
+A six-color rectangle/text probe reproduces the rendering corruption. Win32
+`PrintWindow(PW_CLIENTONLY | PW_RENDERFULLCONTENT)` independently reproduces the
+same pixels, including with the Vulkan screenshot layer disabled. CPU uniform
+values are correct at descriptor binding; uniform alignment, shader precision,
+single-sample rendering and cached host memory experiments did not repair the
+frame. These experimental renderer changes were not retained. The readable,
+interactive first-frame milestone remains incomplete.
+
+Retained `smoke_fixture/lib/render_probe.dart` with documented coordinates and
+expected colors. The hardware GPU task now also reads back six uniform-driven
+BGRA color bands after the broker-style empty load/store render pass. All four
+hardware upload/readback/shutdown tests pass under Vulkan validation on the
+Intel adapter. This isolated test covers the wgpu pass and buffer offsets; it
+does not prove correctness of the external Impeller rendering or semaphore
+handoff. A dedicated Impeller buffer-allocation experiment also left the
+corruption unchanged and was reverted. The engine and runner were rebuilt with
+all exploratory renderer/HAL edits removed.
+
+The restored counter bundle starts and closes with status zero under Vulkan
+validation, with the same corrupted pixels. The full lifecycle command correctly
+fails its occlusion guard on this desktop; evidence is retained in
+`%TEMP%/flutter-rust-lifecycle-1qyegb7a`. This is not a lifecycle-suite pass.
+Foreground input and live-resize checks still require an unobstructed desktop.
+
+### Intel HD 530 swapchain rendering workaround (2026-11-09)
+
+Isolated the corruption before the wgpu handoff: an Impeller-owned image reads
+back the expected background and all six primary/secondary color bars, whereas
+rendering the same scene into a borrowed Win32 swapchain image already contains
+incorrect pixels before presentation. Changing the render-pass final layout or
+adding transfer usage alone did not repair direct rendering. Rendering into an
+owned image and copying it into the swapchain does produce correct colors and
+readable text. The underlying Intel driver defect has not been identified.
+
+Added a conservative workaround only for Windows Intel vendor `8086`, device
+`1912` (the tested HD Graphics 530). The shell caches one owned resolve target
+per view/size and copies its pixels on the existing shared Vulkan queue before
+the established presentation handoff. Both textures remain tracked until GPU
+completion; transfer/read/write barriers order reuse. There is no CPU readback
+or queue-idle wait in this path. The broker requests `COPY_DST` only for this
+device and reports a clear error if the surface cannot provide it. The cost is
+one additional single-sample image per view and one GPU copy per frame on this
+device. Other adapters retain direct rendering.
+
+The six-color/text probe now displays correct pixels with the production
+workaround (no experimental readback code). Forty programmatic resizes followed
+by minimize/restore and native close retained the correct colors and exited
+zero with synchronization validation enabled; no VUID or synchronization hazard
+was logged. Evidence: `out/host_debug/render-probe-scoped-resize/`.
+This does not validate mouse-driven modal resizing, focus, or keyboard input.
+Linux/Android and other Windows GPU/driver coverage remain unavailable.
+
+`python tools/rust_shell/tasks.py test` passed: 47 host tests, 17 C++ tests,
+core/queue checks, five ordinary GPU tests, two build-helper tests, 14 benchmark
+accounting tests and all eight desktop tests. Foreground access became available
+in this run. The real 40-resize stress command passed foreground keyboard redraw
+and programmatic resizing, then failed its live-resize check with `Win32 modal
+live resize starved Flutter presentations`. Evidence:
+`%TEMP%/flutter-rust-stress-4bdwrcvj`. This is a newly exercised failure, not a
+stress-suite pass; fixing modal-loop scheduling is the next first-frame task.
+
+### Ordinary Windows first-frame milestone verified (2026-11-09)
+
+Fixed Win32 modal-loop starvation without adding a UI thread. Windows now arms
+a one-shot HWND timer for the next Flutter task/vsync deadline; its native
+callback kills the timer and posts `WM_PAINT`, retaining no Rust pointer. The
+redraw/proxy handlers service Flutter work and rearm the next deadline even
+while Win32 owns the move/resize loop. Native window destruction removes its
+timers. Idle windows do not acquire a periodic polling timer.
+
+The Python-backed stress task passes both 40 and 500 iterations, including
+foreground keyboard-triggered redraw, resize/maximize/minimize/restore,
+mouse-driven modal live resize with presentations advancing during dragging,
+and exit status zero under Khronos Vulkan validation. Evidence:
+`%TEMP%/flutter-rust-stress-vxwvl0oa` and
+`%TEMP%/flutter-rust-stress-co81_g0m`. The full ordinary check suite also passes:
+47 host tests, 17 C++ tests, core/queue and ordinary GPU checks, two Python
+build-helper tests, 14 accounting tests and all eight native desktop tests.
+
+A separate real mouse/keyboard run clicked Increment and entered `hello123`
+in the text field. Its client capture visibly shows `Count: 1` and `hello123`
+with readable text, followed by status-zero close and no Vulkan VUIDs. Evidence:
+`out/host_debug/counter-input-validated/window.png` and `runner.log`.
+The six-color probe also has readable text and correct colors with the
+production Intel workaround, including after programmatic resize under
+synchronization validation.
+
+The first-build milestone (ordinary window, correct Flutter frame, pointer and
+basic keyboard input, resizing, minimize/restore, focus and clean shutdown) is
+now verified on Windows x64 / Intel HD Graphics 530 / driver 31.0.101.2111.
+This is not full Phase 3 parity. IME conformance, clipboard/DPI, textures/FRB,
+additional window kinds, DWM pacing, rlutter Windows tooling and release/CI
+remain pending. Other Windows adapters and Linux/Android regression runtime
+coverage are unavailable on this host.
+
+### Native text, Unicode clipboard and current-scale DPI checkpoint (2026-11-09)
+
+Added `smoke_fixture/lib/input_probe.dart` and the portable Python-backed
+`test-rust-shell-text-input` task. The fixture reports widget control geometry,
+editing/composition/UTF-16 selection, focus/lifecycle and viewport metrics; Python
+still drives real native mouse and keyboard events. Added click/chord/metrics
+operations to the desktop API with Win32 and Hyprland implementations. Windows
+compares Flutter DPR against `GetDpiForWindow`; Hyprland distinguishes compositor
+logical coordinates from physical viewport dimensions. Native key/mouse focus
+must succeed before typing can pass. The fixture restores prior clipboard text
+on exit (rich formats are not preserved).
+
+A native Windows run passed typing `hello123`, Ctrl+A/C, Clipboard.getData and
+hasStrings, copying `A` + emoji + Hebrew through Clipboard.setData, Ctrl+V back
+into the field, exact UTF-16 selection `[7,7]` with no composing range, readable
+Unicode capture, minimize/restore lifecycle, resize/native size agreement, DPR
+1.0 agreement at 96 DPI, and clean close under Vulkan validation. Evidence:
+`%TEMP%/flutter-rust-input-fs6hodjs`. An earlier run failed the pointer/focus
+step; the harness now explicitly checks field focus and allows the native
+pointer move/button events to settle before typing.
+
+Added a protocol-level regression for preedit cancellation/recommit, UTF-16
+replacement and suppressed duplicate keyboard text for both full-state and
+delta-model clients. The ordinary suite passes: 48 host tests, 17 C++ tests,
+core/queue/ordinary GPU checks, two build-helper tests, 14 accounting tests and
+all eight native desktop tests. The Dart input fixture analyzes without issues.
+
+**Coverage remains partial:** loaded-layout inspection reports US English
+`04090409`; an IMM32-reported layout is not evidence of a working composition
+session. Real candidate/preedit/commit/cancel behavior has not been exercised
+with a composition IME. Current-scale metrics do not validate per-monitor DPI
+transitions. No Linux/Android or additional Windows display/GPU coverage was
+available. These remain parity checks, not completed conformance milestones.
+
+The final formatted fixture also passes through
+`python tools/rust_shell/tasks.py text-input`; repeat-run evidence is
+`%TEMP%/flutter-rust-input-seiwvefs`. Task v3.40.1 lists the new task correctly.
+
+### Windows texture checkpoint (2026-11-09)
+
+The shared Python texture tasks pass on Windows with Khronos Vulkan validation:
+wgpu animation (19 presentations), CPU pixel-buffer animation (20 presentations)
+and 40 live texture lifecycle rotations (279 presentations). Animation checks
+require changing captured pixels in the Flutter widget, not only frame counters.
+The lifecycle check verifies replacement between producer types, resize,
+unregistration/reclamation of all retired rings and exactly one context
+recreation, followed by clean status-zero close. No GPU/runtime diagnostic was
+reported. Successful texture runs clean their temporary captures by design.
+
+The default texture task now compiles the same example Dart entry point using
+the standalone smoke fixture's package configuration, avoiding dependency
+resolution for the entire Flutter example workspace. Custom texture-example
+projects retain their own package/bundle configuration. Linux/Android runtime
+coverage remains unavailable here. FRB dispatch is the next checkpoint.
+
+### Windows FRB dispatch checkpoint (2026-11-09)
+
+The first Cargo-linked FRB run built successfully but Dart process lookup failed
+on `frb_get_rust_content_hash`. Rust `no_mangle` symbols in the rlib were not PE
+exports of the final executable. The fixture build helper now uses explicit
+MSVC `/EXPORT:` arguments for the 15 entry points in pinned FRB 2.12.0's wire
+and MultiPackageCBinding. `llvm-readobj --coff-exports` confirms all 15 names.
+This is fixture linking support; general rlutter Windows packaging remains
+pending. The import-library link and staged engine DLL are unchanged.
+
+The direct fixture and a full `python tools/rust_shell/tasks.py frb` repeat both
+pass under Khronos Vulkan validation with wgpu validation/debugging enabled.
+The named background isolate executes its FRB call off the host thread; its
+callback runs on the main thread, and a callback enqueued by a synchronous call
+is deferred. Both isolates see the same distinct texture IDs (1 and 2).
+Both wgpu and pixel-buffer producer counters advance, each half-window capture
+changes independently, and native close returns zero without GPU diagnostics.
+Evidence is retained at `%TEMP%/flutter-rust-frb-w4uav6uo` and
+`%TEMP%/flutter-rust-frb-q509rxmi`; the original symbol failure is retained at
+`%TEMP%/flutter-rust-frb-l0_5anx0`.
+
+The FRB Python harness now preserves evidence on success and failure instead of
+deleting it while unwinding, and shares the texture diagnostic matcher (including
+panics and threading errors). Python compilation and formatting checks pass.
+Linux/Android runtime regression validation remains unavailable on this host.
+Windows texture/FRB smoke parity is now verified on the Intel HD 530 host;
+additional window kinds, DWM pacing and rlutter tooling remain next, with native
+IME composition and real DPI transitions still awaiting suitable coverage.
+
+### Windows Rust window-owner routing (2026-11-09)
+
+Enabled the existing symbol-probed Rust window owner on Windows. Both the
+availability getter and `_window_io.dart` selection order needed changes:
+Windows previously constructed the stock Win32 owner before considering the
+Rust host, causing an unresolved `InternalFlutterWindows_WindowManager_Initialize`
+at binding initialization. Standard processes without Rust ABI symbols still
+select their platform owner. Native malloc/free lookup worked in the actual
+Windows multi-view fixture; no allocation exports were needed.
+
+`python tools/rust_shell/tasks.py windowing` now passes 60 view removals with
+284 primary presentations, child resize and additional rendered views alive
+through whole-shell teardown under Vulkan validation, with status-zero exit.
+Evidence: `%TEMP%/flutter-rust-windowing-2kztf4p7`. The windowing harness now
+retains logs/status/statistics, including timeout failures, and accepts a bounded
+timeout override for diagnosis. The original owner-selection error is retained
+at `%TEMP%/flutter-rust-windowing-z2j8_nl9`. This checkpoint verifies regular
+multi-view routing/lifetime, not additional window-kind parity.
+
+### Windows dialogs and satellites checkpoint (2026-11-09)
+
+The Windows adapter now accepts regular, dialog and satellite window requests.
+Dialog/satellite parenting uses `SetWindowLongPtrW(GWLP_HWNDPARENT)` for owned
+top-levels, including satellite reparenting. It clears/checks last-error to
+correctly distinguish successful zero-valued previous ownership from failure.
+Satellites use winit skip-taskbar behavior plus `WS_EX_TOOLWINDOW`, clear
+`WS_EX_APPWINDOW`, and apply a frame-change notification. Shared creation now
+calls a platform configuration hook; Linux/Android keep a default no-op.
+
+A real Win32/winit native test verifies dialog ownership, absence of WS_CHILD,
+satellite tool-window styling and reparenting without moving the window.
+The full ordinary check suite passes (49 host tests, 17 C++ tests, core/queue
+and ordinary GPU checks, two build-helper tests, 14 accounting tests and all
+eight native desktop tests).
+
+Added `task test-rust-shell-owned-windows` backed by the shared Python runner
+and `windowing_fixture/lib/owned.dart`. Fifteen cycles create two regular
+parents, an owned dialog and a satellite, render/resize them, reparent the
+satellite to the other regular parent and then to the dialog, unmount and
+release all four, and verify 60 destruction callbacks. It passes under Vulkan
+validation with 252 primary presentations and status-zero close. Evidence:
+`%TEMP%/flutter-rust-windowing-adefi6up`. The harness additionally requires a
+presentation record for every retired view, rather than inferring child frames
+from primary activity. Popups/tooltips are still explicitly unsupported;
+parent-close cascade/minimization behavior is not claimed validated by this
+fixture. Other Windows GPUs and Linux/Android runtime coverage remain unavailable.
+
+The strengthened harness repeat passes with all 60 per-view presentation files
+nonempty and 238 primary presentations; evidence:
+`%TEMP%/flutter-rust-windowing-9r7ln04s`. The owned-window Dart fixture analyzes
+without issues. Python compilation/format checks pass.
+
+### Owned-window parent lifecycle coverage (2026-11-09)
+
+The owned-window fixture now destroys only the regular owners, leaving dialog
+and satellite descendant removal to the host. All 60 per-view presentation
+records and destruction callbacks pass with 262 primary presentations, clean
+exit and no Vulkan/framework diagnostics. Evidence:
+`%TEMP%/flutter-rust-windowing-m7ib3dp6`. The native Win32 test now shows each
+owned dialog/satellite and verifies owner minimize hides it and owner restore
+shows it again. The full ordinary suite passes (49 host tests, 17 C++ tests,
+core/queue/ordinary GPU checks and Python suites). This closes the previously
+unverified parent-cascade and native minimize/restore checks on this host;
+no production teardown change was required.
+
+### Initial Windows tooltip support and desktop positioner (2026-11-09)
+
+Added a pure desktop positioner for the shared ABI anchor/gravity/offset and
+per-axis flip, slide and resize flags, including negative monitor origins.
+Its tests cover unconstrained offsets, independent axes, flip-before-slide and
+oversized resizing. Windows converts parent client origin and monitor work area
+through the parent's scale before resolving placement; Wayland still delegates
+to its compositor. No Linux/Android runtime coverage is available here.
+
+Windows now accepts tooltip requests and creates owned, undecorated, nonresizable
+`WS_POPUP`/tool windows with permanent `WS_EX_NOACTIVATE`. A native test verifies
+owner, popup/no-activate styles and unchanged foreground window. This caught
+winit clearing the extended style while showing a window: the implementation
+now shows with activation disabled, then installs the permanent native styles.
+Grabbing popup requests remain explicitly unsupported.
+
+Added `task test-rust-shell-tooltips` using the shared Python lifecycle harness.
+Twelve cycles render two regular windows, a dialog, satellite and tooltip,
+resize/reparent the owned views, then destroy only the owners and require all
+60 descendant callbacks and per-view presentation records. The initial run
+passed with 193 primary presentations and clean Vulkan-validation shutdown:
+`%TEMP%/flutter-rust-windowing-ph67thyv`. The final native style fix passes the
+ordinary suite: 52 host tests, 17 C++ tests, core/queue/ordinary GPU checks,
+two build-helper tests, 14 accounting tests and all eight desktop tests.
+The tooltip fixture analyzes without issues.
+
+This verifies initial work-area placement and owner-driven lifetime on this
+host. Reactive repositioning after parent movement, DPI or content-size changes
+and grabbing-popup outside-click/activation-loss dismissal still require work;
+this is not full popup/tooltip parity. DWM pacing and rlutter tooling remain
+pending, as do real IME composition and display-scaling transition coverage.
+
+The final rebuilt tooltip runner also passes all 60 per-view checks with 191
+primary presentations and zero-status close under Vulkan validation. Evidence:
+`%TEMP%/flutter-rust-windowing-60vi5kmj`.
+
+### Reactive Windows tooltip geometry checkpoint (2026-11-09)
+
+The host retains each tooltip's logical placement request and re-evaluates it
+for native parent movement, surface resize and scale-factor events, traversing
+owned descendants while skipping views being removed. Windows reuses the
+initial-placement work-area/DPI calculation and applies only changed physical
+geometry with no activation or z-order change. This guards against native
+move/resize event feedback. Explicit constraint updates also refresh desired
+size and apply geometry immediately: changing min/max constraints alone did not
+resize the HWND in the first diagnostic run.
+
+The Python platform API now exposes native movement and owner-scoped discovery.
+On Windows, `test-rust-shell-tooltips` coordinates with the Dart fixture to move
+the owner by 60x40 physical pixels and require the tooltip to follow by exactly
+the same delta. It then changes logical constraints from 160x100 to 200x120,
+checks physical size using native DPI, and verifies the centered anchor is
+preserved to pixel-rounding tolerance. Snapshot files retain before/after
+geometry. All 60 per-view presentation and descendant-destruction checks then
+pass under Vulkan validation with 201 primary presentations and clean close.
+Evidence: `%TEMP%/flutter-rust-windowing-9fjs2ct5`.
+
+The first failed size-change run is retained at
+`%TEMP%/flutter-rust-windowing-5_280rm2`. An intervening retry started before
+runner staging finished, leaving the old executable locked; it was discarded
+and staging completed before the successful run. The ordinary suite passes:
+52 host tests, 17 C++ tests, core/queue/ordinary GPU checks and all Python suites.
+The Dart fixture analyzes without issues.
+
+Actual display-scale transitions and multi-monitor movement remain unavailable
+on this host. Explicit framework `updatePosition` anchor changes still need a
+private-ABI operation; this checkpoint reacts to retained anchor requests and
+native geometry/constraint changes. Grabbing-popup outside-click/Escape/
+activation-loss dismissal remains unsupported and is the next implementation
+checkpoint before DWM pacing. Linux/Android runtime coverage is unavailable.
+
+The final shared task repeat also passes (184 primary presentations) with
+DPI-scaled geometry expectations and retained movement/resize snapshots:
+`%TEMP%/flutter-rust-windowing-qaribdlc`.
+
+### Explicit popup/tooltip anchor updates (2026-11-09)
+
+Added the private `FlutterRustShellWindowUpdatePopupPosition` operation and an
+appended host callback, bumping the lockstep shell ABI from 13 to 14 (plugin SDK
+API remains 1). The request reuses the existing decoder's placement validation;
+the host rejects missing/removing views or a changed kind/parent and preserves
+the desired size while replacing anchor, gravity, offset and adjustment flags.
+The Windows path repositions the existing native view. Linux continues to allow
+position updates to be ignored. Engine DLL, Cargo runner and C++ tests were
+rebuilt together; PE export inspection confirms the new window function.
+
+Both Dart tooltip and popup controllers now route `updatePosition` through the
+operation, using a shared request allocator with creation and ignoring calls on
+controllers already being destroyed. The native fixture changes the anchor and
+positioner, verifies an exact 27x24 logical-pixel movement of the same HWND,
+then changes only the positioner and verifies a -10x-7 shift while retaining the
+previous anchor. Parent movement, anchored resizing, all 60 presented views,
+owner cascade and clean shutdown also pass under Vulkan validation (203 primary
+presentations). Evidence: `%TEMP%/flutter-rust-windowing-v9zodnid`.
+
+The ordinary suite passes: 52 host tests, 17 C++ tests including paired ABI
+checks, core/queue/ordinary GPU tests and Python suites. The tooltip fixture
+analyzes cleanly. Grabbing-popup creation/dismissal remains the next checkpoint;
+real display-DPI transitions and Linux/Android runtime coverage are unavailable.
+
+### Windows grabbing-popup checkpoint (2026-11-09)
+
+Windows now accepts grabbing popups through the owned, no-activate WS_POPUP
+path with native mouse capture. Outside presses, Escape and owner focus loss
+request CloseRequested through the existing asynchronous Dart/raster/native
+teardown. Inside button release restores capture after winit releases its
+button grab. A dismissed marker prevents duplicate close callbacks; surviving
+popups reacquire capture after view removal. Capture acquisition fails explicitly
+without an active host input thread.
+
+The first activation-loss check failed: WM_NCACTIVATE delivers focus loss before
+GetForegroundWindow necessarily changes. Trusting winit's focus transition fixes
+that path. Diagnostic evidence: `%TEMP%/flutter-rust-windowing-25uwqxkl`.
+Temporary focus logging was removed from the final runner.
+
+Added `task test-rust-shell-popups` and the Dart popup fixture. Native automation
+verifies inside-click retention followed by outside-click dismissal, Escape,
+and activation of another regular host window. Twenty cycles require all 60
+views to present and report destruction; remaining cycles leave popup removal
+to owner teardown. The final run passes with 304 primary presentations, clean
+status-zero close and no Vulkan/framework diagnostics under Khronos validation.
+Evidence: `%TEMP%/flutter-rust-windowing-gzubypi8`.
+
+The ordinary suite passes: 52 host tests, 17 C++ tests, core/queue/ordinary GPU
+checks, two build-helper tests, 14 accounting tests and eight desktop tests.
+The popup fixture analyzes without issues. Rust formatting, Python compilation
+and diff whitespace checks pass.
+
+This verifies initial single-popup behavior on this Intel HD 530 Windows host.
+Nested-popup interaction and external-application activation are not covered by
+this fixture. Real IME composition, display-DPI transitions, other Windows GPUs
+and Linux/Android runtime coverage remain unavailable. DWM pacing is the next
+planned implementation checkpoint; rlutter tooling remains pending.
+
+### Windows DWM-derived vsync scheduling (2026-11-09)
+
+Enabled RustVsyncWaiter callbacks on Windows through PlatformBackend, retaining
+Wayland's existing frame-callback behavior. The Windows timing hook samples
+DwmGetCompositionTimingInfo with its required null HWND and pairs QPC with Rust
+Instant. It computes the strictly next tick from qpcVBlank/qpcRefreshPeriod using
+bounded integer arithmetic. Every request resamples phase instead of carrying
+callback lateness into subsequent deadlines. Invalid/failing samples select the
+nominal monitor timer fallback, and future requests retry DWM. The generated
+windows-sys 0.61.2 binding supplies the SDK's packed native layout; fixture locks
+were updated without changing dependency versions.
+
+The existing event-loop deadline and one-shot HWND wake timer deliver requested
+frames during Win32 modal resizing. Windows does not request an immediate redraw
+as a substitute for vsync. No helper thread, periodic idle timer or private ABI
+change was introduced. The existing C++ callback still timestamps frame start
+at delivery; this is DWM-derived host scheduling, not measured scanout timing.
+
+All 55 host tests pass, including phase preservation after late callbacks,
+fractional/large QPC conversion and invalid-sample fallback. The ordinary suite
+also passes 17 C++ tests, core/queue/ordinary GPU checks, two build-helper tests,
+14 accounting tests and eight native desktop tests. The smoke runner rebuilt
+and passed 500-resize stress under Khronos Vulkan validation, including keyboard
+redraw, minimize/restore, maximization, modal live-resize presentations and clean
+close. Evidence: `%TEMP%/flutter-rust-stress-2cc1rkyf`.
+
+Runtime logs confirm DWM selection at 31,250,000 ns. An independent native API
+probe reports refresh and composition ratios 10000000/312500, QPC frequency
+10000000 and period 312500: this desktop reports 32 Hz. The retained
+`dwm-timing.json` records that sample. Tooltip parent movement, anchored resizing,
+explicit/partial updates, all 60 view presentations/destruction callbacks and
+clean validation shutdown also pass (196 primary presentations). Evidence:
+`%TEMP%/flutter-rust-windowing-7pmuhmg0`.
+
+Mixed-refresh displays, VRR, physical frame latency and an unavailable-compositor
+runtime remain unverified. The native clock is composition-wide, not a per-HWND
+monitor timing API. Linux/Android runtime coverage remains unavailable. The next
+planned workstream is rlutter Windows tooling, then release packaging and CI.
+
+The popup fixture also passes with DWM pacing active: inside-click retention,
+outside-click/Escape/owner-focus-loss dismissal, 60 per-view presentation and
+destruction checks, 305 primary presentations and clean validation shutdown.
+Evidence: `%TEMP%/flutter-rust-windowing-pqi5pq5t`. Rust formatting and diff
+whitespace checks pass. Native API failure/fallback recovery was not forced in
+this runtime; the unit coverage exercises invalid timing samples.
+
+### rlutter Windows local-engine debug checkpoint (2026-11-09)
+
+Ported rlutter's native desktop path to Windows: Windows device discovery and
+selection, create/build/run commands, .bat/.exe Flutter/Dart paths, SDK DLL/import
+library artifacts, Windows native-library names and shared desktop process
+lifetime. Unix-only permissions/process/symlink code is gated. Windows links
+have a copy fallback; directory symlinks are removed with the correct native
+operation. Host build commands reject cross-host desktop builds explicitly.
+Windows managed SDK downloads report that a local checkout is required.
+
+Runner version 10 adds the Windows engine variant, MSVC import-library linkage
+and embedded PerMonitorV2/UTF-8/common-controls manifest while retaining Linux
+rpath and Android linking behavior. DLL staging tracks only tool-owned DLLs so
+obsolete plugins are removed without deleting executables, data or unrelated
+files. Windows drive/UNC package URIs resolve correctly. Android cross-library
+naming remains .so. Applicable Android tooling unit tests also pass on Windows;
+this is not Android runtime validation.
+
+The first real build exposed two portability failures that unit fixtures had
+not exercised: the AOT frontend rejects a symlinked flutter_patched_sdk root,
+and CRLF prevented dependency-line replacement, duplicating flutter-shell-winit.
+The SDK layout now copies the small patched-SDK directory on Windows and the
+migration normalizes line endings. Generated apps also need the workspace's
+vendored wgpu-hal patch to preserve the Intel workaround; templates/migration
+now install it. Existing lockfiles update only that package offline. SDK cache
+completeness now requires its HAL sources. Tests cover the migration, CRLF,
+physical patched-SDK directory, path handling and selective DLL pruning.
+
+A real `rlutter create --rust-platforms windows` project outside the SDK and
+`rlutter build windows --debug` succeeded. Added `task test-rlutter-runtime` with
+retained evidence: Flutter attach publishes its DDS URI; a native click increments
+the counter; hot reload changes the rendered label while preserving state=1;
+hot restart applies the changed source with state=0; quit detaches and removes
+the owned native process. The relocated executable/DLL/data bundle renders the
+same centered widget from an unrelated working directory and closes with status
+zero under Khronos Vulkan validation. Evidence:
+`%TEMP%/flutter-rust-rlutter-em7ezyx4`; generated project:
+`%TEMP%/rlutter-windows-0833f1b8`. PE inspection confirms the embedded manifest.
+
+All 108 applicable rlutter tests pass; Clippy with warnings denied, Rust
+formatting and Python compilation pass. The Linux-only managed-download test
+remains Linux-gated. The native runtime harness compares the centered widget
+because desktop corner/off-screen pixels vary between native window positions.
+An early restart check was tightened to wait for the first post-restart build.
+
+A VM expression-evaluation probe reports `_compileExpression: No compilation
+service available`; successful attach, field inspection and hot reload do not
+close that debugger gap. Initial probe evidence remains at
+`%TEMP%/flutter-rust-rlutter-ykutnpz6`. Source expressions and breakpoint
+conformance, managed SDK downloads, release/profile/AOT builds, general plugin/
+FRB packaging, icon/version resources and Windows CI remain follow-ups.
+Symlink-denied fallback, Linux/Android runtime regressions and broader Windows
+GPU/display coverage remain unverified; real IME/DPI-transition gaps are unchanged.
+
+
+## Linux test repairs and matching framework tester
+
+The debug metrics dispatcher now forwards the texture-frame and all-views-render
+callbacks required by the local engine. The texture rendering test supplies its
+fake view's dispatcher. Framework test configuration starts with experimental
+windowing disabled; individual windowing tests opt in explicitly, independent of
+the developer's global Flutter settings.
+
+Added `task test-rust-shell-framework`, which builds the matching Flutter tester,
+Dart SDK and frontend server before testing. The previous tester was stale and
+failed with an invalid SDK hash. Hyprland automation now uses the correct Lua
+focus, cursor, shortcut and workspace dispatchers, and mouse injection preserves
+the requested position instead of resetting it through a window selector.
+Wayland tooltip tests wait for compositor-confirmed parent mapping. Generated-app
+pixel comparisons use matching viewports and a stable reference frame after
+native resizing.
+
+Verified on Linux: 448 foundation/windowing/rendering/texture framework tests;
+Rust workspace and 17 C++ tests; Python suites; 108 rlutter tests and Clippy;
+four hardware GPU tests; animated wgpu/pixel textures, 40 texture replacements,
+regular/owned/tooltip multi-view lifecycle, 20 startup/shutdown cycles, 500 resizes,
+native Unicode typing/clipboard/selection/metrics, and FRB. Generated-app launch,
+rendered hot reload with preserved state, hot restart, relocation and clean close
+also pass. Formatting, analysis against current engine sources, Python compilation
+and whitespace checks pass. Windows-only automation is skipped on Linux; native
+IME composition, actual monitor-scale transitions and Windows popup behavior are
+not established by these runs.
+
+### Main merge and Windows DDS debugger validation (2026-11-09)
+
+Merged upstream main (acade0f6b53) and pushed merge 559da144d84. Two Vulkan
+synchronization conflicts were resolved using upstream's attachment-read/write
+and fragment-stage handling. Both conflicted source files compile. Dependencies
+were synced to Dart 3b174b7217 and Skia b11315d0a0, then GN regenerated. The first
+native build stopped because Dart's generated package configuration still used
+language 3.13 for the new frontend, which requires 3.15. Running build hooks with
+the existing Visual Studio Build Tools override refreshed it. The matching DLL,
+Dart SDK, frontend server and Cargo smoke runner now build successfully.
+Build logs: `engine/src/out/rebuild-windows-main*.log`.
+
+Before committing, fetched and fast-forwarded to the user's Linux fixes in
+6791498d4ef. The local Windows changes reapplied cleanly with a three-way patch;
+no conflict markers remain. Linux viewport stabilization, Hyprland fixes and
+Wayland parent-mapping changes are retained. The refreshed Dart formatter's
+fixture-only changes are committed separately.
+
+The expression-evaluation gap was an HTTP probe error: DDS proxies HTTP to the
+raw VM, bypassing the external expression compiler registered with DDS. A new
+Dart probe uses vm_service over the DDS WebSocket. It evaluates `probeState + 41`
+and `probeLabel`, adds a source breakpoint, waits for the native click to pause
+in incrementProbe, evaluates local `next == 1`, removes the breakpoint and
+resumes. No native-engine debugger change was required.
+
+The combined runtime task passes debugger checks, state-preserving rendered hot
+reload, state-resetting hot restart, attach quit/owned-app cleanup, and relocated
+bundle pixel comparison/status-zero native close under Vulkan validation.
+Evidence: `%TEMP%/flutter-rust-rlutter-cf6orzam`, including
+`debugger-status.json`, VM state observations, captures and logs. The first run
+stopped before debugger setup because Windows Search held foreground; that run
+was not counted as a pass. Search was dismissed before retrying real input.
+
+Linux's new stable 800x600 viewport check exposed an adapter difference: Win32
+resize takes outer-window dimensions. Added resize_client using measured native
+frame margins, preserving resize's original contract and Linux's implementation.
+The native adapter test checks an exact 420x300 client viewport and passes all
+eight tests without skips. The ordinary suite also passes 55 host tests, 17 C++
+tests, core/queue/ordinary GPU checks, two build-helper tests and 14 accounting
+tests. All 108 rlutter tests and Clippy pass. Dart probe analysis reports no issues.
+
+This verifies one breakpoint and paused local-expression scope on this Windows
+host. The new debugger probe has not run on Linux; the user's existing Linux
+coverage above remains distinct. Full DAP/editor behavior, Windows managed SDK,
+release/profile/AOT and general plugin packaging, CI, real IME composition and
+monitor-scale transitions remain follow-ups.
+
+
+## Windows release/AOT checkpoint (2026-11-09)
+
+The matching Windows host_release engine DLL, Dart SDK, frontend server, AOT
+compiler, shader compiler, font subsetter and sky_engine package build from the
+post-main checkout. The normal Windows build task now requests these compiler
+artifacts; its release Cargo smoke runner also links successfully.
+
+`test-rlutter-aot` creates and builds a disposable release app, requires app.so
+and no debug kernel, relocates executable/DLL/data, launches from an unrelated
+working directory, checks the exact initial and clicked frame colors, and
+requires native close with status zero under Vulkan validation. The Windows
+runtime check passes; retained evidence is `%TEMP%/flutter-rust-release-0f6axvzj`
+(build/runtime logs, full captures, relocated bundle and result.json).
+
+Current upstream Windows x64 AOT emits a PE/COFF DLL named app.so. The original
+plan's ELF note and an initial probe assertion were corrected; the initial
+format-rejected run was not counted as a runtime pass. The native engine already
+loads this library correctly, so no AOT engine change was needed. Profile is not
+covered by this release run. SDK distribution and input follow as separate phases.
+
+
+## Windows SDK distribution checkpoint (2026-11-09)
+
+Windows x64 managed SDK discovery now uses LOCALAPPDATA (or XDG_CACHE_HOME),
+Windows BETA archive names and dart.exe validation. The physical Rust SDK ships
+debug/release engines with their import libraries, ICU, compiler tools, matching
+Dart SDKs, patched SDKs and sky_engine. Both patched Rust source dependencies
+(winit-wayland and wgpu-hal) are packaged; the Linux archive also now includes
+its required wgpu-hal patch. Profile remains a local-engine workflow on Windows.
+
+The standalone Flutter packager imports the resolved numeric Flutter tag with
+its history, checks the common ancestor, warms the Windows wrapper and rejects
+unknown version metadata before archiving. A fresh-create test caught the first
+local clone's missing numeric tag (0.0.0-unknown); the corrected archive reports
+3.50.0-1.0.pre-666 and passes creation/dependency resolution without overrides.
+
+Local validation extracts both exact archives into an isolated managed cache
+and a new project, with the packaging-stage directory hidden. No checkout engine
+or external source links are used. Both debug (kernel) and release (PE app.so,
+no kernel) generated-app builds pass. Evidence: engine/src/out/windows-distribution-
+result.json and windows-distribution-builds.log; project:
+%TEMP%/rlutter-windows-distribution-rv0v88gs. All 111 rlutter tests and Clippy pass,
+including managed-cache reuse, required import libraries and forced symlink-
+privilege failure with real copy/refresh/stale-file cleanup.
+
+The BETA workflow now has parallel Windows debug/release engine jobs and a
+Windows packaging job that tests extracted SDKs before publishing Windows SDK
+archives, rlutter.exe and checksums. actionlint and the PowerShell blocks pass
+local syntax checks. Cloud execution and actual BETA download/publication are
+pending the branch merge; local archive validation is distinct from publication.
+
+
+## Windows packaged release input checkpoint (2026-11-09)
+
+The native text-input suite passes against both the current debug smoke runner
+and an AOT release app compiled by the extracted Windows SDK, with the packaging
+stage still hidden. It verifies real keyboard typing, copy/paste, the emoji/RTL
+Unicode clipboard sample, UTF-16 selection, minimize/restore lifecycle, resize,
+Flutter/native physical dimensions and current monitor scale, clipboard text
+restoration and status-zero shutdown under Vulkan validation. Evidence:
+%TEMP%/flutter-rust-input-mp6jhfg0 (debug) and
+%TEMP%/flutter-rust-input-at9z3ktr (packaged release).
+
+The adapter now enumerates native monitor work areas. When multiple displays
+are available, the input probe moves between them and compares Flutter/native
+metrics; it reports a scale transition as passed only if different native scales
+were actually observed. This RDP host exposes one 1024x720 work area at scale 1,
+so real mixed-DPI transitions remain unverified. IMM32 layout enumeration is not
+proof of composition; real IME composition remains unverified too.
+
+The fixture places its 800x600 viewport within a small Windows desktop. Initial
+capture/focus failures were traced by native hit-testing to Start/Search system
+menus; only those verified menus were dismissed before retrying. Occlusion and
+foreground checks remain strict, and blocked runs were not counted as passes.
+All eight native adapter tests pass without skips, including real monitor
+geometry enumeration and exact client resizing. Python compilation/formatting
+and whitespace checks pass. No native input implementation change was needed.

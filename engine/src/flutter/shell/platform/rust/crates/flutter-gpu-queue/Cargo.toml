@@ -12,6 +12,6 @@ path = "src/lib.rs"
 [dependencies]
 parking_lot = "=0.12.5"
 
-[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "android"))'.dependencies]
 ash = "=0.38.0"
 wgpu = { git = "https://github.com/gfx-rs/wgpu.git", rev = "014d9e84813a2946febfa4888694c0b70565b2f5", default-features = false, features = ["std", "vulkan", "wgsl"] }

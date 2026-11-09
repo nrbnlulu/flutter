@@ -26,12 +26,10 @@ use crate::{
     flutter::Flutter,
     mode::BuildMode,
     project::Project,
-    util::{copy_if_changed, remove_path, replace_link},
+    util::{copy_dir, copy_if_changed, remove_path, replace_link},
 };
 
 const BETA_RELEASE_URL: &str = "https://github.com/nrbnlulu/flutter/releases/download/BETA";
-const BETA_BUNDLE_URL: &str =
-    "https://github.com/nrbnlulu/flutter/releases/download/BETA/flutter-rust-linux-x64.tar.gz";
 
 /// What `flutter --local-engine` needs from an engine build, relative to its
 /// output directory. Missing entries are skipped (a host engine has no
@@ -50,6 +48,12 @@ const ENGINE_ENTRIES: &[&str] = &[
     "clang_x64/gen_snapshot",
     "icudtl.dat",
     "libflutter_rust_engine.so",
+    "flutter_rust_engine.dll",
+    "flutter_rust_engine.dll.lib",
+    "gen_snapshot.exe",
+    "font-subset.exe",
+    "impellerc.exe",
+    "libtessellator.dll",
     // Standard Android embedding and its local Maven artifacts.
     "libflutter.so",
     "flutter.jar",
@@ -68,7 +72,40 @@ const ENGINE_ENTRIES: &[&str] = &[
     // Debug bundles copy the VM snapshots from here.
     "gen/flutter/lib/snapshot",
 ];
+pub fn host_engine_library() -> &'static str {
+    if cfg!(windows) {
+        "flutter_rust_engine.dll"
+    } else {
+        "libflutter_rust_engine.so"
+    }
+}
+pub(crate) fn host_platform() -> &'static str {
+    if cfg!(windows) {
+        "windows-x64"
+    } else {
+        "linux-x64"
+    }
+}
+
 const ENGINE_REQUIRED: &[&str] = &["libflutter_rust_engine.so", "icudtl.dat"];
+fn host_bundle_modes() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &["debug", "release"]
+    } else {
+        &["debug", "profile", "release"]
+    }
+}
+fn host_required() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &[
+            "flutter_rust_engine.dll",
+            "flutter_rust_engine.dll.lib",
+            "icudtl.dat",
+        ]
+    } else {
+        ENGINE_REQUIRED
+    }
+}
 
 /// Where the user's engine builds come from.
 #[derive(Debug, Clone, Default)]
@@ -107,7 +144,7 @@ pub fn link_host(
         std::slice::from_ref(&variant),
         // Layout of the downloaded bundle: one directory per mode.
         Some(project.sdk_dir().join("lib").join(mode.name())),
-        &format!("linux-x64-{}", mode.name()),
+        &format!("{}-{}", host_platform(), mode.name()),
     )?;
     Ok(Engine {
         target: layout.clone(),
@@ -216,7 +253,7 @@ fn find_engine_build(
             {
                 dir.join("libflutter.so").is_file()
             } else {
-                dir.join("libflutter_rust_engine.so").is_file()
+                dir.join(host_engine_library()).is_file()
             }
         })
 }
@@ -228,11 +265,29 @@ fn link_engine_build(source: &Path, layout: &Path) -> Result<()> {
     for entry in ENGINE_ENTRIES {
         let from = source.join(entry);
         if from.exists() {
-            replace_link(&layout.join(entry), &from)?;
+            let destination = layout.join(entry);
+            // The Windows AOT frontend's SDK-root validation rejects a directory
+            // symlink here even though dart:io Directory.exists follows it.
+            // Keep this small SDK directory physical; native libraries and the
+            // large Dart SDK can retain their ordinary links.
+            if cfg!(windows) && *entry == "flutter_patched_sdk" {
+                if destination.is_symlink() {
+                    remove_path(&destination)?;
+                }
+                copy_dir(&from, &destination)?;
+            } else {
+                replace_link(&destination, &from)?;
+            }
         }
     }
     let required: &[&str] = if source.join("libflutter.so").is_file() {
         &["libflutter.so", "flutter.jar"]
+    } else if cfg!(windows) {
+        &[
+            "flutter_rust_engine.dll",
+            "flutter_rust_engine.dll.lib",
+            "icudtl.dat",
+        ]
     } else {
         ENGINE_REQUIRED
     };
@@ -276,18 +331,25 @@ fn ensure_shell_sources_with(
 // download. Android also needs the Linux host compiler, in both build modes.
 fn release_bundle_complete(sdk: &Path) -> bool {
     sdk.join("Cargo.toml").is_file()
+        && sdk.join("third_party/wgpu-hal/Cargo.toml").is_file()
         && sdk.join("crates/flutter-plugin-sdk/Cargo.toml").is_file()
         && sdk
             .join("crates/flutter-shell-android/Cargo.toml")
             .is_file()
         && !sdk.join("crates").is_symlink()
         && !sdk.join("third_party").is_symlink()
-        && ["debug", "profile", "release"].iter().all(|mode| {
+        && host_bundle_modes().iter().all(|mode| {
             let engine = sdk.join("lib").join(mode);
-            ENGINE_REQUIRED
+            host_required()
                 .iter()
                 .all(|entry| engine.join(entry).is_file())
-                && engine.join("dart-sdk/bin/dart").is_file()
+                && engine
+                    .join(if cfg!(windows) {
+                        "dart-sdk/bin/dart.exe"
+                    } else {
+                        "dart-sdk/bin/dart"
+                    })
+                    .is_file()
                 && engine.join("flutter_patched_sdk").is_dir()
                 && engine.join("gen/dart-pkg/sky_engine").is_dir()
         })
@@ -296,7 +358,10 @@ fn release_bundle_complete(sdk: &Path) -> bool {
 fn download_bundle(sdk: &Path) -> Result<()> {
     eprintln!("Downloading the Flutter Rust shell BETA SDK...");
     remove_path(sdk)?;
-    download_and_unpack(BETA_BUNDLE_URL, sdk)?;
+    download_and_unpack(
+        &format!("{BETA_RELEASE_URL}/flutter-rust-{}.tar.gz", host_platform()),
+        sdk,
+    )?;
     if !release_bundle_complete(sdk) {
         bail!("the Flutter Rust shell BETA SDK archive is incomplete");
     }
@@ -451,6 +516,8 @@ mod tests {
         fs::create_dir_all(dir.join("flutter_patched_sdk")).unwrap();
         for file in [
             "libflutter_rust_engine.so",
+            "flutter_rust_engine.dll",
+            "flutter_rust_engine.dll.lib",
             "libflutter.so",
             "flutter.jar",
             "icudtl.dat",
@@ -463,6 +530,8 @@ mod tests {
     }
 
     fn fake_release_bundle(sdk: &Path) {
+        fs::create_dir_all(sdk.join("third_party/wgpu-hal")).unwrap();
+        fs::write(sdk.join("third_party/wgpu-hal/Cargo.toml"), "").unwrap();
         fs::create_dir_all(sdk.join("crates/flutter-plugin-sdk")).unwrap();
         fs::create_dir_all(sdk.join("crates/flutter-shell-android")).unwrap();
         fs::write(sdk.join("crates/flutter-shell-android/Cargo.toml"), "").unwrap();
@@ -472,9 +541,28 @@ mod tests {
             let engine = sdk.join("lib").join(mode);
             fake_engine(&engine);
             fs::create_dir_all(engine.join("dart-sdk/bin")).unwrap();
-            fs::write(engine.join("dart-sdk/bin/dart"), "").unwrap();
+            fs::write(
+                engine.join(if cfg!(windows) {
+                    "dart-sdk/bin/dart.exe"
+                } else {
+                    "dart-sdk/bin/dart"
+                }),
+                "",
+            )
+            .unwrap();
             fs::create_dir_all(engine.join("gen/dart-pkg/sky_engine")).unwrap();
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_distribution_requires_debug_and_release_import_libraries() {
+        let root = tempdir("windows_release_bundle");
+        fake_release_bundle(&root);
+        remove_path(&root.join("lib/profile")).unwrap();
+        assert!(release_bundle_complete(&root));
+        remove_path(&root.join("lib/release/flutter_rust_engine.dll.lib")).unwrap();
+        assert!(!release_bundle_complete(&root));
     }
 
     #[test]
@@ -573,9 +661,23 @@ mod tests {
         let root = tempdir("sdk_layout");
         let (source, layout) = (root.join("host_debug"), root.join("sdk/out/host_debug"));
         fake_engine(&source);
+        fs::write(
+            source.join("flutter_patched_sdk/platform_strong.dill"),
+            "platform",
+        )
+        .unwrap();
         link_engine_build(&source, &layout).unwrap();
+        if cfg!(windows) {
+            assert!(!layout.join("flutter_patched_sdk").is_symlink());
+        }
+        assert_eq!(
+            fs::read_to_string(layout.join("flutter_patched_sdk/platform_strong.dill")).unwrap(),
+            "platform"
+        );
         for present in [
             "libflutter_rust_engine.so",
+            "flutter_rust_engine.dll",
+            "flutter_rust_engine.dll.lib",
             "icudtl.dat",
             "gen_snapshot",
             "font-subset",
@@ -595,15 +697,20 @@ mod tests {
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("icudtl.dat"), "").unwrap();
         let error = link_engine_build(&source, &root.join("layout")).unwrap_err();
-        assert!(
-            error.to_string().contains("libflutter_rust_engine.so"),
-            "{error}"
-        );
+        assert!(error.to_string().contains(host_engine_library()), "{error}");
     }
 
     fn flutter_at(root: &Path) -> Flutter {
         fs::create_dir_all(root.join("bin")).unwrap();
-        fs::write(root.join("bin/flutter"), "").unwrap();
+        fs::write(
+            root.join(if cfg!(windows) {
+                "bin/flutter.bat"
+            } else {
+                "bin/flutter"
+            }),
+            "",
+        )
+        .unwrap();
         Flutter::discover(Some(root)).unwrap()
     }
 

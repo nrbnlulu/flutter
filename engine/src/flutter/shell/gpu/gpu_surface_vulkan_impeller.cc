@@ -16,6 +16,7 @@
 #include "impeller/renderer/backend/vulkan/context_vk.h"
 #include "impeller/renderer/backend/vulkan/surface_context_vk.h"
 #include "impeller/renderer/backend/vulkan/swapchain/surface_vk.h"
+#include "impeller/renderer/backend/vulkan/texture_vk.h"
 #include "impeller/renderer/backend/vulkan/texture_wrapper_vk.h"
 #include "impeller/renderer/render_target.h"
 #include "impeller/renderer/surface.h"
@@ -127,12 +128,15 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
         return false;
       }
 
-      return impeller::RenderToTarget(
-          aiks_context->GetContentContext(),                                //
-          render_target,                                                    //
-          display_list,                                                     //
-          cull_rect,                                                        //
-          /*reset_host_buffer=*/surface_frame.submit_info().frame_boundary  //
+      // This surface owns its AiksContext, so no other surface encodes into
+      // its transient host buffers. Reset them after every frame, including
+      // frames that are not the last surface submitted (such as platform
+      // view overlays, which set frame_boundary to false).
+      return impeller::RenderToTarget(aiks_context->GetContentContext(),  //
+                                      render_target,                      //
+                                      display_list,                       //
+                                      cull_rect,                          //
+                                      /*reset_host_buffer=*/true          //
       );
     };
 
@@ -192,10 +196,31 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
           /*enable_msaa=*/true);
       entry.size = frame_size;
     }
+#if defined(FML_OS_WIN)
+    // Intel HD 530 (1912) corrupts rendering directly into Win32 swapchain
+    // images on driver 31.0.101.2111. Owned images render correctly; copy their
+    // pixels on the same queue before the existing presentation handoff.
+    const auto properties = impeller::ContextVK::Cast(*impeller_context_)
+                                .GetPhysicalDevice()
+                                .getProperties();
+    if (properties.vendorID == 0x8086 && properties.deviceID == 0x1912 &&
+        (recreated_transients || !entry.copy_target)) {
+      entry.copy_target =
+          impeller_context_->GetResourceAllocator()->CreateTexture(desc);
+      if (!entry.copy_target) {
+        return nullptr;
+      }
+    }
+#endif
     delegate_->RecordFrameResources(recreated_transients);
+    auto render_source =
+        entry.copy_target ? std::const_pointer_cast<impeller::TextureSourceVK>(
+                                impeller::TextureVK::Cast(*entry.copy_target)
+                                    .GetTextureSource())
+                          : wrapped_onscreen;
 
     auto surface = impeller::SurfaceVK::WrapSwapchainImage(
-        entry.transients, wrapped_onscreen, [&]() -> bool { return true; });
+        entry.transients, render_source, [&]() -> bool { return true; });
     impeller::RenderTarget render_target = surface->GetRenderTarget();
     auto cull_rect =
         impeller::Rect::MakeSize(render_target.GetRenderTargetSize());
@@ -228,8 +253,8 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
     // communicate a layout to the embedder.
     SurfaceFrame::SubmitCallback submit_callback =
         [image = flutter_image, delegate = delegate_,
-         context = impeller_context_,
-         wrapped_onscreen](const SurfaceFrame&) -> bool {
+         context = impeller_context_, wrapped_onscreen,
+         copy_target = entry.copy_target](const SurfaceFrame&) -> bool {
       auto command_buffer = context->CreateCommandBuffer();
       if (!command_buffer) {
         return false;
@@ -239,12 +264,76 @@ std::unique_ptr<SurfaceFrame> GPUSurfaceVulkanImpeller::AcquireFrame(
       if (!command_buffer_vk.Track(wrapped_onscreen)) {
         return false;
       }
+      if (copy_target) {
+        if (!command_buffer_vk.Track(copy_target)) {
+          return false;
+        }
+        auto& source = impeller::TextureVK::Cast(*copy_target);
+        impeller::BarrierVK source_barrier;
+        source_barrier.cmd_buffer = command_buffer_vk.GetCommandBuffer();
+        source_barrier.new_layout =
+            impeller::vk::ImageLayout::eTransferSrcOptimal;
+        source_barrier.src_stage =
+            impeller::vk::PipelineStageFlagBits::eColorAttachmentOutput;
+        source_barrier.src_access =
+            impeller::vk::AccessFlagBits::eColorAttachmentWrite;
+        source_barrier.dst_stage =
+            impeller::vk::PipelineStageFlagBits::eTransfer;
+        source_barrier.dst_access = impeller::vk::AccessFlagBits::eTransferRead;
+        if (!source.SetLayout(source_barrier)) {
+          return false;
+        }
+        auto destination_barrier = source_barrier;
+        destination_barrier.new_layout =
+            impeller::vk::ImageLayout::eTransferDstOptimal;
+        destination_barrier.src_stage =
+            impeller::vk::PipelineStageFlagBits::eColorAttachmentOutput;
+        destination_barrier.src_access =
+            impeller::vk::AccessFlagBits::eColorAttachmentWrite;
+        destination_barrier.dst_access =
+            impeller::vk::AccessFlagBits::eTransferWrite;
+        if (!wrapped_onscreen->SetLayout(destination_barrier).ok()) {
+          return false;
+        }
+        impeller::vk::ImageCopy copy;
+        copy.srcSubresource.aspectMask =
+            impeller::vk::ImageAspectFlagBits::eColor;
+        copy.srcSubresource.layerCount = 1;
+        copy.dstSubresource = copy.srcSubresource;
+        const auto dimensions = copy_target->GetSize();
+        copy.extent =
+            impeller::vk::Extent3D(dimensions.width, dimensions.height, 1);
+        command_buffer_vk.GetCommandBuffer().copyImage(
+            source.GetImage(), impeller::vk::ImageLayout::eTransferSrcOptimal,
+            wrapped_onscreen->GetImage(),
+            impeller::vk::ImageLayout::eTransferDstOptimal, copy);
+        // The cached target is reused by the next frame. Order that frame's
+        // color writes after this frame's transfer reads.
+        source_barrier.new_layout =
+            impeller::vk::ImageLayout::eShaderReadOnlyOptimal;
+        source_barrier.src_stage =
+            impeller::vk::PipelineStageFlagBits::eTransfer;
+        source_barrier.src_access = impeller::vk::AccessFlagBits::eTransferRead;
+        source_barrier.dst_stage =
+            impeller::vk::PipelineStageFlagBits::eColorAttachmentOutput;
+        source_barrier.dst_access =
+            impeller::vk::AccessFlagBits::eColorAttachmentWrite;
+        if (!source.SetLayout(source_barrier)) {
+          return false;
+        }
+      }
       impeller::BarrierVK barrier;
       barrier.cmd_buffer = command_buffer_vk.GetCommandBuffer();
       barrier.new_layout = impeller::vk::ImageLayout::eColorAttachmentOptimal;
       barrier.src_stage =
           impeller::vk::PipelineStageFlagBits::eColorAttachmentOutput;
-      barrier.src_access = impeller::vk::AccessFlagBits::eColorAttachmentWrite;
+      if (copy_target) {
+        barrier.src_stage = impeller::vk::PipelineStageFlagBits::eTransfer;
+        barrier.src_access = impeller::vk::AccessFlagBits::eTransferWrite;
+      } else {
+        barrier.src_access =
+            impeller::vk::AccessFlagBits::eColorAttachmentWrite;
+      }
       barrier.dst_stage =
           impeller::vk::PipelineStageFlagBits::eColorAttachmentOutput;
       barrier.dst_access = impeller::vk::AccessFlagBits::eColorAttachmentRead |

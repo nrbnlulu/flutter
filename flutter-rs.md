@@ -884,6 +884,17 @@ platform is added:
 - Add pixel-buffer, wgpu-texture, video, GIS, and 3D example plugins.
 - Add `flutter create --shell=rust` and corresponding run/build/test support.
 
+## Headless agent verification
+
+The proposed [headless agent verification plan](flutter-rs-agent-plan.md) adds
+a display-free Rust host for application scenarios, structured UI assertions,
+multi-window input, screenshots and recordings. It retains Impeller and the
+private engine integration, with one engine/root isolate and multiple virtual
+views. Linux is the first delivery target; native shell tests remain necessary
+for OS and compositor behavior. The plan includes a source review, protocol and
+frame-completion contracts, implementation phases and acceptance gates. This is
+planned work, not an available headless runtime.
+
 ## Delivery phases
 
 Platform enablement is intentionally ordered as Linux, Windows, Android, web,

@@ -1,0 +1,21 @@
+Name: wgpu-hal
+URL: https://github.com/gfx-rs/wgpu
+Version: 30.0.0 (014d9e84813a2946febfa4888694c0b70565b2f5)
+License: MIT OR Apache-2.0
+License File: LICENSE.MIT, LICENSE.APACHE
+
+This is the HAL from the exact wgpu revision used by the shell. Cargo.toml is
+normalized to remove workspace inheritance; its internal naga/wgpu-types
+dependencies still use that same Git revision. Workspace and fixture Cargo
+patches replace only wgpu-hal, retaining the coherent upstream graph.
+
+Local change: src/vulkan/descriptor.rs adds one unused sampler descriptor
+when allocating a pool for an empty bind-group layout. Intel HD Graphics 530
+with Windows driver 31.0.101.2111 otherwise crashes inside igvk64.dll during
+vkCreateDescriptorPool. An independent Vulkan-only ctypes reproduction also
+crashes with poolSizeCount=0 and succeeds with one sampler descriptor.
+The extra descriptor does not alter any set layout or submitted GPU work.
+
+Revalidate with the existing ignored direct pixel upload/readback test under
+VK_LAYER_KHRONOS_validation, WGPU_VALIDATION=1, WGPU_DEBUG=1. See the Windows
+progress log for commands and results. No other source changes are intended.

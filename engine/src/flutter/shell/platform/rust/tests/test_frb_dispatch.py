@@ -5,31 +5,31 @@
 
 """End-to-end FRB isolate dispatch and texture test for the Rust shell."""
 
+from native_desktop import desktop
+
 import argparse
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import tempfile
 import time
 
-DIAGNOSTIC = re.compile(
-    r"VUID-|validation error|failed waiting on fences|semaphore.*error|"
-    r"invalid (?:Vk)?image|device lost",
-    re.IGNORECASE,
-)
+from test_texture import DIAGNOSTIC
+
+_desktop = None
 
 
-def clients() -> list[dict[str, object]]:
-  result = subprocess.run(
-      ["hyprctl", "clients", "-j"],
-      check=True,
-      capture_output=True,
-      text=True,
-  )
-  return json.loads(result.stdout)
+def native():
+  global _desktop
+  if _desktop is None:
+    _desktop = desktop()
+  return _desktop
+
+
+def clients():
+  return native().clients()
 
 
 def wait_until(predicate, process: subprocess.Popen[bytes], timeout: float = 15.0):
@@ -58,169 +58,144 @@ def main() -> None:
   parser.add_argument("--icu", required=True, type=Path)
   args = parser.parse_args()
 
-  with tempfile.TemporaryDirectory(prefix="flutter-rust-frb-") as directory:
-    work = Path(directory)
-    status_path = work / "status.json"
-    log_path = work / "runner.log"
-    gpu_first = work / "gpu-first.png"
-    gpu_second = work / "gpu-second.png"
-    pixels_first = work / "pixels-first.png"
-    pixels_second = work / "pixels-second.png"
-    environment = os.environ.copy()
-    environment.update({
-        "FLUTTER_RUST_ASSETS_PATH": str(args.assets),
-        "FLUTTER_RUST_ICU_DATA": str(args.icu),
-        "FLUTTER_RUST_FRB_STATUS": str(status_path),
-        "RUST_LOG": "wgpu_core=warn,wgpu_hal=warn",
-    })
-    if shutil.which("vulkaninfo"):
-      vulkan = subprocess.run(["vulkaninfo"], capture_output=True, text=True)
-      if "VK_LAYER_KHRONOS_validation" in vulkan.stdout + vulkan.stderr:
-        environment["VK_INSTANCE_LAYERS"] = "VK_LAYER_KHRONOS_validation"
+  directory = tempfile.mkdtemp(prefix="flutter-rust-frb-")
+  print(f"FRB validation evidence: {directory}", flush=True)
+  work = Path(directory)
+  status_path = work / "status.json"
+  log_path = work / "runner.log"
+  gpu_first = work / "gpu-first.png"
+  gpu_second = work / "gpu-second.png"
+  pixels_first = work / "pixels-first.png"
+  pixels_second = work / "pixels-second.png"
+  environment = os.environ.copy()
+  environment.update({
+      "FLUTTER_RUST_ASSETS_PATH": str(args.assets),
+      "FLUTTER_RUST_ICU_DATA": str(args.icu),
+      "FLUTTER_RUST_FRB_STATUS": str(status_path),
+      "RUST_LOG": "wgpu_core=warn,wgpu_hal=warn",
+      "WGPU_VALIDATION": "1",
+      "WGPU_DEBUG": "1",
+  })
+  if shutil.which("vulkaninfo"):
+    vulkan = subprocess.run(["vulkaninfo"], capture_output=True, text=True)
+    if "VK_LAYER_KHRONOS_validation" in vulkan.stdout + vulkan.stderr:
+      environment["VK_INSTANCE_LAYERS"] = "VK_LAYER_KHRONOS_validation"
 
-    address = None
-    with log_path.open("wb") as log:
-      process = subprocess.Popen(
-          [str(args.runner)],
-          stdout=log,
-          stderr=subprocess.STDOUT,
-          env=environment,
-      )
-      try:
+  address = None
+  with log_path.open("wb") as log:
+    process = subprocess.Popen(
+        [str(args.runner)],
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        env=environment,
+    )
+    try:
 
-        def initialized():
-          nonlocal address
-          for client in clients():
-            if client.get("pid") == process.pid and client.get("title") == "Flutter Rust Shell":
-              address = str(client["address"])
-              break
-          status = read_status(status_path)
-          return address if address and status else None
-
-        if not wait_until(initialized, process):
-          raise RuntimeError("FRB fixture did not initialize")
-
+      def initialized():
+        nonlocal address
+        for client in clients():
+          if client.get("pid") == process.pid and client.get("title") == "Flutter Rust Shell":
+            address = str(client["address"])
+            break
         status = read_status(status_path)
-        if status is None:
-          raise RuntimeError("FRB fixture status was not readable")
-        if "error" in status:
-          raise RuntimeError(
-              f"Dart fixture failed: {status['error']}\n{status.get('stackTrace', '')}"
-          )
-        background = status["background"]
-        expected = {
-            "synchronousCallerWasMainThread": True,
-            "isolateName": "flutter-rust-frb-background",
-            "callerWasMainThread": False,
-            "callbackWasMainThread": True,
-            "synchronousCallbackWasDeferred": True,
-        }
-        actual = {
-            "synchronousCallerWasMainThread": status["synchronousCallerWasMainThread"],
-            "isolateName": background["isolateName"],
-            "callerWasMainThread": background["callerWasMainThread"],
-            "callbackWasMainThread": background["callbackWasMainThread"],
-            "synchronousCallbackWasDeferred": background["synchronousCallbackWasDeferred"],
-        }
-        if actual != expected:
-          raise RuntimeError(f"unexpected FRB dispatch result: {actual!r}")
+        return address if address and status else None
 
-        gpu_id = status["gpuTextureId"]
-        pixel_id = status["pixelTextureId"]
-        if not isinstance(gpu_id, int) or not isinstance(pixel_id, int):
-          raise RuntimeError(f"invalid texture IDs: {gpu_id!r}, {pixel_id!r}")
-        if gpu_id <= 0 or pixel_id <= 0 or gpu_id == pixel_id:
-          raise RuntimeError(f"unexpected texture IDs: {gpu_id}, {pixel_id}")
-        if background["gpuTextureId"] != gpu_id or background["pixelTextureId"] != pixel_id:
-          raise RuntimeError("background isolate observed different texture IDs")
+      if not wait_until(initialized, process):
+        raise RuntimeError("FRB fixture did not initialize")
 
-        def frames_ready(minimum_gpu: int, minimum_pixels: int):
-          current = read_status(status_path)
-          if current is None:
-            return None
-          return (
-              current if int(current.get("gpuFrames", 0)) >= minimum_gpu and
-              int(current.get("pixelFrames", 0)) >= minimum_pixels else None
-          )
-
-        baseline = wait_until(lambda: frames_ready(2, 2), process)
-        if baseline is None:
-          raise RuntimeError("both FRB texture producers did not start")
-
-        client = next(item for item in clients() if str(item.get("address")) == address)
-        x, y = client["at"]
-        width, height = client["size"]
-        left_width = width // 2
-        right_width = width - left_width
-        subprocess.run(
-            ["grim", "-g", f"{x},{y} {left_width}x{height}",
-             str(gpu_first)],
-            check=True,
+      status = read_status(status_path)
+      if status is None:
+        raise RuntimeError("FRB fixture status was not readable")
+      if "error" in status:
+        raise RuntimeError(
+            f"Dart fixture failed: {status['error']}\n{status.get('stackTrace', '')}"
         )
-        subprocess.run(
-            [
-                "grim",
-                "-g",
-                f"{x + left_width},{y} {right_width}x{height}",
-                str(pixels_first),
-            ],
-            check=True,
+      background = status["background"]
+      expected = {
+          "synchronousCallerWasMainThread": True,
+          "isolateName": "flutter-rust-frb-background",
+          "callerWasMainThread": False,
+          "callbackWasMainThread": True,
+          "synchronousCallbackWasDeferred": True,
+      }
+      actual = {
+          "synchronousCallerWasMainThread": status["synchronousCallerWasMainThread"],
+          "isolateName": background["isolateName"],
+          "callerWasMainThread": background["callerWasMainThread"],
+          "callbackWasMainThread": background["callbackWasMainThread"],
+          "synchronousCallbackWasDeferred": background["synchronousCallbackWasDeferred"],
+      }
+      if actual != expected:
+        raise RuntimeError(f"unexpected FRB dispatch result: {actual!r}")
+
+      gpu_id = status["gpuTextureId"]
+      pixel_id = status["pixelTextureId"]
+      if not isinstance(gpu_id, int) or not isinstance(pixel_id, int):
+        raise RuntimeError(f"invalid texture IDs: {gpu_id!r}, {pixel_id!r}")
+      if gpu_id <= 0 or pixel_id <= 0 or gpu_id == pixel_id:
+        raise RuntimeError(f"unexpected texture IDs: {gpu_id}, {pixel_id}")
+      if background["gpuTextureId"] != gpu_id or background["pixelTextureId"] != pixel_id:
+        raise RuntimeError("background isolate observed different texture IDs")
+
+      def frames_ready(minimum_gpu: int, minimum_pixels: int):
+        current = read_status(status_path)
+        if current is None:
+          return None
+        return (
+            current if int(current.get("gpuFrames", 0)) >= minimum_gpu and
+            int(current.get("pixelFrames", 0)) >= minimum_pixels else None
         )
 
-        gpu_baseline = int(baseline["gpuFrames"])
-        pixel_baseline = int(baseline["pixelFrames"])
-        if not wait_until(
-            lambda: frames_ready(gpu_baseline + 10, pixel_baseline + 10),
-            process,
-        ):
-          raise RuntimeError(
-              "both FRB texture producers did not keep presenting: "
-              f"baseline=({gpu_baseline}, {pixel_baseline}), "
-              f"latest={read_status(status_path)!r}"
-          )
+      baseline = wait_until(lambda: frames_ready(2, 2), process)
+      if baseline is None:
+        raise RuntimeError("both FRB texture producers did not start")
 
-        subprocess.run(
-            ["grim", "-g", f"{x},{y} {left_width}x{height}",
-             str(gpu_second)],
-            check=True,
-        )
-        subprocess.run(
-            [
-                "grim",
-                "-g",
-                f"{x + left_width},{y} {right_width}x{height}",
-                str(pixels_second),
-            ],
-            check=True,
-        )
-        if gpu_first.read_bytes() == gpu_second.read_bytes():
-          raise RuntimeError("wgpu texture frames advanced but its pixels did not change")
-        if pixels_first.read_bytes() == pixels_second.read_bytes():
-          raise RuntimeError("pixel-buffer frames advanced but its pixels did not change")
+      client = next(item for item in clients() if str(item.get("address")) == address)
+      x, y = client["at"]
+      width, height = client["size"]
+      left_width = width // 2
+      right_width = width - left_width
+      native().capture_window(address, gpu_first, (0, 0, left_width, height))
+      native().capture_window(address, pixels_first, (left_width, 0, right_width, height))
 
-        subprocess.run(
-            ["hyprctl", "dispatch", "closewindow", f"address:{address}"],
-            check=True,
-            stdout=subprocess.DEVNULL,
+      gpu_baseline = int(baseline["gpuFrames"])
+      pixel_baseline = int(baseline["pixelFrames"])
+      if not wait_until(
+          lambda: frames_ready(gpu_baseline + 10, pixel_baseline + 10),
+          process,
+      ):
+        raise RuntimeError(
+            "both FRB texture producers did not keep presenting: "
+            f"baseline=({gpu_baseline}, {pixel_baseline}), "
+            f"latest={read_status(status_path)!r}"
         )
-        if process.wait(timeout=10) != 0:
-          raise RuntimeError("FRB fixture exited unsuccessfully")
-        log.flush()
-        if DIAGNOSTIC.search(log_path.read_text(errors="replace")):
-          raise RuntimeError("Vulkan synchronization diagnostics were reported")
-      except Exception:
-        if process.poll() is None:
-          process.terminate()
-          try:
-            process.wait(timeout=5)
-          except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-        log.flush()
-        print(log_path.read_text(errors="replace"))
-        raise
 
-    print("Rust-shell FRB dispatch, wgpu texture, and pixel-buffer fixture passed.")
+      native().capture_window(address, gpu_second, (0, 0, left_width, height))
+      native().capture_window(address, pixels_second, (left_width, 0, right_width, height))
+      if gpu_first.read_bytes() == gpu_second.read_bytes():
+        raise RuntimeError("wgpu texture frames advanced but its pixels did not change")
+      if pixels_first.read_bytes() == pixels_second.read_bytes():
+        raise RuntimeError("pixel-buffer frames advanced but its pixels did not change")
+
+      native().action("close", address)
+      if process.wait(timeout=10) != 0:
+        raise RuntimeError("FRB fixture exited unsuccessfully")
+      log.flush()
+      if DIAGNOSTIC.search(log_path.read_text(errors="replace")):
+        raise RuntimeError("Vulkan synchronization diagnostics were reported")
+    except Exception:
+      if process.poll() is None:
+        process.terminate()
+        try:
+          process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+          process.kill()
+          process.wait()
+      log.flush()
+      print(log_path.read_text(errors="replace"))
+      raise
+
+  print("Rust-shell FRB dispatch, wgpu texture, and pixel-buffer fixture passed.")
 
 
 if __name__ == "__main__":

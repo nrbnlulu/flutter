@@ -51,7 +51,7 @@ mod tests {
         assert!(manifest.contains(crate::plugins::PLUGINS_END));
         assert!(
             manifest.find(crate::plugins::PLUGINS_END)
-                < manifest.find("[target.'cfg(target_os = \"linux\")'.dependencies]")
+                < manifest.find("[target.'cfg(not(target_os = \"android\"))'.dependencies]")
         );
     }
 }

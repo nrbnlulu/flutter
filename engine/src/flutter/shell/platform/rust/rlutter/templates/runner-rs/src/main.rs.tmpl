@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// flutter-rust-runner-version: 9
+// flutter-rust-runner-version: 10
 
 use std::{env, path::PathBuf, process::ExitCode};
 
@@ -11,7 +11,7 @@ use {{projectName}}::register_application;
 
 fn main() -> ExitCode {
     // Assets and ICU data are bundled next to the executable by
-    // `rlutter build linux` (`<exe dir>/data/{flutter_assets,icudtl.dat}`).
+    // `rlutter build linux/windows` (`<exe dir>/data/{flutter_assets,icudtl.dat}`).
     // An explicit first argument overrides the assets directory, which is how
     // `rlutter run` points the runner at the freshly built assets.
     let bundle_dir = env::current_exe()

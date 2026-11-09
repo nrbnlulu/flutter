@@ -703,8 +703,8 @@ fn raw_key_message_terminates_the_modern_key_packet() {
     let message: Value =
         serde_json::from_slice(&keyboard.raw_event_message(&event)).expect("valid raw key JSON");
     assert_eq!(message["type"], "keydown");
-    assert_eq!(message["keymap"], "linux");
-    assert_eq!(message["toolkit"], "gtk");
+    assert_eq!(message["keymap"], CurrentPlatform::LEGACY_KEYMAP);
+    assert_eq!(message["toolkit"], CurrentPlatform::LEGACY_TOOLKIT);
     assert_eq!(message["scanCode"], 4);
     assert_eq!(message["specifiedLogicalKey"], u64::from('a'));
     assert_eq!(message["modifiers"], 1 << 2);
@@ -820,6 +820,7 @@ fn a_modifiers_own_transition_is_not_double_reported() {
     assert!(processed.event.is_some());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn right_alt_is_left_alone_because_it_may_be_altgr() {
     let mut keyboard = KeyboardState::new();
@@ -860,6 +861,7 @@ fn up_reuses_the_logical_key_of_its_down() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn numpad_digit_with_flutter_believing_numlock_off_synthesizes_a_numlock_tap() {
     let mut keyboard = KeyboardState::new();
@@ -887,6 +889,7 @@ fn numpad_digit_with_flutter_believing_numlock_off_synthesizes_a_numlock_tap() {
     assert!(second.before.is_empty());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn numpad_navigation_key_means_numlock_is_off() {
     let mut keyboard = KeyboardState::new();
@@ -1246,4 +1249,100 @@ fn delta_model_client_receives_editing_deltas() {
             text: String::new(),
         }
     );
+}
+
+#[test]
+fn native_lock_state_is_corrected_before_typing_without_double_toggling_lock_down() {
+    let mut keyboard = KeyboardState::new();
+    let key_a = physical_key_id(PhysicalKey::Code(KeyCode::KeyA)).unwrap();
+    let corrections = keyboard.sync_locks([true, true, false], key_a, true);
+    assert_eq!(corrections.len(), 4);
+    assert!(keyboard.flutter_caps_lock);
+    assert!(keyboard.flutter_num_lock);
+    assert!(
+        keyboard
+            .sync_locks([true, true, false], key_a, true)
+            .is_empty()
+    );
+    let num_lock = physical_key_id(PhysicalKey::Code(KeyCode::NumLock)).unwrap();
+    assert!(
+        keyboard
+            .sync_locks([true, false, false], num_lock, true)
+            .is_empty()
+    );
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_altgr_text_is_not_reinterpreted_as_a_control_shortcut() {
+    let mut keyboard = KeyboardState::new();
+    press(
+        &mut keyboard,
+        KeyCode::AltRight,
+        Key::Named(NamedKey::Alt),
+        ElementState::Pressed,
+    );
+    keyboard.modifiers_changed(ModifiersState::CONTROL | ModifiersState::ALT);
+    assert!(keyboard.text_modifiers().is_empty());
+    let processed = press(
+        &mut keyboard,
+        KeyCode::KeyQ,
+        Key::Character("@".into()),
+        ElementState::Pressed,
+    );
+    assert_eq!(processed.event.unwrap().logical, u64::from('@'));
+    keyboard.release_all();
+    assert_eq!(
+        keyboard.text_modifiers(),
+        ModifiersState::CONTROL | ModifiersState::ALT
+    );
+}
+
+#[test]
+fn ime_cancel_and_recommit_preserve_utf16_replacement_and_suppress_key_echo() {
+    for delta_model in [false, true] {
+        let mut session = TextInputSession::default();
+        session.apply(TextInputCommand::SetClient(
+            TextInputClientId(11),
+            "TextInputAction.newline".to_owned(),
+            delta_model,
+        ));
+        session.apply(TextInputCommand::SetEditingState(TextEditingState {
+            text: "A\u{1f600}B".to_owned(),
+            selection_base: 1,
+            selection_extent: 3,
+            ..TextEditingState::default()
+        }));
+        session.ime(Ime::Enabled);
+        assert!(
+            session
+                .ime(Ime::Preedit("\u{5019}\u{88dc}".to_owned(), Some((6, 6))))
+                .is_some()
+        );
+        assert!(session.keyboard_text("duplicate").is_none());
+        assert!(session.ime(Ime::Preedit(String::new(), None)).is_some());
+        assert_eq!(session.editing_state.text, "AB");
+        assert_eq!(session.editing_state.selection_base, 1);
+        assert_eq!(session.editing_state.composing_base, -1);
+        session.ime(Ime::Disabled);
+        session.ime(Ime::Enabled);
+        let message = session
+            .ime(Ime::Commit("\u{6f22}\u{5b57}".to_owned()))
+            .unwrap();
+        let update: Value = serde_json::from_slice(&message).unwrap();
+        assert_eq!(update["args"][0], 11);
+        assert_eq!(
+            update["method"],
+            if delta_model {
+                "TextInputClient.updateEditingStateWithDeltas"
+            } else {
+                "TextInputClient.updateEditingState"
+            }
+        );
+        assert_eq!(session.editing_state.text, "A\u{6f22}\u{5b57}B");
+        assert_eq!(session.editing_state.selection_base, 3);
+        assert_eq!(session.editing_state.composing_base, -1);
+        assert!(session.keyboard_text("!").is_some());
+        assert_eq!(session.editing_state.text, "A\u{6f22}\u{5b57}!B");
+    }
 }

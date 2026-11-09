@@ -186,10 +186,13 @@ mod tests {
     impl Fake {
         fn discover(&self) -> Result<Toolchain> {
             let var = |n: &str| self.vars.get(n).map(|v| v.to_string());
-            let is_dir = |p: &Path| self.dirs.contains(p.to_str().unwrap());
+            let is_dir = |p: &Path| {
+                self.dirs
+                    .contains(p.to_string_lossy().replace('\\', "/").as_str())
+            };
             let list = |p: &Path| {
                 self.listings
-                    .get(p.to_str().unwrap())
+                    .get(p.to_string_lossy().replace('\\', "/").as_str())
                     .map(|v| v.iter().map(|s| s.to_string()).collect())
                     .unwrap_or_default()
             };

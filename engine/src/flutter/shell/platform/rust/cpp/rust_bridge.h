@@ -19,7 +19,7 @@ extern "C" {
 
 // This private ABI is lockstep-versioned with the Flutter fork. It is not the
 // Flutter Embedder API and is never exposed to application plugins.
-#define FLUTTER_RUST_SHELL_ABI_VERSION 13u
+#define FLUTTER_RUST_SHELL_ABI_VERSION 14u
 #define FLUTTER_RUST_PLUGIN_SDK_API_VERSION 1u
 
 typedef struct FlutterRustShellAbi {
@@ -190,6 +190,9 @@ typedef struct FlutterRustWindowingCallbacks {
   FlutterRustSetWindowFlagCallback set_window_fullscreen;
   FlutterRustSetWindowEventCallback set_window_event_callback;
   FlutterRustSetWindowParentCallback set_window_parent;
+  int (*update_popup_position)(void* user_data,
+                               FlutterRustViewId view_id,
+                               const FlutterRustPopupWindowRequest* request);
 } FlutterRustWindowingCallbacks;
 
 typedef enum FlutterRustViewFocusState {
@@ -473,6 +476,11 @@ FLUTTER_RUST_SHELL_EXPORT int FlutterRustShellWindowGetState(
     int64_t engine_id,
     FlutterRustViewId view_id,
     FlutterRustWindowState* state);
+FLUTTER_RUST_SHELL_EXPORT int FlutterRustShellWindowUpdatePopupPosition(
+    int64_t engine_id,
+    FlutterRustViewId view_id,
+    const FlutterRustPopupWindowRequest* request);
+
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowSetSize(
     int64_t engine_id,
     FlutterRustViewId view_id,

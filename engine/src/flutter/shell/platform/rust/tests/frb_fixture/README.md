@@ -2,7 +2,8 @@
 
 This application-level fixture verifies the real Dart/FRB/Rust path without
 adding `flutter_rust_bridge` to the shell runtime. Its Cargo binary links the
-private `libflutter_rust_engine.so`, registers the fixture through
+private engine (`libflutter_rust_engine.so` on Linux, or the Windows DLL/import
+library), registers the fixture through
 `flutter_shell_winit::run_application`, and exports the generated FRB symbols
 from the process for `ExternalLibrary.process()`.
 
@@ -34,3 +35,14 @@ Run the full native fixture from the Flutter repository root:
 ```sh
 task test-rust-shell-frb-dispatch
 ```
+
+On Windows, `rust/build.rs` explicitly exports the 15 FRB 2.12.0 process entry
+points with MSVC `/EXPORT:` linker arguments. `no_mangle` alone does not make
+these symbols discoverable through `ExternalLibrary.process()` in an executable.
+Keep this pinned list aligned with FRB when regenerating/upgrading the bindings.
+The Cargo runner stages the matching engine DLL beside the executable.
+
+The Python harness retains its evidence directory on success and failure and
+prints its path. It enables wgpu validation/debugging, uses the same diagnostic
+patterns as the texture harness, and checks both producer regions independently.
+Windows dispatch and both texture producers have passed with Khronos validation.

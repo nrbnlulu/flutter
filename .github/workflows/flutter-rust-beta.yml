@@ -1,6 +1,7 @@
 name: Flutter Rust BETA artifacts
 
 on:
+  workflow_dispatch:
   push:
     branches: [master, rust/flutter-rs-shell]
 
@@ -270,8 +271,154 @@ jobs:
           path: ${{ runner.temp }}/android-engine-package
           retention-days: 1
 
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime_mode: [debug, release]
+    env:
+      DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
+      DEPOT_TOOLS_UPDATE: '0'
+      GYP_MSVS_VERSION: '2022'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Configure Windows build tools
+        shell: pwsh
+        run: |
+          git config --global core.longpaths true
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          "GYP_MSVS_OVERRIDE_PATH=$vs" >> $env:GITHUB_ENV
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$env:RUNNER_TEMP/depot_tools"
+          "$env:RUNNER_TEMP/depot_tools" >> $env:GITHUB_PATH
+          "DEPOT_TOOLS=$env:RUNNER_TEMP/depot_tools" >> $env:GITHUB_ENV
+          rustup toolchain install 1.93.1 --profile minimal
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # Engine scripts call python3 through cmd.exe; avoid the Store alias.
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/python-shim" | Out-Null
+          $python = (Get-Command python.exe).Source
+          "@echo off`n`"$python`" %*" | Set-Content "$env:RUNNER_TEMP/python-shim/python3.cmd"
+          "$env:RUNNER_TEMP/python-shim" >> $env:GITHUB_PATH
+
+      - name: Fetch matching engine dependencies
+        shell: pwsh
+        run: |
+          Copy-Item engine.gclient .gclient
+          gclient sync --no-history
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Build and package the matching engine
+        shell: pwsh
+        run: |
+          python tools/rust_shell/tasks.py build --engine host_${{ matrix.runtime_mode }} --mode ${{ matrix.runtime_mode }}
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python tools/rust_shell/package_windows_sdk.py engine engine/src/out/host_${{ matrix.runtime_mode }} build/windows-engine
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Upload Windows engine
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: windows-engine-${{ matrix.runtime_mode }}
+          path: build/windows-engine
+          retention-days: 1
+
+  package-windows:
+    needs: [build-windows, build-tool]
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Re-fetch the resolved Flutter version tag
+        env:
+          FLUTTER_VERSION_TAG: ${{ needs.build-tool.outputs.flutter_version_tag }}
+        run: |
+          git fetch --force https://github.com/flutter/flutter.git "refs/tags/${env:FLUTTER_VERSION_TAG}:refs/tags/${env:FLUTTER_VERSION_TAG}"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "FLUTTER_VERSION_TAG=$env:FLUTTER_VERSION_TAG" >> $env:GITHUB_ENV
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.93.1 --profile minimal
+
+      - name: Download Windows debug engine
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: windows-engine-debug
+          path: build/windows-engines/debug
+
+      - name: Download Windows release engine
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: windows-engine-release
+          path: build/windows-engines/release
+
+      - name: Package the Windows Rust SDK
+        run: python tools/rust_shell/package_windows_sdk.py bundle . build/windows-engines build/windows-sdk build/flutter-rust-windows-x64.tar.gz
+
+      - name: Test rlutter and bootstrap the standalone Flutter SDK
+        shell: pwsh
+        run: |
+          cargo +1.93.1 test --locked --manifest-path engine/src/flutter/shell/platform/rust/rlutter/Cargo.toml
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo +1.93.1 build --release --locked --manifest-path engine/src/flutter/shell/platform/rust/rlutter/Cargo.toml
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          bin/flutter.bat --version
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python tools/rust_shell/package_windows_sdk.py flutter . "$env:RUNNER_TEMP/windows-flutter" build/rlutter-flutter-windows-x64.tar.gz --version-tag $env:FLUTTER_VERSION_TAG
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Verify packaged SDKs without checkout engine links
+        shell: pwsh
+        run: |
+          $env:XDG_CACHE_HOME = "$env:RUNNER_TEMP/windows-managed-cache"
+          $cache = "$env:XDG_CACHE_HOME/rlutter/flutter-BETA"
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          tar -xzf build/rlutter-flutter-windows-x64.tar.gz -C $cache
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Set-Content "$cache/.rlutter-complete" 'BETA'
+          $cli = "$env:GITHUB_WORKSPACE/engine/src/flutter/shell/platform/rust/rlutter/target/release/rlutter.exe"
+          $project = "$env:RUNNER_TEMP/windows-standalone-smoke"
+          New-Item -ItemType Directory -Force "$project/.dart_tool/flutter_rs/sdk" | Out-Null
+          tar -xzf build/flutter-rust-windows-x64.tar.gz -C "$project/.dart_tool/flutter_rs/sdk"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Push-Location $project
+          & $cli create . --project-name windows_standalone_smoke
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $cli build windows --debug
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $cli build windows --release
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (!(Test-Path runner-rs/target/release/data/flutter_assets/app.so)) { throw 'No AOT app.so' }
+          Pop-Location
+
+      - name: Upload Windows distribution
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: windows-distribution
+          path: |
+            build/flutter-rust-windows-x64.tar.gz
+            build/rlutter-flutter-windows-x64.tar.gz
+            engine/src/flutter/shell/platform/rust/rlutter/target/release/rlutter.exe
+          retention-days: 1
+
   publish:
-    needs: [build-tool, build-engine, build-android-engine]
+    needs: [build-tool, build-engine, build-android-engine, package-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -323,6 +470,12 @@ jobs:
           pattern: rust-engine-android-*
           path: build/downloaded-android-engines
 
+      - name: Download Windows distribution
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: windows-distribution
+          path: build/windows-distribution
+
       - name: Package BETA assets
         run: |
           mkdir -p build/flutter-rust-sdk/crates build/flutter-rust-sdk/third_party
@@ -330,6 +483,9 @@ jobs:
           cp engine/src/flutter/shell/platform/rust/Cargo.lock build/flutter-rust-sdk/
           cp -R engine/src/flutter/shell/platform/rust/crates/. build/flutter-rust-sdk/crates/
           cp -R engine/src/flutter/shell/platform/rust/third_party/winit-wayland build/flutter-rust-sdk/third_party/
+          cp -R engine/src/flutter/shell/platform/rust/third_party/wgpu-hal build/flutter-rust-sdk/third_party/
+          find build/windows-distribution -name '*.tar.gz' -exec cp {} build/ \;
+          find build/windows-distribution -name rlutter.exe -exec cp {} build/ \;
           for mode in debug profile release; do
             lib="build/flutter-rust-sdk/lib/$mode"
             chmod +x "$lib/flutter_rust_shell_runner" "$lib/gen_snapshot" "$lib/font-subset" \
@@ -353,7 +509,7 @@ jobs:
             tar -C "$dir" -czf "build/flutter-rust-$cpu.tar.gz" .
           done
           mv build/flutter_tools.snapshot build/flutter-tools.snapshot
-          sha256sum build/flutter-rust-*.tar.gz build/rlutter-flutter-linux-x64.tar.gz build/flutter-tools.snapshot > build/SHA256SUMS
+          sha256sum build/flutter-rust-*.tar.gz build/rlutter-flutter-*.tar.gz build/rlutter.exe build/flutter-tools.snapshot > build/SHA256SUMS
 
       - name: Verify standalone SDK without a Flutter installation
         run: |
@@ -462,6 +618,7 @@ jobs:
           gh release upload BETA \
             build/flutter-rust-*.tar.gz \
             build/flutter-tools.snapshot \
-            build/rlutter-flutter-linux-x64.tar.gz \
+            build/rlutter-flutter-*.tar.gz \
+            build/rlutter.exe \
             build/SHA256SUMS \
             --clobber

@@ -457,6 +457,7 @@ dependencies = [
  "serde_json",
  "wayland-sys",
  "wgpu",
+ "windows-sys 0.61.2",
  "winit",
  "x11-dl",
 ]
@@ -1961,7 +1962,6 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "30.0.0"
-source = "git+https://github.com/gfx-rs/wgpu.git?rev=014d9e84813a2946febfa4888694c0b70565b2f5#014d9e84813a2946febfa4888694c0b70565b2f5"
 dependencies = [
  "android_system_properties",
  "arrayvec",
