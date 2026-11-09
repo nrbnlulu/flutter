@@ -21,7 +21,7 @@ pub fn encode_standard(value: &Value) -> Result<Vec<u8>, AgentError> {
         Ok(())
     }
     fn align(out: &mut Vec<u8>, alignment: usize) {
-        while out.len() % alignment != 0 {
+        while !out.len().is_multiple_of(alignment) {
             out.push(0);
         }
     }

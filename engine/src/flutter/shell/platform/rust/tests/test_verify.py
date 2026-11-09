@@ -51,7 +51,8 @@ def main():
   for name, defines, selected in [('positive', [], scenario),
                                   ('regression', ['--dart-define=AGENT_REGRESSION=true'], scenario),
                                   ('startup-error', ['--dart-define=AGENT_STARTUP_ERROR=true'],
-                                   scenario), ('caught-error', [], error_scenario)]:
+                                   scenario), ('caught-error', [], error_scenario),
+                                     ('replaced-hook', ['--dart-define=AGENT_REPLACE_ERROR_HOOK=true'], scenario)]:
     report_path = output / name / 'result.json'
     with (output / f'{name}.log').open('w') as log:
       process = subprocess.run(
@@ -77,10 +78,22 @@ def main():
       assert report['steps'][-1]['name'] == 'Observe persisted value'
       assert list(report_path.with_suffix('.artifacts').glob('*.png'))
       assert report['build']['staged']['sha256'] != results['positive']['build']['staged']['sha256']
-    if name.endswith('error'):
+    if name.endswith('error') or name == 'replaced-hook':
       assert 'app_exception' in json.dumps(report
                                           ) or 'control channel' in json.dumps(report), report
     results[name] = report
+  unavailable = output / 'adapter-unavailable' / 'result.json'
+  with (output / 'adapter-unavailable.log').open('w') as log:
+    bad_driver = str(output / 'missing-vulkan-driver.json')
+    process = subprocess.run(
+        base + ['verify', str(scenario), '--headless', '--report', str(unavailable)],
+        cwd=args.project.resolve(),
+        env=env | {'VK_DRIVER_FILES': bad_driver, 'VK_ICD_FILENAMES': bad_driver},
+        stdout=log, stderr=log, timeout=300)
+  report = json.loads(unavailable.read_text())
+  assert process.returncode != 0 and report['status'] == 'infrastructure_failed', report
+  assert 'Vulkan' in (output / 'adapter-unavailable.log').read_text()
+  results['adapter-unavailable'] = report
   (output / 'report.json').write_text(
       json.dumps({name: value['status'] for name, value in results.items()}, indent=2) + '\n'
   )

@@ -124,6 +124,7 @@ impl Shared {
     pub(super) fn fail(&self, error: AgentError) {
         *self.fatal.lock() = Some(error);
         let _ = self.sender.try_send(Event::Changed);
+        let _ = self.events.send_event(HostEvent::TaskScheduled);
     }
     fn view(&self, id: i64) -> Result<Value, AgentError> {
         self.windows.lock()["views"]
@@ -151,9 +152,9 @@ impl Shared {
     }
 }
 extern "C" fn semantics(data: *mut c_void, view: i64, bytes: *const u8, length: u64) {
-    // C++ calls on merged UI/platform, borrows bytes only for this call, and
-    // stops callbacks before Session's stable owner is dropped.
-    let shared = unsafe { &*data.cast::<Arc<Shared>>() };
+    // C++ borrows bytes for this call and stops callbacks before Session's Arc
+    // is dropped. Arc::as_ptr addresses the stable shared allocation directly.
+    let shared = unsafe { &*data.cast::<Shared>() };
     if shared.stop.load(Ordering::Acquire) {
         return;
     }
@@ -190,7 +191,7 @@ extern "C" fn diagnostic(
     stack: *const u8,
     stack_length: u64,
 ) {
-    let shared = unsafe { &*data.cast::<Arc<Shared>>() };
+    let shared = unsafe { &*data.cast::<Shared>() };
     if shared.stop.load(Ordering::Acquire) {
         return;
     }
@@ -226,7 +227,6 @@ extern "C" fn diagnostic(
 
 pub(super) struct Session {
     pub(super) shared: Arc<Shared>,
-    callback_owner: Box<Arc<Shared>>,
     worker: Option<JoinHandle<()>>,
     socket: PathBuf,
     connection: Arc<Mutex<Option<UnixStream>>>,
@@ -303,8 +303,7 @@ impl Session {
                 let _ = thread_shared.events.send_event(HostEvent::ExitRequested);
             })
             .map_err(|e| e.to_string())?;
-        let mut session = Self {
-            callback_owner: Box::new(shared.clone()),
+        let session = Self {
             shared,
             worker: Some(worker),
             socket: path,
@@ -326,14 +325,14 @@ impl Session {
             FlutterRustShellSetSemanticsCallbacks(
                 host.shell.get(),
                 flutter_shell_core::FlutterRustSemanticsCallbacks {
-                    user_data: (&mut *session.callback_owner as *mut Arc<Shared>).cast(),
+                    user_data: Arc::as_ptr(&session.shared).cast_mut().cast(),
                     update: Some(semantics),
                 },
             );
             FlutterRustShellSetDiagnosticCallbacks(
                 host.shell.get(),
                 flutter_shell_core::FlutterRustDiagnosticCallbacks {
-                    user_data: (&mut *session.callback_owner as *mut Arc<Shared>).cast(),
+                    user_data: Arc::as_ptr(&session.shared).cast_mut().cast(),
                     report: Some(diagnostic),
                 },
             );
@@ -356,10 +355,10 @@ impl Drop for Session {
     fn drop(&mut self) {
         self.stop();
         let _ = std::fs::remove_file(&self.socket);
-        if std::env::var_os("FLUTTER_RUST_AGENT_ENDPOINT_OWNED").is_some_and(|v| v == "1") {
-            if let Some(parent) = self.socket.parent() {
-                let _ = std::fs::remove_dir(parent);
-            }
+        if std::env::var_os("FLUTTER_RUST_AGENT_ENDPOINT_OWNED").is_some_and(|v| v == "1")
+            && let Some(parent) = self.socket.parent()
+        {
+            let _ = std::fs::remove_dir(parent);
         }
     }
 }
@@ -400,6 +399,38 @@ fn read_requests(mut stream: UnixStream, shared: Arc<Shared>) {
     }
     let _ = shared.sender.send(Event::Disconnected);
 }
+fn save_failure_artifacts(shared: &Shared, cache: &SemanticsCache, error: &AgentError) {
+    let result = (|| -> Reply {
+        let windows = shared.windows.lock().clone();
+        let semantics: Vec<_> = windows["views"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v["viewId"].as_i64())
+            .map(|id| cache.snapshot(id))
+            .collect();
+        let frames: Vec<_> = shared.frames.lock().values().cloned().collect();
+        let mut evidence = Vec::new();
+        for frame in frames {
+            let path = shared
+                .artifacts
+                .join(format!("failure-view-{}.png", frame.view_id));
+            let result = write_png(&path, frame.width, frame.height, &frame.rgba);
+            evidence.push(json!({"path":path,"frameId":frame.frame,"uiFrameNumber":frame.ui_frame_number,"error":result.err()}));
+        }
+        let manifest = json!({"error":error,"epoch":shared.epoch,"windows":windows,"semantics":semantics,"logs":shared.logs.lock().clone(),"frames":evidence});
+        std::fs::write(
+            shared.artifacts.join("failure.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .map_err(|e| AgentError::new("artifact_error", e.to_string()))?;
+        Ok(Value::Null)
+    })();
+    if let Err(error) = result {
+        eprintln!("agent failure evidence: {error:?}");
+    }
+}
+
 struct Client {
     stream: UnixStream,
     incoming: Receiver<Event>,
@@ -452,42 +483,30 @@ impl Client {
         self.output(response(id, result))
     }
     fn notify(&mut self, kind: &str, data: Value) -> Result<(), AgentError> {
+        let message = json!({"event":kind,"epoch":self.shared.epoch,"elapsedMicros":self.shared.start.elapsed().as_micros() as u64,"data":data});
         if self.subscriptions.contains(kind) {
-            self.output(json!({"event":kind,"epoch":self.shared.epoch,"elapsedMicros":self.shared.start.elapsed().as_micros() as u64,"data":data}))?;
+            self.output(message)
+        } else {
+            self.trace("event", &message)
+        }
+    }
+    fn action_event(&mut self, method: &str, result: &Reply) -> Result<(), AgentError> {
+        if (method.starts_with("input.")
+            || matches!(
+                method,
+                "windows.focus" | "windows.resize" | "windows.close" | "semantics.perform"
+            ))
+            && let Ok(acknowledgement) = result
+        {
+            self.notify(
+                "action.dispatched",
+                json!({"method":method,"acknowledgement":acknowledgement}),
+            )?;
         }
         Ok(())
     }
     fn failure_artifacts(&mut self, error: &AgentError) {
-        let result = (|| -> Reply {
-            let windows = self.shared.windows.lock().clone();
-            let semantics: Vec<_> = windows["views"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|v| v["viewId"].as_i64())
-                .map(|id| self.cache.snapshot(id))
-                .collect();
-            let frames: Vec<_> = self.shared.frames.lock().values().cloned().collect();
-            let mut evidence = Vec::new();
-            for frame in frames {
-                let path = self
-                    .shared
-                    .artifacts
-                    .join(format!("failure-view-{}.png", frame.view_id));
-                let result = write_png(&path, frame.width, frame.height, &frame.rgba);
-                evidence.push(json!({"path":path,"frameId":frame.frame,"uiFrameNumber":frame.ui_frame_number,"error":result.err()}));
-            }
-            let manifest = json!({"error":error,"epoch":self.shared.epoch,"windows":windows,"semantics":semantics,"logs":self.shared.logs.lock().clone(),"frames":evidence});
-            std::fs::write(
-                self.shared.artifacts.join("failure.json"),
-                serde_json::to_vec_pretty(&manifest).unwrap(),
-            )
-            .map_err(|e| AgentError::new("artifact_error", e.to_string()))?;
-            Ok(Value::Null)
-        })();
-        if let Err(error) = result {
-            eprintln!("agent failure evidence: {error:?}");
-        }
+        save_failure_artifacts(&self.shared, &self.cache, error);
     }
     fn event(&mut self, event: Event) -> Result<(), AgentError> {
         match event {
@@ -555,13 +574,16 @@ impl Client {
         if let Some(error) = self.shared.fatal.lock().clone() {
             return Err(error);
         }
-        if self.disconnected || self.shared.stop.load(Ordering::Acquire) {
+        if self.shared.stop.load(Ordering::Acquire) {
             return Err(AgentError::new("process_exit", "agent client disconnected"));
         }
         Ok(())
     }
     fn cancel(&mut self, id: &Value) -> Result<(), AgentError> {
         self.drain()?;
+        if self.disconnected {
+            return Err(AgentError::new("process_exit", "agent client disconnected"));
+        }
         let index = self
             .pending
             .iter()
@@ -606,6 +628,7 @@ impl Client {
                 self.servicing = true;
                 let result = self.handle(&request);
                 self.servicing = false;
+                self.action_event(&request.method, &result)?;
                 self.write(request.id, result)?;
             }
         }
@@ -689,10 +712,19 @@ fn serve(
                 Ok(Event::Bridge(bytes)) => {
                     shared.bridge_event(&bytes)?;
                 }
-                Ok(Event::Stop | Event::Disconnected) => return Ok(()),
+                Ok(Event::Stop | Event::Disconnected) => {
+                    if let Some(error) = shared.failure() {
+                        save_failure_artifacts(&shared, &cache, &error);
+                    }
+                    return Ok(());
+                }
                 Ok(_) => {}
                 Err(_) => break,
             }
+        }
+        if let Some(error) = shared.failure() {
+            save_failure_artifacts(&shared, &cache, &error);
+            return Err(error);
         }
         if shared.stop.load(Ordering::Acquire) {
             return Ok(());
@@ -757,7 +789,9 @@ fn serve(
     };
     let mut handshake = false;
     let result = (|| {
-        while !shared.stop.load(Ordering::Acquire) && !client.disconnected {
+        while !shared.stop.load(Ordering::Acquire)
+            && (!client.disconnected || !client.pending.is_empty())
+        {
             if client.pending.is_empty() {
                 match client.incoming.recv_timeout(Duration::from_millis(100)) {
                     Ok(event) => client.event(event)?,
@@ -778,15 +812,7 @@ fn serve(
             if request.method == "session.handshake" && result.is_ok() {
                 handshake = true;
             }
-            if result
-                .as_ref()
-                .is_ok_and(|v| v.get("actionSequence").is_some())
-            {
-                client.notify(
-                    "action.dispatched",
-                    json!({"method":request.method,"acknowledgement":result.as_ref().unwrap()}),
-                )?;
-            }
+            client.action_event(&request.method, &result)?;
             let shutdown = request.method == "session.shutdown" && result.is_ok();
             client.write(request.id, result)?;
             if shutdown {
@@ -983,6 +1009,24 @@ impl Client {
             }
             "session.health" => {
                 request.check_params(&[])?;
+                if !self.shared.bridge.lock().is_null() {
+                    let query = Request {
+                        id: request.id.clone(),
+                        method: request.method.clone(),
+                        params: serde_json::Map::from_iter([("query".into(), json!({}))]),
+                    };
+                    let health = self.bridge_query(&query, "diagnostics", deadline)?;
+                    if health["frameworkHookInstalled"] != true
+                        || health["platformHookInstalled"] != true
+                        || health["errorCount"] != 0
+                    {
+                        return Err(AgentError::new(
+                            "app_exception",
+                            "Dart error coverage was replaced or reported errors",
+                        )
+                        .with_data(health));
+                    }
+                }
                 if self
                     .recordings
                     .values()
@@ -1363,8 +1407,22 @@ impl Client {
         let kind = request
             .params
             .get("kind")
-            .and_then(Value::as_str)
+            .map(|v| {
+                v.as_str()
+                    .ok_or_else(|| AgentError::new("invalid_request", "kind must be a string"))
+            })
+            .transpose()?
             .unwrap_or("semantics");
+        request.check_params(match kind {
+            "semantics" => &[
+                "kind", "viewId", "selector", "count", "exists", "value", "enabled", "focused",
+                "stableMs",
+            ],
+            "windows" => &["kind", "where", "count", "exists", "stableMs"],
+            "widget" => &["kind", "viewId", "query", "equals", "stableMs"],
+            "app" => &["kind", "query", "equals", "stableMs"],
+            _ => return Err(AgentError::new("invalid_request", "unknown assertion kind")),
+        })?;
         let stable = request
             .params
             .get("stableMs")
@@ -1416,21 +1474,10 @@ impl Client {
             })
             .transpose()?;
         if let Some(fields) = where_fields {
-            if fields.keys().any(|k| {
-                ![
-                    "viewId",
-                    "title",
-                    "kind",
-                    "parentViewId",
-                    "focused",
-                    "ready",
-                    "visible",
-                    "removing",
-                ]
-                .contains(&k.as_str())
-            }) {
-                return Err(AgentError::new("invalid_request", "unknown window field"));
-            }
+            flutter_shell_agent::validate_window_filter(fields)?;
+        }
+        if kind == "widget" {
+            request.view_id()?;
         }
         let mut stable_since = None;
         loop {
@@ -1499,7 +1546,9 @@ impl Client {
                 return Err(AgentError::new(if request.method=="verify.assert" {"assertion_failed"} else {"timeout"},"verification predicate did not match")
                     .with_data(json!({"predicate":request.params,"lastObserved":observed,"windows":self.shared.windows.lock().clone(),"logs":self.shared.logs.lock().clone()})));
             }
-            self.wait_event(deadline)?;
+            if let Err(error) = self.wait_event(deadline) {
+                return Err(error.with_data(json!({"predicate":request.params,"lastObserved":observed,"windows":self.shared.windows.lock().clone(),"logs":self.shared.logs.lock().clone()})));
+            }
         }
     }
     fn bridge_query(&mut self, request: &Request, kind: &str, deadline: Instant) -> Reply {
@@ -1651,6 +1700,27 @@ impl Client {
             ));
         }
         let path = self.shared.artifacts.join(&name);
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        if [
+            "build-manifest",
+            "failure",
+            "observations",
+            "result",
+            "manifest",
+            "sdk-manifest",
+        ]
+        .contains(&stem)
+            || stem.starts_with("failure-view-")
+            || path.with_extension("json").exists()
+        {
+            return Err(AgentError::new(
+                "invalid_request",
+                "capture name collides with reserved session metadata",
+            ));
+        }
         let retained: u64 = std::fs::read_dir(&self.shared.artifacts)
             .map_err(|e| AgentError::new("artifact_error", e.to_string()))?
             .filter_map(Result::ok)
@@ -1667,6 +1737,15 @@ impl Client {
             ));
         }
         write_png(&path, frame.width, frame.height, &frame.rgba)?;
+        if let Err(error) = self.cancel(&request.id) {
+            return Err(error.with_data(json!({"path":path,"frameId":frame.frame})));
+        }
+        if Instant::now() >= deadline {
+            return Err(
+                AgentError::new("timeout", "capture encoding exceeded request deadline")
+                    .with_data(json!({"path":path,"frameId":frame.frame})),
+            );
+        }
         let metadata = json!({"path":path,"viewId":view,"frameId":frame.frame,"uiFrameNumber":frame.ui_frame_number,
             "uiFrameBoundary":boundary,"completedSessionMicros":frame.completed_at.saturating_duration_since(self.shared.start).as_micros() as u64,"readbackMicros":frame.readback_micros,"sizeGeneration":frame.generation,"width":frame.width,"height":frame.height,
             "pixelRatio":self.shared.view(view)?["pixelRatio"],"semanticsRevision":self.cache.revision(view),
@@ -1974,12 +2053,12 @@ fn dispatch(host: &VirtualHost, shared: &Shared, command: UiCommand) -> Reply {
                 ));
             }
             let id = FlutterRustViewId(view);
-            if !host
+            if host
                 .registry
                 .borrow()
                 .views
                 .get(&id)
-                .is_some_and(|v| !v.removing)
+                .is_none_or(|v| v.removing)
             {
                 return Err(AgentError::new("view_closed", "view closed"));
             }

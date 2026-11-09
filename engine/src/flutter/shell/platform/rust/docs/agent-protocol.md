@@ -35,6 +35,8 @@ Methods:
 | input.key | viewId, physical, logical, down, optional character |
 | input.insertText, input.replaceText | viewId, text |
 | input.release, diagnostics.snapshot | none |
+| verify.assert, verify.wait | typed kind/viewId/selector or where; count/exists/value/state; see verification.md |
+| recording.start, recording.stop, recording.status | see recording.md |
 | capture.screenshot | viewId; optional mode, afterFrame, sizeGeneration, name |
 
 Selectors support identifier, label, role, enabled and focused. A unique match is
@@ -60,7 +62,8 @@ semantics/pixel pairing. PNGs contain straight-alpha linear RGBA8 with gAMA=1.0.
 Readback and encoding never wait on the UI thread.
 
 Events are windows.changed, semantics.updated, action.dispatched,
-capture.completed and app.error, enabled explicitly by subscription. The ordered
+capture.completed and app.error, enabled on the public stream by subscription. Lifecycle events are retained in
+artifacts even when the client does not subscribe. The ordered
 `events.jsonl` trace is bounded to 64 MiB and redacts editing payloads. Failure
 artifacts include the window/semantics state, recent diagnostics and available
 completed frames. Disk errors fail the operation/session explicitly. Capture

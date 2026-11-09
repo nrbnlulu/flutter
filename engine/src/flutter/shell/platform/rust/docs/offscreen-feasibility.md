@@ -153,3 +153,8 @@ Phase 1 must replace the probe-only startup with the shared runtime and virtual
 window host. Phase 2 must add on-demand bounded capture, asynchronous completion
 and the UI/raster correlation hook before offering observation-constrained
 screenshots. Windows and Android behavior are not certified by this Linux gate.
+
+Phase 2 extended the private boundary to ABI 16 for UI frame correlation,
+semantics and diagnostics. ABI 15 described the initial feasibility checkpoint;
+current runners require ABI 16 exactly. The Vulkan ownership/layout contract is
+unchanged.

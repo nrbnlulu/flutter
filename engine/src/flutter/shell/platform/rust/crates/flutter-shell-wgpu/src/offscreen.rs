@@ -209,6 +209,7 @@ pub struct OffscreenBroker {
     readback_micros: std::sync::atomic::AtomicU64,
     max_readback_micros: std::sync::atomic::AtomicU64,
     dropped: std::sync::atomic::AtomicU64,
+    failed: std::sync::atomic::AtomicBool,
     capture_after: std::sync::atomic::AtomicU64,
     single_capture: std::sync::atomic::AtomicBool,
     view_id: std::sync::atomic::AtomicI64,
@@ -235,12 +236,12 @@ impl Drop for ProbeTarget {
     fn drop(&mut self) {
         let context = &self.readback.context;
         // Phase 0 retirement only; never called on UI or under the queue lock.
-        if context.shared_queue().wait_device_idle(context.device()) {
-            if let Some(device) = unsafe { context.device().as_hal::<wgpu::hal::vulkan::Api>() } {
-                unsafe {
-                    device.raw_device().destroy_semaphore(self.acquire, None);
-                    device.raw_device().destroy_semaphore(self.render, None);
-                }
+        if context.shared_queue().wait_device_idle(context.device())
+            && let Some(device) = unsafe { context.device().as_hal::<wgpu::hal::vulkan::Api>() }
+        {
+            unsafe {
+                device.raw_device().destroy_semaphore(self.acquire, None);
+                device.raw_device().destroy_semaphore(self.render, None);
             }
         }
     }
@@ -266,6 +267,7 @@ impl OffscreenBroker {
             readback_micros: std::sync::atomic::AtomicU64::new(0),
             max_readback_micros: std::sync::atomic::AtomicU64::new(0),
             dropped: std::sync::atomic::AtomicU64::new(0),
+            failed: std::sync::atomic::AtomicBool::new(false),
             capture_after: std::sync::atomic::AtomicU64::new(0),
             single_capture: std::sync::atomic::AtomicBool::new(false),
             view_id: std::sync::atomic::AtomicI64::new(0),
@@ -315,6 +317,10 @@ impl OffscreenBroker {
     pub fn set_recording_enabled(&self, enabled: bool) {
         self.recording
             .store(enabled, std::sync::atomic::Ordering::Release);
+    }
+    /// Persistent failure publication survives a full bounded frame queue.
+    pub fn has_failed(&self) -> bool {
+        self.failed.load(std::sync::atomic::Ordering::Acquire)
     }
     /// Atomic counters never wait on the raster thread's target lock.
     pub fn capture_statistics(&self) -> (u64, u64, u64, u64) {
@@ -512,6 +518,8 @@ impl OffscreenBroker {
     }
 
     fn fail(&self, error: String) {
+        self.failed
+            .store(true, std::sync::atomic::Ordering::Release);
         self.state.lock().failed = true;
         eprintln!("offscreen broker failure: {error}");
         let _ = self.frames.try_send(Err(error));

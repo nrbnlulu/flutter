@@ -37,6 +37,7 @@ const BETA_BUNDLE_URL: &str =
 /// output directory. Missing entries are skipped (a host engine has no
 /// `clang_x64`, and so on); required ones are checked by [`ENGINE_REQUIRED`].
 const ENGINE_ENTRIES: &[&str] = &[
+    "engine-manifest.json",
     "dart-sdk",
     "flutter_patched_sdk",
     "frontend_server_aot.dart.snapshot",
@@ -303,6 +304,9 @@ fn ensure_shell_sources_with(
         copy_if_changed(&local.join("Cargo.lock"), &sdk.join("Cargo.lock"))?;
         replace_link(&sdk.join("crates"), &local.join("crates"))?;
         replace_link(&sdk.join("third_party"), &local.join("third_party"))?;
+        if local.join("dart").is_dir() {
+            replace_link(&sdk.join("dart"), &local.join("dart"))?;
+        }
         return Ok(());
     }
     if release_bundle_complete(sdk) {
@@ -315,6 +319,13 @@ fn ensure_shell_sources_with(
 // download. Android also needs the Linux host compiler, in both build modes.
 fn release_bundle_complete(sdk: &Path) -> bool {
     sdk.join("Cargo.toml").is_file()
+        && sdk.join("crates/flutter-shell-agent/Cargo.toml").is_file()
+        && sdk
+            .join("crates/flutter-shell-winit/src/headless/recording.rs")
+            .is_file()
+        && sdk
+            .join("dart/flutter_rust_agent/lib/flutter_rust_agent.dart")
+            .is_file()
         && sdk.join("third_party/wgpu-hal/Cargo.toml").is_file()
         && sdk.join("crates/flutter-plugin-sdk/Cargo.toml").is_file()
         && sdk
@@ -512,6 +523,20 @@ mod tests {
     fn fake_release_bundle(sdk: &Path) {
         fs::create_dir_all(sdk.join("third_party/wgpu-hal")).unwrap();
         fs::write(sdk.join("third_party/wgpu-hal/Cargo.toml"), "").unwrap();
+        fs::create_dir_all(sdk.join("crates/flutter-shell-agent")).unwrap();
+        fs::create_dir_all(sdk.join("crates/flutter-shell-winit/src/headless")).unwrap();
+        fs::create_dir_all(sdk.join("dart/flutter_rust_agent/lib")).unwrap();
+        fs::write(sdk.join("crates/flutter-shell-agent/Cargo.toml"), "").unwrap();
+        fs::write(
+            sdk.join("crates/flutter-shell-winit/src/headless/recording.rs"),
+            "",
+        )
+        .unwrap();
+        fs::write(
+            sdk.join("dart/flutter_rust_agent/lib/flutter_rust_agent.dart"),
+            "",
+        )
+        .unwrap();
         fs::create_dir_all(sdk.join("crates/flutter-plugin-sdk")).unwrap();
         fs::create_dir_all(sdk.join("crates/flutter-shell-android")).unwrap();
         fs::write(sdk.join("crates/flutter-shell-android/Cargo.toml"), "").unwrap();

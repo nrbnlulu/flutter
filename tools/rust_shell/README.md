@@ -197,3 +197,33 @@ expression evaluation reports no compilation service and remains a follow-up;
 this test does not claim expression-evaluation or breakpoint conformance.
 Windows symlink-denied fallback, Linux/Android runtime, native IME composition
 and display-scale transitions were not exercised here.
+
+
+Linux headless verification tasks use Vulkan without DISPLAY or WAYLAND_DISPLAY:
+
+```sh
+task test-rust-headless-unit
+task test-rust-headless-render
+task test-rust-headless-host
+task test-rust-headless-agent
+task test-rust-headless-recording
+task test-rust-headless-e2e
+```
+
+Build the debug engine first. Renderer/host socket evidence requires strace;
+recording requires FFmpeg/ffprobe with FFV1. Pass `--vulkan-icd PATH`, `--strace PATH`
+and `--artifacts DIR` through `CLI_ARGS`, or inherit VK_DRIVER_FILES and any
+nonstandard driver library path. Direct Python commands accept the same options.
+Artifacts must be fresh. AOT and archive verification use
+`tests/test_packaged_agent.py --rlutter ... --flutter-archive ... --rust-archive ...
+--artifacts ...`; the script creates a new app, uses physical extracted sources,
+checks all three Linux build modes and verifies ordinary release has no endpoint.
+
+The BETA workflow includes GPU-free Linux/Windows schema tests, a Linux llvmpipe
+render/host/agent/video lane, and extracted-SDK positive/negative scenarios before
+publication. Package sources with `tools/package_sdk_sources.py`; it includes both
+patched dependencies and the optional Dart bridge and rejects mixed engine ABI or
+build-mode metadata. Engine packaging reads metadata from the compiled library.
+The Windows CPU lane does not certify Windows headless execution. Windows agent
+transport, Vulkan evidence and release packaging require an independent Windows
+runtime gate; native Windows tasks retain their existing behavior.

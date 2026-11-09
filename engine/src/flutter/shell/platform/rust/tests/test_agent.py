@@ -86,6 +86,8 @@ def exercise(client, output):
   )
   c.error('invalid_request', 'windows.list', typo=True)
   c.error('unsupported_capability', 'made.up')
+  c.error('invalid_request', 'verify.assert', kind='windows', where={'focused': 'true'}, count=0)
+  c.error('invalid_request', 'verify.assert', kind=123, viewId=1, selector={'identifier': 'name'}, count=0)
   c.until(
       lambda: c.node(1, 'name')
       if any(v['viewId'] == 1 and v['ready'] for v in c.rpc('windows.list')['views']) else None
@@ -97,6 +99,7 @@ def exercise(client, output):
   c.rpc('input.replaceText', viewId=1, text=text)
   c.until(lambda: (n := c.node(1, 'name')) and n['value'] == text)
   c.error('stale_handle', 'input.tap', viewId=1, handle=handle)
+  c.error('invalid_request', 'capture.screenshot', viewId=1, name='build-manifest.png')
   before = c.rpc('capture.screenshot', viewId=1)
   assert before['uiFrameNumber'] > before['uiFrameBoundary']
   assert dimensions(before['path']) == (875, 625), before

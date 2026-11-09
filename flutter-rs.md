@@ -1029,3 +1029,9 @@ The Linux headless host also supports a local agent protocol (`rlutter agent
 --headless --stdio --artifacts DIR`), revisioned semantics, physical input and
 UI-frame-correlated PNG captures. See the
 [protocol contract](engine/src/flutter/shell/platform/rust/docs/agent-protocol.md).
+
+`rlutter verify SCENARIO --headless --report RESULT` provides fresh-process
+assertions, provenance and evidence; per-view FFmpeg recording is optional. The
+Linux SDK passes extracted-archive debug/profile/release checks. Windows headless
+runtime support remains gated independently. See the
+[distribution contract](engine/src/flutter/shell/platform/rust/docs/distribution.md).

@@ -199,6 +199,10 @@ def main():
   )
   hung.chmod(0o700)
   run(args, output / 'blocked', encoder=hung, fail='hang')
+  probe = output / 'blocked-codec-discovery'
+  probe.write_text('#!/usr/bin/env python3\nimport time\ntime.sleep(60)\n')
+  probe.chmod(0o700)
+  run(args, output / 'blocked-discovery', encoder=probe)
   print(f'PASS: {output}')
 
 

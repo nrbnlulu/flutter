@@ -143,14 +143,22 @@ impl Client {
                     let semantics = self.rpc("semantics.snapshot", json!({"viewId":id}));
                     let capture =
                         self.rpc("capture.screenshot", json!({"viewId":id,"timeoutMs":1500}));
-                    views.push(
-                        json!({"viewId":id,"semantics":semantics.ok(),"capture":capture.ok()}),
-                    );
+                    if semantics
+                        .as_ref()
+                        .map_or(true, |v| v.get("error").is_some())
+                        || capture.as_ref().map_or(true, |v| v.get("error").is_some())
+                    {
+                        evidence["incomplete"] = json!(true);
+                    }
+                    views.push(json!({"viewId":id,"semantics":semantics.unwrap_or_else(|e|json!({"infrastructureError":e.to_string()})),"capture":capture.unwrap_or_else(|e|json!({"infrastructureError":e.to_string()}))}));
                 }
                 evidence["windows"] = windows;
                 evidence["views"] = json!(views);
             }
-            Err(error) => evidence["missing"] = json!(error.to_string()),
+            Err(error) => {
+                evidence["missing"] = json!(error.to_string());
+                evidence["incomplete"] = json!(true);
+            }
         }
         evidence["diagnostics"] = self
             .rpc("diagnostics.snapshot", json!({}))
@@ -232,19 +240,20 @@ pub fn run(ctx: &Ctx, args: &VerifyArgs) -> Result<()> {
                 }
             };
             failed = record["passed"] != true;
-            infrastructure_failed |= failed
-                && (record.get("infrastructureError").is_some()
-                    || !matches!(
-                        record["response"]["error"]["code"].as_str(),
-                        Some("assertion_failed")
-                    ) && !(step.method == "verify.wait"
-                        && record["response"]["error"]["code"] == "timeout"));
+            let predicate_failure = record["response"]["error"]["code"] == "assertion_failed"
+                || (step.method == "verify.wait"
+                    && record["response"]["error"]["code"] == "timeout");
+            infrastructure_failed |=
+                failed && (record.get("infrastructureError").is_some() || !predicate_failure);
             report["steps"].as_array_mut().unwrap().push(record);
             if failed {
                 break;
             }
         }
         report["observations"] = client.evidence(&session.artifacts);
+        infrastructure_failed |= report["observations"]["incomplete"] == true
+            || report["observations"].get("writeError").is_some();
+        failed |= infrastructure_failed;
         // Health and a zero exit status are mandatory even after all predicates pass.
         let health = client.success("session.health", json!({}));
         let shutdown = client.success("session.shutdown", json!({}));
@@ -268,10 +277,10 @@ pub fn run(ctx: &Ctx, args: &VerifyArgs) -> Result<()> {
         }
         Ok(())
     })();
-    if let Err(error) = &result {
-        if report.get("error").is_none() {
-            report["error"] = json!(error.to_string());
-        }
+    if let Err(error) = &result
+        && report.get("error").is_none()
+    {
+        report["error"] = json!(error.to_string());
     }
     report["elapsedMicros"] = json!(started.elapsed().as_micros() as u64);
     let provenance = directory.join("build-manifest.json");
@@ -283,15 +292,22 @@ pub fn run(ctx: &Ctx, args: &VerifyArgs) -> Result<()> {
         report["runnerFailure"] = serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null);
     }
     let mut artifacts = Vec::new();
-    if let Ok(entries) = fs::read_dir(&directory) {
-        for entry in entries.flatten() {
-            if let Ok(metadata) = entry.metadata() {
-                if metadata.is_file() {
-                    artifacts.push(json!({"path":entry.path(),"bytes":metadata.len()}));
+    fn collect(directory: &Path, artifacts: &mut Vec<Value>) {
+        if let Ok(entries) = fs::read_dir(directory) {
+            for entry in entries.flatten() {
+                if let Ok(kind) = entry.file_type() {
+                    if kind.is_dir() {
+                        collect(&entry.path(), artifacts);
+                    } else if kind.is_file()
+                        && let Ok(metadata) = entry.metadata()
+                    {
+                        artifacts.push(json!({"path":entry.path(),"bytes":metadata.len()}));
+                    }
                 }
             }
         }
     }
+    collect(&directory, &mut artifacts);
     report["manifest"] = json!(artifacts);
     fs::write(&args.report, serde_json::to_vec_pretty(&report)?)?;
     eprintln!(

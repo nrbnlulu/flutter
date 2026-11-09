@@ -102,10 +102,10 @@ impl SemanticsCache {
                 if !reachable.insert(id) {
                     continue;
                 }
-                if let Some(node) = tree.nodes.get(&id) {
-                    if let Some(children) = node["children"].as_array() {
-                        pending.extend(children.iter().filter_map(Value::as_i64));
-                    }
+                if let Some(node) = tree.nodes.get(&id)
+                    && let Some(children) = node["children"].as_array()
+                {
+                    pending.extend(children.iter().filter_map(Value::as_i64));
                 }
             }
             tree.nodes.retain(|id, _| reachable.contains(id));

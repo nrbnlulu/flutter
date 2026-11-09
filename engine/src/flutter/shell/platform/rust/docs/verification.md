@@ -5,7 +5,8 @@ Build an application with stable semantics identifiers, add the optional
 `FlutterRustAgent.install()` before running the root widget. Installation is
 inert unless compiled with `FLUTTER_RUST_AGENT=true`. Agent/verify builds opt in;
 ordinary builds do not. The bridge chains existing FlutterError.onError and
-PlatformDispatcher.onError handlers. Errors fail verification even if a previous
+PlatformDispatcher.onError handlers. Install after app-owned error handlers; final health checks detect
+subsequent replacement of either hook. Errors fail verification even if a previous
 handler consumes them. Install early enough to observe application startup.
 
 Run from a generated Rust-shell application:
@@ -69,7 +70,9 @@ The packaged fixture's `test/agent/save_dialog.json` edits Unicode text, opens a
 second window, checks text/focus, confirms, checks removal and saved state, queries
 a ValueKey and app predicate, and captures evidence. The same scenario with
 `--dart-define=AGENT_REGRESSION=true` must fail. `AGENT_STARTUP_ERROR=true` and the
-throw_error button verify framework error handling. `tests/test_verify.py` runs all
-four controls through the CLI and compares built fingerprints. Choose identifiers
+throw_error button verify framework error handling. AGENT_REPLACE_ERROR_HOOK=true
+verifies that a later error-hook replacement cannot make an otherwise passing
+scenario green. `tests/test_verify.py` runs all
+six controls (including replaced error hooks and an unavailable Vulkan driver) through the CLI and compares built fingerprints. Choose identifiers
 and predicates that exercise the behavior changed by your patch, and retain a
 negative control; a passing report only covers its declared scenario.

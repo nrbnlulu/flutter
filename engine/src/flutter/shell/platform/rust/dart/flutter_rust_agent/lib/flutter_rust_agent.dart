@@ -29,6 +29,9 @@ class FlutterRustAgent {
   );
   static final Map<String, AgentPredicate> _predicates = <String, AgentPredicate>{};
   static bool _installed = false;
+  static int _errorCount = 0;
+  static FlutterExceptionHandler? _frameworkHandler;
+  static ErrorCallback? _platformHandler;
 
   /// Registers a named JSON observation owned by the application.
   static void registerPredicate(String name, AgentPredicate predicate) {
@@ -46,14 +49,16 @@ class FlutterRustAgent {
     _installed = true;
     final FlutterExceptionHandler? previousFramework = FlutterError.onError;
     final ErrorCallback? previousPlatform = PlatformDispatcher.instance.onError;
-    FlutterError.onError = (FlutterErrorDetails details) {
+    _frameworkHandler = (FlutterErrorDetails details) {
       _error('framework', details.exceptionAsString(), details.stack);
       previousFramework?.call(details);
     };
-    PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+    FlutterError.onError = _frameworkHandler;
+    _platformHandler = (Object error, StackTrace stack) {
       _error('unhandled', error.toString(), stack);
       return previousPlatform?.call(error, stack) ?? false;
     };
+    PlatformDispatcher.instance.onError = _platformHandler;
     _queries.setMessageHandler((Object? message) async {
       final request = Map<String, Object?>.from(message! as Map);
       try {
@@ -88,6 +93,7 @@ class FlutterRustAgent {
   }
 
   static void _error(String kind, String message, StackTrace? stack) {
+    _errorCount += 1;
     unawaited(
       _events.send(<String, Object?>{
         'type': 'error',
@@ -99,6 +105,13 @@ class FlutterRustAgent {
   }
 
   static Object? _query(Map<String, Object?> request) {
+    if (request['kind'] == 'diagnostics') {
+      return <String, Object?>{
+        'frameworkHookInstalled': FlutterError.onError == _frameworkHandler,
+        'platformHookInstalled': PlatformDispatcher.instance.onError == _platformHandler,
+        'errorCount': _errorCount,
+      };
+    }
     final query = Map<String, Object?>.from(request['query']! as Map);
     if (request['kind'] == 'app') {
       if (query.keys.any((String key) => key != 'name' && key != 'arguments')) {
@@ -114,6 +127,11 @@ class FlutterRustAgent {
     }
     if (query.keys.any((String key) => !<String>['key', 'type', 'property'].contains(key))) {
       throw ArgumentError('Unknown widget query parameter');
+    }
+    for (final field in <String>['key', 'type']) {
+      if (query[field] != null && query[field] is! String) {
+        throw ArgumentError('$field must be a string');
+      }
     }
     final matches = <Element>[];
     void visit(Element element) {

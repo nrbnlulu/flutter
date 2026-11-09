@@ -278,39 +278,6 @@ mod linux {
             let _ = fs::remove_dir_all(&self.endpoint.0);
         }
     }
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        #[test]
-        fn owner_recovery_marks_unfinalized_video_as_partial() {
-            let root = crate::util::testing::tempdir("recording_recovery");
-            fs::create_dir(root.join("recording-active")).unwrap();
-            fs::create_dir(root.join("recording-complete")).unwrap();
-            fs::write(
-                root.join("recording-active/manifest.json"),
-                br#"{"status":"recording","activeSegment":{"path":"segment-000.mkv"}}"#,
-            )
-            .unwrap();
-            fs::write(
-                root.join("recording-complete/manifest.json"),
-                br#"{"status":"complete"}"#,
-            )
-            .unwrap();
-            assert!(recover_recordings(&root, "process_exit").unwrap());
-            let active: serde_json::Value = serde_json::from_slice(
-                &fs::read(root.join("recording-active/manifest.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(active["status"], "failed");
-            assert_eq!(active["partial"], true);
-            assert_eq!(active["reason"], "process_exit");
-            let complete: serde_json::Value = serde_json::from_slice(
-                &fs::read(root.join("recording-complete/manifest.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(complete["status"], "complete");
-        }
-    }
     pub fn run_stdio(ctx: &Ctx, args: &AgentArgs) -> Result<()> {
         let mut session = match Session::launch(
             ctx,
@@ -366,6 +333,39 @@ mod linux {
         serde_json::to_writer(io::stdout().lock(), &event)?;
         io::stdout().lock().write_all(b"\n")?;
         finish
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn owner_recovery_marks_unfinalized_video_as_partial() {
+            let root = crate::util::testing::tempdir("recording_recovery");
+            fs::create_dir(root.join("recording-active")).unwrap();
+            fs::create_dir(root.join("recording-complete")).unwrap();
+            fs::write(
+                root.join("recording-active/manifest.json"),
+                br#"{"status":"recording","activeSegment":{"path":"segment-000.mkv"}}"#,
+            )
+            .unwrap();
+            fs::write(
+                root.join("recording-complete/manifest.json"),
+                br#"{"status":"complete"}"#,
+            )
+            .unwrap();
+            assert!(recover_recordings(&root, "process_exit").unwrap());
+            let active: serde_json::Value = serde_json::from_slice(
+                &fs::read(root.join("recording-active/manifest.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(active["status"], "failed");
+            assert_eq!(active["partial"], true);
+            assert_eq!(active["reason"], "process_exit");
+            let complete: serde_json::Value = serde_json::from_slice(
+                &fs::read(root.join("recording-complete/manifest.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(complete["status"], "complete");
+        }
     }
 }
 #[cfg(target_os = "linux")]

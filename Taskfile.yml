@@ -241,3 +241,34 @@ tasks:
     deps: [build-rust-shell, build-rlutter]
     cmds:
       - '{{.RUST_TASK}} rlutter-runtime'
+
+  test-rust-headless-unit:
+    desc: Run GPU-free agent protocol, cache and queue tests.
+    cmds:
+      - '{{.RUST_TASK}} headless-unit'
+
+  test-rust-headless-render:
+    desc: Verify real Flutter pixels without display sockets.
+    cmds:
+      - '{{.RUST_TASK}} headless-render {{.CLI_ARGS}}'
+
+  test-rust-headless-host:
+    desc: Verify virtual views, texture plugins and idle scheduling.
+    cmds:
+      - '{{.RUST_TASK}} headless-host {{.CLI_ARGS}}'
+
+  test-rust-headless-agent:
+    desc: Verify native semantics, Unicode input and correlated capture.
+    cmds:
+      - '{{.RUST_TASK}} headless-agent {{.CLI_ARGS}}'
+
+  test-rust-headless-recording:
+    desc: Decode video and verify timing, resize and encoder failures.
+    cmds:
+      - '{{.RUST_TASK}} headless-recording {{.CLI_ARGS}}'
+
+  test-rust-headless-e2e:
+    desc: Verify generated-app positive and negative scenarios through rlutter.
+    deps: [build-rlutter]
+    cmds:
+      - '{{.RUST_TASK}} headless-e2e {{.CLI_ARGS}}'

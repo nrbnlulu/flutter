@@ -2370,3 +2370,24 @@ Decoded real-engine recordings validate dimensions, timestamps, idle duplication
 visible pointer actions, resize, and two views on a common timeline. Missing,
 crashing and blocked encoders and a killed owned runner all retain explicit
 failure evidence. See [recording](engine/src/flutter/shell/platform/rust/docs/recording.md).
+
+### Headless agent Phase 5 — Linux CI and extracted SDK delivery
+
+Added GPU-free Linux/Windows protocol jobs, a Linux software-Vulkan
+render/host/agent/video lane, and an extracted-SDK publication gate. Source
+packaging includes both patched dependencies, the headless/agent code, Dart
+bridge and fixture. Compiled-engine ABI/build-mode manifests reject mixed
+artifacts, while native startup enforces ABI 16.
+
+The actual archived SDK creates and verifies a fresh generated application in
+Linux debug, profile and release. Ordinary release disables the bridge and owns
+no agent endpoint. Six controls verify the positive workflow and reject a stale
+behavior regression, startup and interaction errors, replaced error hooks, and
+an unavailable Vulkan driver. Final lifecycle/plugin/idle, software-Vulkan
+protocol, decoded-video and native desktop texture checks pass.
+
+Windows headless runtime transport, Vulkan and packaging validation remain a
+separate pending platform gate; a Windows Vulkan host was not available in this
+Linux workspace. The Windows CPU schema job is not a runtime certification.
+An MCP adapter remains deferred until those distribution/runtime gates stabilize.
+See [distribution](engine/src/flutter/shell/platform/rust/docs/distribution.md).

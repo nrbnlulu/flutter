@@ -149,11 +149,10 @@ impl VirtualHost {
         if let Some(agent) = self.agent.borrow().as_ref() {
             agent.publish_windows(self.snapshot());
         }
-        if let Some(path) = &self.state_path {
-            if let Err(error) = std::fs::write(path, serde_json::to_vec(&self.snapshot()).unwrap())
-            {
-                log::error!("headless state artifact: {error}");
-            }
+        if let Some(path) = &self.state_path
+            && let Err(error) = std::fs::write(path, serde_json::to_vec(&self.snapshot()).unwrap())
+        {
+            log::error!("headless state artifact: {error}");
         }
         let callback = self.registry.borrow().callback;
         if let Some(callback) = callback {
@@ -362,7 +361,7 @@ impl WindowingCallbackHost for VirtualHost {
         }
         let (id, callbacks, metrics) = {
             let mut registry = self.registry.borrow_mut();
-            if parent.is_some_and(|p| !registry.views.get(&p).is_some_and(|v| !v.removing)) {
+            if parent.is_some_and(|p| registry.views.get(&p).is_none_or(|v| v.removing)) {
                 return FlutterRustViewId(-1);
             }
             let id = FlutterRustViewId(registry.next_id);
@@ -658,7 +657,7 @@ extern "C" fn event_callback(d: *mut c_void, callback: Option<FlutterRustWindowE
 extern "C" fn parent(d: *mut c_void, id: FlutterRustViewId, parent: FlutterRustViewId) -> i32 {
     let h = unsafe { host(d) };
     let mut r = h.registry.borrow_mut();
-    if id == parent || !r.views.get(&parent).is_some_and(|v| !v.removing) {
+    if id == parent || r.views.get(&parent).is_none_or(|v| v.removing) {
         return 0;
     }
     let mut ancestor = Some(parent);
@@ -960,10 +959,23 @@ fn event_loop(
     let mut next_pulse = None;
     let mut last_pulse = Instant::now() - interval;
     loop {
-        if let Some(agent) = host.agent.borrow().as_ref() {
-            if let Some(error) = agent.failure() {
-                return Err(error.to_string());
+        if host
+            .registry
+            .borrow()
+            .views
+            .values()
+            .any(|view| view._broker.has_failed())
+        {
+            let message = "offscreen Vulkan rendering/readback failed; see engine log";
+            if let Some(agent) = host.agent.borrow().as_ref() {
+                agent.fail(flutter_shell_agent::AgentError::new("gpu_failure", message));
             }
+            return Err(message.into());
+        }
+        if let Some(agent) = host.agent.borrow().as_ref()
+            && let Some(error) = agent.failure()
+        {
+            return Err(error.to_string());
         }
         for event in events.drain() {
             match event {
@@ -1013,7 +1025,18 @@ fn event_loop(
             }
         }
         while let Ok(frame) = completed.try_recv() {
-            let frame = frame?;
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(error) => {
+                    if let Some(agent) = host.agent.borrow().as_ref() {
+                        agent.fail(flutter_shell_agent::AgentError::new(
+                            "gpu_failure",
+                            error.clone(),
+                        ));
+                    }
+                    return Err(error);
+                }
+            };
             if let Some(agent) = host.agent.borrow().as_ref() {
                 agent.publish_frame(frame);
                 continue;

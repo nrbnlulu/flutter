@@ -120,7 +120,7 @@ class Host:
   def tests(self):
     command = [
         'cargo', '+1.93.1', 'test', '--locked', '-p', 'flutter-shell-core', '-p',
-        'flutter-shell-wgpu', '-p', 'flutter-gpu-queue'
+        'flutter-shell-wgpu', '-p', 'flutter-gpu-queue', '-p', 'flutter-shell-agent'
     ]
     if self.windows:
       command += ['--target', 'x86_64-pc-windows-msvc']
@@ -150,6 +150,7 @@ class Host:
     self.run(['ninja', '-C', self.out, 'flutter_rust_shell_unittests'])
     self.run([self.out / ('flutter_rust_shell_unittests' + self.exe)])
     self.run([sys.executable, SHELL / 'build_rust_test.py'])
+    self.run([sys.executable, '-m', 'unittest', 'discover', '-s', ROOT / 'tools/rust_shell', '-p', '*_test.py'])
     for pattern in ('benchmark_windowing_test.py', 'native_desktop_test.py'):
       self.run([sys.executable, '-m', 'unittest', 'discover', '-s', TESTS, '-p', pattern])
 
@@ -314,6 +315,70 @@ def runtime(host, stress):
       print(f'Validation evidence retained: {directory}', file=sys.stderr)
 
 
+def headless(host, task):
+  if host.windows:
+    raise RuntimeError('Windows headless transport/renderer validation is a separate pending gate; native Windows tasks remain available.')
+  artifacts = host.args.artifacts or SHELL / 'target/headless-runs' / str(time.time_ns())
+  artifacts = artifacts.resolve()
+  artifacts.mkdir(parents=True, exist_ok=False)
+  host.env['FLUTTER_WINDOWING'] = 'true'
+  host.env['WGPU_VALIDATION'] = '1'
+  host.env.pop('DISPLAY', None)
+  host.env.pop('WAYLAND_DISPLAY', None)
+  if host.args.vulkan_icd:
+    host.env['VK_DRIVER_FILES'] = str(host.args.vulkan_icd.resolve())
+  if task == 'headless-e2e':
+    cli = host.args.rlutter or SHELL / 'rlutter/target/release/rlutter'
+    with tempfile.TemporaryDirectory(prefix='rlutter-agent-e2e-') as work:
+      project = Path(work) / 'agent_fixture'
+      host.run([cli, '--flutter-root', ROOT, '--local-engine-src', host.src,
+                'create', project, '--project-name', 'agent_fixture'])
+      shutil.copy2(TESTS / 'agent_fixture/lib/main.dart', project / 'lib/main.dart')
+      spec = project / 'pubspec.yaml'
+      spec.write_text(spec.read_text().replace('dependencies:\n',
+          'dependencies:\n  flutter_rust_agent:\n    path: .dart_tool/flutter_rs/sdk/dart/flutter_rust_agent\n', 1))
+      host.run([sys.executable, TESTS / 'test_verify.py', '--rlutter', cli,
+                '--flutter-root', ROOT, '--local-engine-src', host.src,
+                '--project', project, '--artifacts', artifacts / 'verify'])
+      if shutil.which('ffmpeg'):
+        host.run([sys.executable, TESTS / 'test_agent_crash.py', '--rlutter', cli,
+                  '--flutter-root', ROOT, '--local-engine-src', host.src,
+                  '--project', project, '--artifacts', artifacts / 'crash'])
+    return
+  host.smoke()
+  runner = host.out / 'rust-smoke/flutter-rust-shell-smoke'
+  common = [f'--artifacts={artifacts / "agent"}']
+  if task in ('headless-agent', 'headless-recording'):
+    assets = host.bundle(TESTS / 'agent_fixture')
+    script = 'test_recording.py' if task == 'headless-recording' else 'test_agent.py'
+    host.fixture(script, assets, *common, runner=runner)
+    return
+  trace = host.args.strace or shutil.which('strace')
+  if not trace:
+    raise RuntimeError('Install strace (or pass --strace) to verify absence of display-socket connections')
+  if task == 'headless-render':
+    manifest = TESTS / 'headless_probe/Cargo.toml'
+    host.run(['cargo', '+1.93.1', 'build', '--locked', '--manifest-path', manifest,
+              '--target-dir', SHELL / 'target'], env=host.env | {'FLUTTER_RUST_ENGINE_DIR': str(host.out)})
+    assets = host.bundle(TESTS / 'headless_fixture')
+    host.fixture('test_headless_probe.py', assets, f'--artifacts={artifacts / "render"}',
+                 f'--strace={trace}', runner=SHELL / 'target/debug/flutter-rust-headless-probe')
+  elif task == 'headless-host':
+    for name, target in [('main', 'lib/main.dart'), ('owned', 'lib/owned.dart'), ('tooltips', 'lib/tooltips.dart')]:
+      assets = host.bundle(TESTS / 'windowing_fixture', target)
+      extra = ['--tooltip-motion'] if name == 'tooltips' else []
+      host.fixture('test_headless_host.py', assets, f'--artifacts={artifacts / name}',
+                   f'--strace={trace}', *extra, runner=runner)
+    assets = host.bundle(TESTS / 'headless_fixture')
+    host.fixture('test_headless_host.py', assets, f'--artifacts={artifacts / "plugin"}',
+                 f'--strace={trace}', '--plugin', runner=runner)
+    assets = host.bundle(TESTS / 'smoke_fixture')
+    host.fixture('test_headless_host.py', assets, f'--artifacts={artifacts / "idle"}',
+                 f'--strace={trace}', '--idle', runner=runner)
+  else:
+    raise RuntimeError(f'Unknown headless task: {task}')
+
+
 def main():
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument('task')
@@ -347,6 +412,10 @@ def main():
       type=int,
       default=int(os.environ.get('TEXTURE_LIFECYCLE_ITERATIONS', '40'))
   )
+  parser.add_argument('--artifacts', type=Path)
+  parser.add_argument('--vulkan-icd', type=Path)
+  parser.add_argument('--strace', type=Path)
+  parser.add_argument('--rlutter', type=Path)
   parser.add_argument('--target', default='lib/main.dart')
   parser.add_argument(
       '--android-engine', default=os.environ.get('ANDROID_ENGINE', 'android_debug_unopt_arm64')
@@ -361,7 +430,12 @@ def main():
     parser.error('Iteration counts must be positive')
   host = Host(args)
   task = args.task
-  if task == 'build':
+  if task == 'headless-unit':
+    host.run(['cargo', '+1.93.1', 'test', '--locked', '-p', 'flutter-shell-agent', '-p',
+              'flutter-shell-core', '-p', 'flutter-gpu-queue'], SHELL)
+  elif task in ('headless-render', 'headless-host', 'headless-agent', 'headless-recording', 'headless-e2e'):
+    headless(host, task)
+  elif task == 'build':
     host.build()
     if host.windows:
       host.smoke()

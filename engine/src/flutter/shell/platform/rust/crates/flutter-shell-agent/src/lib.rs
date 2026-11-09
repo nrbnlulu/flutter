@@ -115,9 +115,52 @@ pub fn response(id: Value, result: Result<Value, AgentError>) -> Value {
     }
 }
 
+/// Validate typed window filters before a zero-match assertion can succeed.
+pub fn validate_window_filter(fields: &Map<String, Value>) -> Result<(), AgentError> {
+    for (key, value) in fields {
+        let valid = match key.as_str() {
+            "viewId" => value.as_i64().is_some_and(|id| id >= 0),
+            "parentViewId" => value.is_null() || value.as_i64().is_some_and(|id| id >= 0),
+            "title" => value.is_string(),
+            "kind" => value.as_str().is_some_and(|kind| {
+                ["regular", "dialog", "popup", "tooltip", "satellite"].contains(&kind)
+            }),
+            "focused" | "ready" | "visible" | "removing" => value.is_boolean(),
+            _ => false,
+        };
+        if !valid {
+            return Err(AgentError::new(
+                "invalid_request",
+                format!("invalid window filter {key}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn malformed_window_filters_cannot_turn_disappearance_checks_green() {
+        for value in [
+            json!({"focused":"true"}),
+            json!({"viewId":-1}),
+            json!({"viewId":"1"}),
+            json!({"kind":"typo"}),
+            json!({"ready":null}),
+        ] {
+            assert!(validate_window_filter(value.as_object().unwrap()).is_err());
+        }
+        assert!(
+            validate_window_filter(
+                json!({"parentViewId":null,"kind":"dialog","focused":true})
+                    .as_object()
+                    .unwrap()
+            )
+            .is_ok()
+        );
+    }
     #[test]
     fn malformed_and_unknown_envelopes_are_rejected() {
         for input in [

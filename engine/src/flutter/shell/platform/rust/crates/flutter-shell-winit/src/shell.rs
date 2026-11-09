@@ -5441,10 +5441,10 @@ impl ApplicationHandler for ShellApplication {
                         // Wayland frame callback and redraw immediately, so
                         // requesting every view can continuously wake the UI
                         // thread while raster is still presenting a frame.
-                        if CurrentPlatform::is_wayland(event_loop) {
-                            if let Some(window) = self.pacing_window() {
-                                window.request_redraw();
-                            }
+                        if CurrentPlatform::is_wayland(event_loop)
+                            && let Some(window) = self.pacing_window()
+                        {
+                            window.request_redraw();
                         }
                     }
                 }

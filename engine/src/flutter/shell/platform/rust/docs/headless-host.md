@@ -94,3 +94,6 @@ Evidence on 2026-11-09:
 Local artifacts are under `target/offscreen-probe/phase1-*`; the generated CLI
 project and log are at `/tmp/flutter-rs-headless-cli/`. These build outputs are
 not committed. Native desktop coverage remains necessary for OS behavior.
+
+The current agent boundary is ABI 16 (Phase 2). Phase 1's ABI 15 is historical;
+current source and packaged runners enforce the engine-compiled ABI exactly.

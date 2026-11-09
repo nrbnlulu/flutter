@@ -29,7 +29,16 @@ fn forward_build(
                 break;
             }
             if let Some(log) = &log {
-                if let Err(error) = log.lock().unwrap().write_all(&buffer[..count]) {
+                let mut log = log.lock().unwrap();
+                let written = log.metadata().and_then(|metadata| {
+                    if metadata.len().saturating_add(count as u64) > 64 * 1024 * 1024 {
+                        return Err(io::Error::other(
+                            "build log exceeded 64 MiB retention limit",
+                        ));
+                    }
+                    log.write_all(&buffer[..count])
+                });
+                if let Err(error) = written {
                     failure = Some(error);
                 }
             }

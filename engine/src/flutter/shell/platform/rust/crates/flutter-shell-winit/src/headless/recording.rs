@@ -61,12 +61,37 @@ impl Recording {
             ));
         }
         let executable = std::env::var_os("FLUTTER_RUST_FFMPEG").unwrap_or_else(|| "ffmpeg".into());
-        let output = Command::new(&executable)
+        let mut probe = Command::new(&executable)
             .args(["-hide_banner", "-encoders"])
-            .output()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .map_err(|e| {
                 AgentError::new("unsupported_capability", format!("FFmpeg unavailable: {e}"))
             })?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if probe
+                .try_wait()
+                .map_err(|e| AgentError::new("unsupported_capability", e.to_string()))?
+                .is_some()
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = probe.kill();
+                let _ = probe.wait();
+                return Err(AgentError::new(
+                    "unsupported_capability",
+                    "FFmpeg codec discovery timed out",
+                ));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let output = probe
+            .wait_with_output()
+            .map_err(|e| AgentError::new("unsupported_capability", e.to_string()))?;
         if !output.status.success()
             || !String::from_utf8_lossy(&output.stdout)
                 .lines()
@@ -398,17 +423,16 @@ fn record(
                     "recording exceeded 600 second retention limit",
                 ));
             }
-            if let Some(current) = encoder.as_mut() {
-                if let Some(status) = current
+            if let Some(current) = encoder.as_mut()
+                && let Some(status) = current
                     .child
                     .try_wait()
                     .map_err(|e| AgentError::new("recording_failed", e.to_string()))?
-                {
-                    return Err(AgentError::new(
-                        "recording_failed",
-                        format!("FFmpeg exited unexpectedly: {status}"),
-                    ));
-                }
+            {
+                return Err(AgentError::new(
+                    "recording_failed",
+                    format!("FFmpeg exited unexpectedly: {status}"),
+                ));
             }
             match incoming.recv_timeout(
                 next.saturating_duration_since(Instant::now())
@@ -476,7 +500,7 @@ fn record(
             state["activeSegment"] = current.metadata(elapsed);
             state["captureQueueDropped"] = json!(sink.dropped.load(Ordering::Relaxed));
             state["schedulerMissedTicks"] = json!(missed);
-            if ticks % rate as u64 == 0 {
+            if ticks.is_multiple_of(rate as u64) {
                 let bytes: u64 = std::fs::read_dir(directory)
                     .map_err(|e| AgentError::new("artifact_error", e.to_string()))?
                     .filter_map(Result::ok)

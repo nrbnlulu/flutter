@@ -20,3 +20,19 @@ cp -RL "$src/dart-sdk" "$dst/"
 cp -RL "$src/shader_lib" "$dst/"
 mkdir -p "$dst/gen/dart-pkg"
 cp -RL "$src/gen/dart-pkg/sky_engine" "$dst/gen/dart-pkg/"
+# Read engine-compiled metadata without starting an isolate or GPU device.
+python3 - "$dst" <<'PY'
+import ctypes
+import json
+from pathlib import Path
+import sys
+root = Path(sys.argv[1]).resolve()
+engine = ctypes.CDLL(str(root / 'libflutter_rust_engine.so'))
+engine.FlutterRustShellGetEngineAbiVersion.restype = ctypes.c_uint32
+engine.FlutterRustShellGetBuildMode.restype = ctypes.c_char_p
+engine.FlutterRustShellGetEngineRevision.restype = ctypes.c_char_p
+value = {'formatVersion': 1, 'shellAbi': engine.FlutterRustShellGetEngineAbiVersion(),
+         'buildMode': engine.FlutterRustShellGetBuildMode().decode(),
+         'engineRevision': engine.FlutterRustShellGetEngineRevision().decode()}
+(root / 'engine-manifest.json').write_text(json.dumps(value, indent=2) + '\n')
+PY

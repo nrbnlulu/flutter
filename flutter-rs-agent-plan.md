@@ -1,11 +1,13 @@
 # Rust shell headless agent verification plan
 
-Status: Phases 0 and 1 complete on Linux x64 (hardware Vulkan and llvmpipe),
-2026-11-09. The agent runtime remains pending. See the
-[feasibility audit](engine/src/flutter/shell/platform/rust/docs/offscreen-feasibility.md)
-for the validated ABI/layout contract, and the
-[headless host notes](engine/src/flutter/shell/platform/rust/docs/headless-host.md)
-for virtual-window, plugin and CLI evidence.
+Status: Linux x64 Phases 0–5 complete, 2026-11-09. Extracted SDKs pass debug,
+profile and release verification. Windows headless transport/runtime support is
+still pending a Windows Vulkan host and independent validation; it is not advertised. See the
+[feasibility audit](engine/src/flutter/shell/platform/rust/docs/offscreen-feasibility.md),
+[host notes](engine/src/flutter/shell/platform/rust/docs/headless-host.md),
+[protocol](engine/src/flutter/shell/platform/rust/docs/agent-protocol.md),
+[verification](engine/src/flutter/shell/platform/rust/docs/verification.md), and
+[recording](engine/src/flutter/shell/platform/rust/docs/recording.md) contracts.
 Base branch: `rust/flutter-rs-shell`.
 
 ## Goal and scope
@@ -31,9 +33,11 @@ assertions, screenshots, and failure artifacts. Recording follows the same frame
 capture path in a later phase. Rich Dart widget inspection is an optional bridge,
 not a prerequisite for controlling ordinary accessible applications.
 
-## Review of the current implementation
+## Review of the original implementation
 
-Paths below are relative to the repository root. Existing architectural notes in
+This table records the pre-implementation baseline. The delivery status above
+and linked implementation notes describe the current code. Paths below are
+relative to the repository root. Existing architectural notes in
 [flutter-rs.md](flutter-rs.md) describe both implemented and intended components;
 the source findings here distinguish them.
 
@@ -213,7 +217,7 @@ assertions and diagnostics are available in each build mode.
 
 ## Agent protocol and assertion semantics
 
-Proposed commands, not currently available:
+Implemented Linux commands:
 
 ```sh
 rlutter run -d linux --headless --size 1280x800 --pixel-ratio 1
@@ -312,7 +316,9 @@ visibly renders. A session option can redact known sensitive regions.
 
 ## Delivery phases and acceptance gates
 
-Phases 0–4 are complete on Linux x64. Phase 5 is pending. Each phase should be
+Phases 0–5 are complete for the Linux-first delivery. The independent Windows
+headless runtime/distribution gate remains pending; the Windows CPU-only protocol
+job does not establish that support. Each phase should be
 independently reviewable and preserve existing native shell behavior.
 
 ### Phase 0 Rendering feasibility and contracts

@@ -13,7 +13,7 @@ import 'package:flutter/src/widgets/_window.dart';
 void main() {
   stdout.writeln('fixture stdout is not a protocol message: {broken json');
   WidgetsFlutterBinding.ensureInitialized();
-  print('fixture Dart bridge enabled: ${FlutterRustAgent.enabled}');
+  stdout.writeln('fixture Dart bridge enabled: ${FlutterRustAgent.enabled}');
   FlutterRustAgent.install();
   runWidget(const AgentFixture());
 }
@@ -38,6 +38,9 @@ class _AgentFixtureState extends State<AgentFixture> {
     super.initState();
     mainWindow;
     FlutterRustAgent.registerPredicate('savedValue', (_) => saved);
+    if (const bool.fromEnvironment('AGENT_REPLACE_ERROR_HOOK')) {
+      FlutterError.onError = (_) {};
+    }
     if (const bool.fromEnvironment('AGENT_STARTUP_ERROR')) {
       scheduleMicrotask(
         () => FlutterError.reportError(
