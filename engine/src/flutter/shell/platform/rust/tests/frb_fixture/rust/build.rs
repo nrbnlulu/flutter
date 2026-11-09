@@ -13,7 +13,12 @@ fn main() {
         env::var_os("FLUTTER_RUST_ENGINE_DIR")
             .expect("FLUTTER_RUST_ENGINE_DIR must name the engine output directory"),
     );
-    let engine_library = engine_dir.join("libflutter_rust_engine.so");
+    let windows = env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows";
+    let engine_library = engine_dir.join(if windows {
+        "flutter_rust_engine.dll.lib"
+    } else {
+        "libflutter_rust_engine.so"
+    });
     assert!(
         engine_library.is_file(),
         "Flutter Rust engine library is missing: {}",
@@ -21,7 +26,11 @@ fn main() {
     );
     println!("cargo:rerun-if-changed={}", engine_library.display());
     println!("cargo:rustc-link-search=native={}", engine_dir.display());
-    println!("cargo:rustc-link-lib=dylib=flutter_rust_engine");
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", engine_dir.display());
-    println!("cargo:rustc-link-arg=-Wl,--export-dynamic");
+    if windows {
+        println!("cargo:rustc-link-lib=dylib=flutter_rust_engine.dll");
+    } else {
+        println!("cargo:rustc-link-lib=dylib=flutter_rust_engine");
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", engine_dir.display());
+        println!("cargo:rustc-link-arg=-Wl,--export-dynamic");
+    }
 }
