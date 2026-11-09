@@ -119,6 +119,8 @@ pub(crate) enum PopupAnchor {
     BottomRight,
 }
 
+// The minimal Windows host rejects popups until its native positioner is ready.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PopupPlacement {
     pub(crate) width: u32,
@@ -1859,7 +1861,7 @@ struct TextInputInbox {
     texture_fixture_messages: Mutex<VecDeque<String>>,
     wake_proxy: HostEventSender,
     exit: Arc<ApplicationExitCoordinator>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     clipboard: Mutex<Option<arboard::Clipboard>>,
 }
 struct ApplicationExitCoordinator {
@@ -1905,7 +1907,7 @@ impl TextInputInbox {
                 pending: AtomicBool::new(false),
                 wake_proxy,
             }),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             clipboard: Mutex::new(None),
         }
     }
@@ -1973,9 +1975,9 @@ extern "C" fn handle_platform_message(
             );
             return FlutterRustPlatformMessageDisposition::Pending;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         if let Ok(call) = serde_json::from_slice::<RawMethodCall>(message)
-            && let Some(envelope) = handle_linux_clipboard_call(inbox, &call)
+            && let Some(envelope) = handle_desktop_clipboard_call(inbox, &call)
         {
             if response_handle.0.is_null() {
                 return FlutterRustPlatformMessageDisposition::Success;
@@ -2703,7 +2705,15 @@ const SYNCED_MODIFIERS: [(ModifiersState, NamedKey, &[KeyCode]); 4] = [
         NamedKey::Control,
         &[KeyCode::ControlLeft, KeyCode::ControlRight],
     ),
-    (ModifiersState::ALT, NamedKey::Alt, &[KeyCode::AltLeft]),
+    (
+        ModifiersState::ALT,
+        NamedKey::Alt,
+        &[
+            KeyCode::AltLeft,
+            #[cfg(target_os = "windows")]
+            KeyCode::AltRight,
+        ],
+    ),
     (
         ModifiersState::META,
         NamedKey::Meta,
@@ -2732,6 +2742,8 @@ struct KeyboardState {
     /// NumLock state Flutter's `HardwareKeyboard` believes: it starts
     /// unlocked and flips on every NumLock key-down it receives.
     flutter_num_lock: bool,
+    flutter_caps_lock: bool,
+    flutter_scroll_lock: bool,
 }
 
 impl KeyboardState {
@@ -2741,6 +2753,8 @@ impl KeyboardState {
             modifiers: ModifiersState::empty(),
             pressed: HashMap::new(),
             flutter_num_lock: false,
+            flutter_caps_lock: false,
+            flutter_scroll_lock: false,
         }
     }
 
@@ -2836,6 +2850,51 @@ impl KeyboardState {
         events
     }
 
+    fn sync_locks(
+        &mut self,
+        state: [bool; 3],
+        own_physical: u64,
+        pressed: bool,
+    ) -> Vec<FlutterRustKeyEvent> {
+        let mut events = Vec::new();
+        for (index, (code, named)) in [
+            (KeyCode::CapsLock, NamedKey::CapsLock),
+            (KeyCode::NumLock, NamedKey::NumLock),
+            (KeyCode::ScrollLock, NamedKey::ScrollLock),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let key = PhysicalKey::Code(code);
+            let (Some(physical), Some(logical)) =
+                (physical_key_id(key), named_logical_key(named, key))
+            else {
+                continue;
+            };
+            // GetKeyState already includes the current key-down's toggle.
+            let target = state[index] ^ (pressed && own_physical == physical);
+            let current = match index {
+                0 => self.flutter_caps_lock,
+                1 => self.flutter_num_lock,
+                _ => self.flutter_scroll_lock,
+            };
+            if current != target {
+                events.push(self.synthesized_event(
+                    FlutterRustKeyEventType::Down,
+                    physical,
+                    logical,
+                ));
+                events.push(self.synthesized_event(FlutterRustKeyEventType::Up, physical, logical));
+                match index {
+                    0 => self.flutter_caps_lock = target,
+                    1 => self.flutter_num_lock = target,
+                    _ => self.flutter_scroll_lock = target,
+                };
+            }
+        }
+        events
+    }
+
     /// Infers the OS NumLock state from a numpad key. xkb has already applied
     /// it: an unshifted numpad key yields its digit (or `.`) with NumLock on
     /// and its navigation key with NumLock off. Returns `None` for keys that
@@ -2857,8 +2916,14 @@ impl KeyboardState {
         Some(matches!(logical_key, Key::Character(_)))
     }
 
+    fn text_modifiers(&self) -> ModifiersState {
+        let right_alt = physical_key_id(PhysicalKey::Code(KeyCode::AltRight))
+            .is_some_and(|physical| self.pressed.contains_key(&physical));
+        CurrentPlatform::text_modifiers(self.modifiers, right_alt)
+    }
+
     fn committed_text<'a>(&self, event: &'a WinitKeyEvent) -> Option<&'a str> {
-        committed_key_text(self.modifiers, event.state, event.text.as_deref())
+        committed_key_text(self.text_modifiers(), event.state, event.text.as_deref())
     }
 
     /// Translates one winit key event into the packets Flutter needs to stay
@@ -2882,11 +2947,18 @@ impl KeyboardState {
             repeat,
             synthesized,
         )?;
-        if let Some(shortcut_key) = shortcut_logical_key(self.modifiers, event.physical) {
+        if let Some(shortcut_key) = shortcut_logical_key(self.text_modifiers(), event.physical) {
             event.logical = shortcut_key;
         }
 
         let mut before = self.sync_modifiers(Some(event.physical), true);
+        if let Some(locks) = CurrentPlatform::lock_state() {
+            before.extend(self.sync_locks(
+                locks,
+                event.physical,
+                state == ElementState::Pressed && !repeat,
+            ));
+        }
 
         let num_lock_physical = physical_key_id(PhysicalKey::Code(KeyCode::NumLock));
         let num_lock_logical = named_logical_key(NamedKey::NumLock, physical_key);
@@ -2911,6 +2983,12 @@ impl KeyboardState {
                         logical,
                     ));
                 }
+                if Some(event.physical) == physical_key_id(PhysicalKey::Code(KeyCode::CapsLock)) {
+                    self.flutter_caps_lock = !self.flutter_caps_lock;
+                }
+                if Some(event.physical) == physical_key_id(PhysicalKey::Code(KeyCode::ScrollLock)) {
+                    self.flutter_scroll_lock = !self.flutter_scroll_lock;
+                }
                 if Some(event.physical) == num_lock_physical {
                     self.flutter_num_lock = !self.flutter_num_lock;
                 }
@@ -2927,7 +3005,8 @@ impl KeyboardState {
             },
         };
 
-        let raw_message = self.raw_event_message(&event);
+        let raw_message = CurrentPlatform::legacy_key_message(physical_key, &event)
+            .unwrap_or_else(|| self.raw_event_message(&event));
         Some(ProcessedKey {
             before,
             event: send.then_some(event),
@@ -3622,8 +3701,8 @@ mod android_app {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn handle_linux_clipboard_call(inbox: &TextInputInbox, call: &RawMethodCall) -> Option<Vec<u8>> {
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn handle_desktop_clipboard_call(inbox: &TextInputInbox, call: &RawMethodCall) -> Option<Vec<u8>> {
     use serde_json::json;
 
     let mut clipboard = inbox.clipboard.lock();
@@ -5444,6 +5523,11 @@ impl WindowRegistry {
         kind: NativeWindowKind,
         parent_view_id: Option<FlutterRustViewId>,
     ) -> Result<CreatedRegularView, String> {
+        if !CurrentPlatform::supports_window_kind(kind) {
+            return Err(format!(
+                "{kind:?} windows are not implemented on this platform"
+            ));
+        }
         let shrink_wrap = request.shrink_wrap;
         let layout_constraints =
             request
