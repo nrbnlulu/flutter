@@ -582,7 +582,10 @@ extern "C" fn set_window_constraints_callback(
     max_height: f64,
 ) {
     let _ = with_window_registry(|windows| {
-        let Some(view) = windows.view(view_id) else {
+        let Some(window_id) = windows.view_windows.get(&view_id).copied() else {
+            return;
+        };
+        let Some(view) = windows.views.get_mut(&window_id) else {
             return;
         };
         if has_constraints == 0 {
@@ -593,11 +596,21 @@ extern "C" fn set_window_constraints_callback(
         if !valid_constraints(min_width, min_height, max_width, max_height) {
             return;
         }
+        if let Some(placement) = &mut view.popup_placement {
+            placement.width = f64::from(placement.width)
+                .clamp(min_width.max(1.0), finite_maximum(max_width).max(1.0))
+                .round() as u32;
+            placement.height = f64::from(placement.height)
+                .clamp(min_height.max(1.0), finite_maximum(max_height).max(1.0))
+                .round() as u32;
+        }
         view.window
             .set_min_surface_size(Some(LogicalSize::new(min_width, min_height).into()));
         view.window.set_max_surface_size(Some(
             LogicalSize::new(finite_maximum(max_width), finite_maximum(max_height)).into(),
         ));
+        #[cfg(target_os = "windows")]
+        windows.reposition_popups(view_id);
     });
 }
 extern "C" fn set_window_title_callback(
@@ -4401,6 +4414,7 @@ struct ViewWindow {
     view_id: FlutterRustViewId,
     kind: NativeWindowKind,
     parent_view_id: Option<FlutterRustViewId>,
+    popup_placement: Option<PopupPlacement>,
     // Stable callback owner. Raster releases its swapchain before the host
     // receives removal completion and drops this view's native window.
     gpu_broker: Arc<GpuBroker>,
@@ -4768,6 +4782,7 @@ impl ApplicationHandler for ShellApplication {
                     view_id: FlutterRustViewId::IMPLICIT,
                     kind: NativeWindowKind::Regular,
                     parent_view_id: None,
+                    popup_placement: None,
                     gpu_broker,
                     window,
                     _parent_window: None,
@@ -4845,6 +4860,8 @@ impl ApplicationHandler for ShellApplication {
             return;
         };
         match event {
+            #[cfg(target_os = "windows")]
+            WindowEvent::Moved(_) => self.windows.borrow().reposition_popups(view_id),
             WindowEvent::SurfaceResized(size) => {
                 let (metrics, visible) = {
                     let mut windows = self.windows.borrow_mut();
@@ -4863,6 +4880,8 @@ impl ApplicationHandler for ShellApplication {
                     (metrics, windows.aggregate_window_state().0)
                 };
                 self.windows.borrow().update_satellite_visibility(view_id);
+                #[cfg(target_os = "windows")]
+                self.windows.borrow().reposition_popups(view_id);
                 if let Some(shell) = { self.windows.borrow().shell } {
                     set_cpp_shell_viewport_metrics(shell, view_id, metrics);
                 }
@@ -4891,6 +4910,8 @@ impl ApplicationHandler for ShellApplication {
                         .expect("winit Vulkan surface reconfiguration failed");
                     WindowMetrics::from_window(view.window.as_ref(), _scale_factor)
                 };
+                #[cfg(target_os = "windows")]
+                self.windows.borrow().reposition_popups(view_id);
                 if let Some(shell) = { self.windows.borrow().shell } {
                     set_cpp_shell_viewport_metrics(shell, view_id, metrics);
                 }
@@ -5632,6 +5653,7 @@ impl WindowRegistry {
                 view_id,
                 kind,
                 parent_view_id,
+                popup_placement: None,
                 gpu_broker,
                 window,
                 _parent_window: parent_window,
@@ -5681,18 +5703,19 @@ impl WindowRegistry {
         let (min_width, min_height, max_width, max_height) = request.constraints;
         let initial_width = min_width.max(1.0).min(finite_maximum(max_width)).round() as u32;
         let initial_height = min_height.max(1.0).min(finite_maximum(max_height)).round() as u32;
+        let placement = PopupPlacement {
+            width: initial_width,
+            height: initial_height,
+            anchor_rect: request.anchor_rect,
+            anchor: request.parent_anchor,
+            gravity: request.gravity,
+            offset: request.offset,
+            constraint_adjustment: request.constraint_adjustment,
+        };
         let window: Arc<dyn Window> = Arc::from(CurrentPlatform::create_popup(
             event_loop,
             parent_window.as_ref(),
-            PopupPlacement {
-                width: initial_width,
-                height: initial_height,
-                anchor_rect: request.anchor_rect,
-                anchor: request.parent_anchor,
-                gravity: request.gravity,
-                offset: request.offset,
-                constraint_adjustment: request.constraint_adjustment,
-            },
+            placement,
             matches!(request.kind, NativeWindowKind::Popup),
         )?);
         let view_id = FlutterRustViewId(self.next_view_id);
@@ -5719,6 +5742,7 @@ impl WindowRegistry {
                 view_id,
                 kind: request.kind,
                 parent_view_id: Some(request.parent_view_id),
+                popup_placement: Some(placement),
                 gpu_broker,
                 window,
                 _parent_window: Some(parent_window),
@@ -5853,6 +5877,37 @@ impl WindowRegistry {
         self.update_satellite_visibility(parent_view_id);
         Ok(())
     }
+    #[cfg(target_os = "windows")]
+    fn reposition_popups(&self, changed: FlutterRustViewId) {
+        let mut pending = vec![changed];
+        while let Some(view_id) = pending.pop() {
+            if self.removing_views.contains(&view_id) {
+                continue;
+            }
+            let Some(view) = self.view(view_id) else {
+                continue;
+            };
+            if let (Some(placement), Some(parent_id)) = (view.popup_placement, view.parent_view_id)
+            {
+                if let Some(parent) = self.view(parent_id) {
+                    if let Err(error) = CurrentPlatform::reposition_popup(
+                        view.window.as_ref(),
+                        parent.window.as_ref(),
+                        placement,
+                    ) {
+                        log::error!("Failed to reposition native popup: {error}");
+                    }
+                }
+            }
+            pending.extend(
+                self.views
+                    .values()
+                    .filter(|child| child.parent_view_id == Some(view_id))
+                    .map(|child| child.view_id),
+            );
+        }
+    }
+
     fn update_satellite_visibility(&self, parent_view_id: FlutterRustViewId) {
         let Some(parent) = self.view(parent_view_id) else {
             return;

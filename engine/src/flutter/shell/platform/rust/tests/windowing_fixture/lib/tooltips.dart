@@ -74,6 +74,25 @@ class _WindowingFixtureState extends State<_WindowingFixture> with SingleTickerP
         delegate: _TooltipDelegate(() => destroyed++),
       );
       setState(() => windows.addAll([parent, other, dialog, satellite, tooltip]));
+      final String? motionPath = Platform.environment['FLUTTER_RUST_TOOLTIP_MOTION'];
+      if (cycle == 0 && motionPath != null) {
+        final signal = File(motionPath);
+        final DateTime deadline = DateTime.now().add(const Duration(seconds: 15));
+        while (!signal.existsSync() && DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        if (!signal.existsSync()) {
+          throw StateError('Tooltip motion harness timed out');
+        }
+        tooltip.setConstraints(const BoxConstraints.tightFor(width: 200, height: 120));
+        signal.writeAsStringSync('resized');
+        while (signal.readAsStringSync() != 'complete' && DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        if (signal.readAsStringSync() != 'complete') {
+          throw StateError('Tooltip size check timed out');
+        }
+      }
       await Future<void>.delayed(const Duration(milliseconds: 200));
       dialog.setSize(const Size(280, 190));
       satellite.setSize(const Size(250, 170));

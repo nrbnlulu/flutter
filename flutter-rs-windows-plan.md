@@ -364,3 +364,11 @@ supports initially positioned, owned no-activate tooltips through the shared
 positioner; the tooltip lifecycle fixture and native ownership/style tests pass.
 Reactive repositioning and grabbing-popup dismissal remain the next window-kind
 work before DWM pacing. These checks do not close IME/DPI-transition coverage.
+
+## Reactive geometry checkpoint (2026-11-09)
+
+Windows tooltips now react to retained parent movement/resize/scale requests
+and explicit size-constraint changes. Native movement and anchored resizing pass
+inside the Python-backed 60-view lifecycle test. Actual DPI transitions,
+framework `updatePosition` anchor changes, and grabbing-popup dismissal remain
+pending before considering full popup/tooltip parity complete.

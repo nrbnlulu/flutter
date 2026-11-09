@@ -114,3 +114,11 @@ unit-tested flip/slide/resize constraints; native tests check owner/style and
 foreground preservation. Reactive repositioning and grabbing-popup dismissal
 are still pending. The owned-window fixture now also uses parent-only destruction;
 native tests verify owned children hide/return on owner minimize/restore.
+
+The Windows tooltip task additionally drives owner movement through the Python
+platform API and checks that the owned tooltip follows. A Dart/host handshake
+changes size constraints and verifies the same anchor remains fixed. Geometry
+snapshots are retained with the lifecycle evidence. The host reacts to native
+move/resize/DPI notifications; actual DPI transitions and explicit framework
+anchor updates are not yet validated/implemented respectively. Grabbing-popup
+dismissal remains pending.

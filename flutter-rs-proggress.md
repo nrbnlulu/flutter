@@ -2043,3 +2043,42 @@ pending, as do real IME composition and display-scaling transition coverage.
 The final rebuilt tooltip runner also passes all 60 per-view checks with 191
 primary presentations and zero-status close under Vulkan validation. Evidence:
 `%TEMP%/flutter-rust-windowing-60vi5kmj`.
+
+### Reactive Windows tooltip geometry checkpoint (2026-11-09)
+
+The host retains each tooltip's logical placement request and re-evaluates it
+for native parent movement, surface resize and scale-factor events, traversing
+owned descendants while skipping views being removed. Windows reuses the
+initial-placement work-area/DPI calculation and applies only changed physical
+geometry with no activation or z-order change. This guards against native
+move/resize event feedback. Explicit constraint updates also refresh desired
+size and apply geometry immediately: changing min/max constraints alone did not
+resize the HWND in the first diagnostic run.
+
+The Python platform API now exposes native movement and owner-scoped discovery.
+On Windows, `test-rust-shell-tooltips` coordinates with the Dart fixture to move
+the owner by 60x40 physical pixels and require the tooltip to follow by exactly
+the same delta. It then changes logical constraints from 160x100 to 200x120,
+checks physical size using native DPI, and verifies the centered anchor is
+preserved to pixel-rounding tolerance. Snapshot files retain before/after
+geometry. All 60 per-view presentation and descendant-destruction checks then
+pass under Vulkan validation with 201 primary presentations and clean close.
+Evidence: `%TEMP%/flutter-rust-windowing-9fjs2ct5`.
+
+The first failed size-change run is retained at
+`%TEMP%/flutter-rust-windowing-5_280rm2`. An intervening retry started before
+runner staging finished, leaving the old executable locked; it was discarded
+and staging completed before the successful run. The ordinary suite passes:
+52 host tests, 17 C++ tests, core/queue/ordinary GPU checks and all Python suites.
+The Dart fixture analyzes without issues.
+
+Actual display-scale transitions and multi-monitor movement remain unavailable
+on this host. Explicit framework `updatePosition` anchor changes still need a
+private-ABI operation; this checkpoint reacts to retained anchor requests and
+native geometry/constraint changes. Grabbing-popup outside-click/Escape/
+activation-loss dismissal remains unsupported and is the next implementation
+checkpoint before DWM pacing. Linux/Android runtime coverage is unavailable.
+
+The final shared task repeat also passes (184 primary presentations) with
+DPI-scaled geometry expectations and retained movement/resize snapshots:
+`%TEMP%/flutter-rust-windowing-qaribdlc`.

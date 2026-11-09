@@ -91,5 +91,14 @@ pub(crate) trait PlatformBackend {
         grab: bool,
     ) -> Result<Box<dyn Window>, String>;
 
+    #[cfg(target_os = "windows")]
+    fn reposition_popup(
+        _window: &dyn Window,
+        _parent: &dyn Window,
+        _placement: PopupPlacement,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     fn set_dialog_parent(child: &dyn Window, parent: &dyn Window) -> Result<(), String>;
 }

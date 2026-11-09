@@ -34,6 +34,12 @@ class Desktop(ABC):
     client = next(c for c in self.clients() if str(c['address']) == str(address))
     return dict(size=client['size'], scale=None, coordinate_space='physical')
 
+  def move(self, address, x, y):
+    raise NotImplementedError('Native window movement is unavailable')
+
+  def owned_windows(self, address):
+    raise NotImplementedError('Native owner lookup is unavailable')
+
   def ime_layouts(self):
     return None
 
@@ -329,6 +335,18 @@ class Windows(Desktop):
       raise ctypes.WinError(ctypes.get_last_error())
     result['scale'] = dpi / 96
     return result
+
+  def move(self, address, x, y):
+    if not self.user.SetWindowPos(int(address), None, round(x), round(y), 0, 0, 0x15):
+      raise ctypes.WinError(ctypes.get_last_error())
+
+  def owned_windows(self, address):
+    self.user.GetWindow.argtypes = [W.HWND, W.UINT]
+    self.user.GetWindow.restype = W.HWND
+    return [
+        client for client in self.clients()
+        if self.user.GetWindow(int(client['address']), 4) == int(address)
+    ]
 
   def ime_layouts(self):
     self.user.GetKeyboardLayoutList.argtypes = [ctypes.c_int, ctypes.POINTER(W.HANDLE)]

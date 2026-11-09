@@ -92,6 +92,43 @@ fn set_window_long(hwnd: *mut c_void, index: i32, value: isize) -> Result<(), St
     Ok(())
 }
 
+fn popup_geometry(
+    parent: &dyn Window,
+    placement: PopupPlacement,
+) -> Result<(i32, i32, f64, f64), String> {
+    let owner = hwnd(parent)?;
+    let mut origin = Point::default();
+    let mut monitor = MonitorInfo {
+        size: std::mem::size_of::<MonitorInfo>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        if ClientToScreen(owner, &mut origin) == 0
+            || GetMonitorInfoW(MonitorFromWindow(owner, 2), &mut monitor) == 0
+        {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+    }
+    let scale = parent.scale_factor();
+    let rect = &monitor.work;
+    let (x, y, width, height) = super::positioner::place(
+        placement,
+        (f64::from(origin.x) / scale, f64::from(origin.y) / scale),
+        (
+            f64::from(rect.left) / scale,
+            f64::from(rect.top) / scale,
+            f64::from(rect.right - rect.left) / scale,
+            f64::from(rect.bottom - rect.top) / scale,
+        ),
+    );
+    Ok((
+        (x * scale).round() as i32,
+        (y * scale).round() as i32,
+        width,
+        height,
+    ))
+}
+
 const WAKE_TIMER: usize = 0x46525357;
 
 unsafe extern "system" fn wake_timer(hwnd: *mut c_void, _: u32, id: usize, _: u32) {
@@ -268,30 +305,7 @@ impl PlatformBackend for WindowsPlatform {
             return Err("grabbing popups are not implemented on Windows".into());
         }
         let owner = hwnd(parent)?;
-        let mut origin = Point::default();
-        let mut monitor = MonitorInfo {
-            size: std::mem::size_of::<MonitorInfo>() as u32,
-            ..Default::default()
-        };
-        unsafe {
-            if ClientToScreen(owner, &mut origin) == 0
-                || GetMonitorInfoW(MonitorFromWindow(owner, 2), &mut monitor) == 0
-            {
-                return Err(std::io::Error::last_os_error().to_string());
-            }
-        }
-        let scale = parent.scale_factor();
-        let rect = &monitor.work;
-        let (x, y, width, height) = super::positioner::place(
-            placement,
-            (f64::from(origin.x) / scale, f64::from(origin.y) / scale),
-            (
-                f64::from(rect.left) / scale,
-                f64::from(rect.top) / scale,
-                f64::from(rect.right - rect.left) / scale,
-                f64::from(rect.bottom - rect.top) / scale,
-            ),
-        );
+        let (x, y, width, height) = popup_geometry(parent, placement)?;
         let window = event_loop
             .create_window(
                 WindowAttributes::default()
@@ -299,10 +313,7 @@ impl PlatformBackend for WindowsPlatform {
                     .with_active(false)
                     .with_decorations(false)
                     .with_resizable(false)
-                    .with_position(winit::dpi::PhysicalPosition::new(
-                        (x * scale).round() as i32,
-                        (y * scale).round() as i32,
-                    ))
+                    .with_position(winit::dpi::PhysicalPosition::new(x, y))
                     .with_surface_size(winit::dpi::LogicalSize::new(width, height))
                     .with_platform_attributes(Box::new(
                         WindowAttributesWindows::default()
@@ -323,6 +334,37 @@ impl PlatformBackend for WindowsPlatform {
             return Err(std::io::Error::last_os_error().to_string());
         }
         Ok(window)
+    }
+
+    fn reposition_popup(
+        window: &dyn Window,
+        parent: &dyn Window,
+        placement: PopupPlacement,
+    ) -> Result<(), String> {
+        let (x, y, width, height) = popup_geometry(parent, placement)?;
+        let width = (width * parent.scale_factor()).round() as u32;
+        let height = (height * parent.scale_factor()).round() as u32;
+        let position = window.outer_position().map_err(|error| error.to_string())?;
+        let size = window.surface_size();
+        // Native moves/resizes emit more winit events. Avoid a feedback loop
+        // when a reconfiguration already produced the desired geometry.
+        if position.x != x || position.y != y || size.width != width || size.height != height {
+            if unsafe {
+                SetWindowPos(
+                    hwnd(window)?,
+                    std::ptr::null_mut(),
+                    x,
+                    y,
+                    width as i32,
+                    height as i32,
+                    0x14,
+                )
+            } == 0
+            {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+        }
+        Ok(())
     }
 
     fn set_dialog_parent(child: &dyn Window, parent: &dyn Window) -> Result<(), String> {

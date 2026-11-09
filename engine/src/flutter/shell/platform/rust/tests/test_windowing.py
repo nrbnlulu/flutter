@@ -11,6 +11,9 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import time
+from native_desktop import desktop
+from test_texture import wait_until
 
 
 def main():
@@ -19,6 +22,7 @@ def main():
   parser.add_argument("--assets", required=True, type=Path)
   parser.add_argument("--icu", required=True, type=Path)
   parser.add_argument("--timeout", type=float, default=90)
+  parser.add_argument("--tooltip-motion", action="store_true")
   args = parser.parse_args()
   directory = tempfile.mkdtemp(prefix="flutter-rust-windowing-")
   print(f"Windowing validation evidence: {directory}", flush=True)
@@ -33,21 +37,96 @@ def main():
       "RUST_BACKTRACE": "1",
       "FLUTTER_RUST_WINDOWING_STATUS": str(status),
   })
+  motion = Path(directory) / "motion"
+  if args.tooltip_motion:
+    environment['FLUTTER_RUST_TOOLTIP_MOTION'] = str(motion)
   log_path = Path(directory) / "runner.log"
   with log_path.open("w", encoding="utf-8") as log:
-    result = subprocess.run([
+    process = subprocess.Popen([
         str(args.runner.resolve()),
         str(args.assets.resolve()),
         str(args.icu.resolve())
     ],
-                            env=environment,
-                            stdout=log,
-                            stderr=subprocess.STDOUT,
-                            timeout=args.timeout)
+                               env=environment,
+                               stdout=log,
+                               stderr=subprocess.STDOUT)
+    try:
+      if args.tooltip_motion:
+        api = desktop()
+
+        def find_parent():
+          return next((
+              c for c in api.clients() if c['pid'] == process.pid and c['title'] == 'Owned parent 0'
+          ), None)
+
+        parent = wait_until(find_parent, process)
+        if not parent:
+          raise RuntimeError('Motion fixture parent did not appear')
+        address = parent['address']
+        scale = api.metrics(address)['scale'] or 1
+        initial_size = [round(160 * scale), round(100 * scale)]
+        resized_size = [round(200 * scale), round(120 * scale)]
+
+        def find_tooltip():
+          return next((
+              c for c in api.owned_windows(address)
+              if c['pid'] == process.pid and c['size'] == initial_size
+          ), None)
+
+        tooltip = wait_until(find_tooltip, process)
+        if not tooltip:
+          raise RuntimeError('Owned tooltip did not appear')
+
+        def current_tooltip():
+          return next((
+              c for c in api.clients()
+              if c['pid'] == process.pid and c['address'] == tooltip['address']
+          ), None)
+
+        api.move(address, 200, 200)
+        time.sleep(.2)
+        before = current_tooltip()
+        parent_before = find_parent()
+        api.move(address, 260, 240)
+
+        def moved():
+          child, owner = current_tooltip(), find_parent()
+          return child and owner and all(
+              child['at'][axis] - before['at'][axis] == owner['at'][axis] -
+              parent_before['at'][axis] for axis in (0, 1)
+          ) and owner['at'] != parent_before['at']
+
+        if not wait_until(moved, process):
+          raise RuntimeError('Tooltip did not follow its native parent movement')
+        (Path(directory) / 'motion-before.txt').write_text(str(before))
+        (Path(directory) / 'motion-after.txt').write_text(str(current_tooltip()))
+        before_resize = current_tooltip()
+        motion.write_text('move complete')
+        if not wait_until(lambda: current_tooltip() and current_tooltip()['size'] == resized_size,
+                          process):
+          raise RuntimeError('Tooltip did not apply changed content constraints')
+        after_resize = current_tooltip()
+        expected = [
+            before_resize['at'][axis] - (resized_size[axis] - initial_size[axis]) / 2
+            for axis in (0, 1)
+        ]
+        if any(abs(after_resize['at'][axis] - expected[axis]) > 1 for axis in (0, 1)):
+          raise RuntimeError('Tooltip size change did not preserve its centered anchor')
+        (Path(directory) / 'motion-resized.txt').write_text(str(after_resize))
+        # Wait for Dart's acknowledgement before overwriting the shared signal.
+        if not wait_until(lambda: motion.read_text() == 'resized', process):
+          raise RuntimeError('Dart did not acknowledge tooltip constraint change')
+        motion.write_text('complete')
+        print('Tooltip followed parent movement and size changes while preserving its anchor.')
+      returncode = process.wait(timeout=args.timeout)
+    finally:
+      if process.poll() is None:
+        process.kill()
+        process.wait()
   output = log_path.read_text(encoding="utf-8", errors="replace")
   print(output)
-  if result.returncode != 0:
-    raise RuntimeError(f"runner exited with {result.returncode}")
+  if returncode != 0:
+    raise RuntimeError(f"runner exited with {returncode}")
   if not status.exists() or status.read_text() != "complete released=60":
     raise RuntimeError("fixture did not complete all native removals")
   if re.search(r"VUID-|VALIDATION \[|Validation Error|panicked|\[ERROR\]|EXCEPTION CAUGHT", output,
