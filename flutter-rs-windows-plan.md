@@ -441,3 +441,32 @@ service despite successful attach/reload/VM field inspection; debugger expressio
 and breakpoint conformance remain follow-ups. Symlink-denied copy fallback and
 Linux/Android runtime regressions are not host-validated here. Real IME and
 DPI-transition coverage remain open.
+
+## Post-main debugger checkpoint (2026-11-09)
+
+Upstream main was merged and pushed, with the two Vulkan synchronization
+conflicts resolved using upstream's more complete attachment-access barriers.
+Dependencies were synced to Dart 3b174b7217 and Skia b11315d0a0. Build hooks had to
+refresh Dart's generated package language versions from 3.13 to 3.15 before the
+matching Windows engine DLL, Dart SDK and frontend server could be rebuilt.
+
+Linux fixes from 6791498d4ef were pulled before the Windows checkpoint commit;
+its viewport stabilization and Wayland parent-mapping handshake are preserved.
+Windows now uses an explicit client-size resize helper to exclude native frame
+borders while retaining the adapter's existing outer-size resize operation.
+
+The earlier expression-evaluation failure was an HTTP transport false negative.
+DDS WebSocket expression evaluation succeeds with Flutter's compiler service.
+The runtime probe verifies a source breakpoint in incrementProbe, local `next`
+evaluation while paused, resume, native-click state, rendered hot reload with
+state preservation, hot restart, detach cleanup and relocated native close under
+Vulkan validation. Evidence: `%TEMP%/flutter-rust-rlutter-cf6orzam`.
+The ordinary suite passes 55 host tests, 17 C++ tests and Python checks; all 108
+rlutter tests and Clippy pass. All eight native adapter tests pass after clearing
+a blocking Windows Search overlay; the first foreground-blocked run was not
+counted as a debugger pass.
+
+This covers one source breakpoint and local-expression scope on the Windows host,
+not full DAP/editor conformance or Linux execution of the new debugger probe.
+Managed SDK/release/AOT/plugin packaging and CI remain planned work, as do real
+IME composition and display-scale transition coverage.

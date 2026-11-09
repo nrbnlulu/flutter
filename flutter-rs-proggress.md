@@ -2277,3 +2277,50 @@ also pass. Formatting, analysis against current engine sources, Python compilati
 and whitespace checks pass. Windows-only automation is skipped on Linux; native
 IME composition, actual monitor-scale transitions and Windows popup behavior are
 not established by these runs.
+
+### Main merge and Windows DDS debugger validation (2026-11-09)
+
+Merged upstream main (acade0f6b53) and pushed merge 559da144d84. Two Vulkan
+synchronization conflicts were resolved using upstream's attachment-read/write
+and fragment-stage handling. Both conflicted source files compile. Dependencies
+were synced to Dart 3b174b7217 and Skia b11315d0a0, then GN regenerated. The first
+native build stopped because Dart's generated package configuration still used
+language 3.13 for the new frontend, which requires 3.15. Running build hooks with
+the existing Visual Studio Build Tools override refreshed it. The matching DLL,
+Dart SDK, frontend server and Cargo smoke runner now build successfully.
+Build logs: `engine/src/out/rebuild-windows-main*.log`.
+
+Before committing, fetched and fast-forwarded to the user's Linux fixes in
+6791498d4ef. The local Windows changes reapplied cleanly with a three-way patch;
+no conflict markers remain. Linux viewport stabilization, Hyprland fixes and
+Wayland parent-mapping changes are retained. The refreshed Dart formatter's
+fixture-only changes are committed separately.
+
+The expression-evaluation gap was an HTTP probe error: DDS proxies HTTP to the
+raw VM, bypassing the external expression compiler registered with DDS. A new
+Dart probe uses vm_service over the DDS WebSocket. It evaluates `probeState + 41`
+and `probeLabel`, adds a source breakpoint, waits for the native click to pause
+in incrementProbe, evaluates local `next == 1`, removes the breakpoint and
+resumes. No native-engine debugger change was required.
+
+The combined runtime task passes debugger checks, state-preserving rendered hot
+reload, state-resetting hot restart, attach quit/owned-app cleanup, and relocated
+bundle pixel comparison/status-zero native close under Vulkan validation.
+Evidence: `%TEMP%/flutter-rust-rlutter-cf6orzam`, including
+`debugger-status.json`, VM state observations, captures and logs. The first run
+stopped before debugger setup because Windows Search held foreground; that run
+was not counted as a pass. Search was dismissed before retrying real input.
+
+Linux's new stable 800x600 viewport check exposed an adapter difference: Win32
+resize takes outer-window dimensions. Added resize_client using measured native
+frame margins, preserving resize's original contract and Linux's implementation.
+The native adapter test checks an exact 420x300 client viewport and passes all
+eight tests without skips. The ordinary suite also passes 55 host tests, 17 C++
+tests, core/queue/ordinary GPU checks, two build-helper tests and 14 accounting
+tests. All 108 rlutter tests and Clippy pass. Dart probe analysis reports no issues.
+
+This verifies one breakpoint and paused local-expression scope on this Windows
+host. The new debugger probe has not run on Linux; the user's existing Linux
+coverage above remains distinct. Full DAP/editor behavior, Windows managed SDK,
+release/profile/AOT and general plugin packaging, CI, real IME composition and
+monitor-scale transitions remain follow-ups.

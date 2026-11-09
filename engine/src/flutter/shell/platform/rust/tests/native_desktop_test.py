@@ -125,6 +125,12 @@ class WindowsTest(unittest.TestCase):
 
       resized = wait_until(changed, process)
       self.assertIsNotNone(resized)
+      api.resize_client(address, 420, 300)
+      resized = wait_until(
+          lambda: (current
+                   if (current := find()) and current['size'] == [420, 300] else None), process
+      )
+      self.assertIsNotNone(resized, 'Client resize must exclude Win32 frame borders')
       api.action('hide', address)
       api.action('restore', address)
       with tempfile.TemporaryDirectory() as work:

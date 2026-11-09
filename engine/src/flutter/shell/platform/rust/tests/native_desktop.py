@@ -24,6 +24,10 @@ import zlib
 
 class Desktop(ABC):
 
+  def resize_client(self, address, width, height):
+    """Resize the viewport in the native units reported by clients()."""
+    self.action('resize', address, width=width, height=height)
+
   def click(self, address, x, y):
     raise NotImplementedError('Pointer injection is unavailable on this desktop')
 
@@ -304,6 +308,20 @@ class Windows(Desktop):
       self.maximized = not getattr(self, 'maximized', False)
     elif action != 'float':
       raise RuntimeError(f'Unsupported Windows automation action: {action}')
+
+  def resize_client(self, address, width, height):
+    hwnd = int(address)
+    outer, client = W.RECT(), W.RECT()
+    if not self.user.GetWindowRect(hwnd, ctypes.byref(outer)):
+      raise ctypes.WinError(ctypes.get_last_error())
+    if not self.user.GetClientRect(hwnd, ctypes.byref(client)):
+      raise ctypes.WinError(ctypes.get_last_error())
+    self.action(
+        'resize',
+        address,
+        width=width + (outer.right - outer.left) - (client.right - client.left),
+        height=height + (outer.bottom - outer.top) - (client.bottom - client.top)
+    )
 
   def capture_window(self, address, path, region=None):
     hwnd = int(address)

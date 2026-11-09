@@ -192,8 +192,15 @@ state observations, screenshots and copied bundle remain in a reported
 `flutter-rust-rlutter-*` directory. The script accepts `--project` to reuse a
 disposable generated project, with its fixture in `lib/rlutter_probe.dart`.
 
-Debugger attach and VM field inspection work in this checkpoint. VM source
-expression evaluation reports no compilation service and remains a follow-up;
-this test does not claim expression-evaluation or breakpoint conformance.
-Windows symlink-denied fallback, Linux/Android runtime, native IME composition
-and display-scale transitions were not exercised here.
+The runtime task also connects to DDS over WebSocket using Flutter tools'
+`vm_service` package configuration. It checks expression evaluation, stops at a
+source breakpoint after the native click, evaluates a paused-frame local variable
+and resumes before testing reload/restart. Results are retained in
+`debugger-status.json`. DDS HTTP requests bypass its expression compiler service;
+the earlier HTTP-only probe was a false negative, not an engine debugger defect.
+
+Viewport stabilization is shared with Linux. Windows `resize_client` accounts
+for native frame borders; the existing `resize` action retains outer-window
+semantics. The new debugger probe and client-sizing check are Windows-validated.
+Linux debugger/DAP conformance, Windows symlink-denied fallback, Android runtime,
+native IME composition and display-scale transitions remain separate coverage.
