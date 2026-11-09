@@ -1824,3 +1824,37 @@ and programmatic resizing, then failed its live-resize check with `Win32 modal
 live resize starved Flutter presentations`. Evidence:
 `%TEMP%/flutter-rust-stress-4bdwrcvj`. This is a newly exercised failure, not a
 stress-suite pass; fixing modal-loop scheduling is the next first-frame task.
+
+### Ordinary Windows first-frame milestone verified (2026-11-09)
+
+Fixed Win32 modal-loop starvation without adding a UI thread. Windows now arms
+a one-shot HWND timer for the next Flutter task/vsync deadline; its native
+callback kills the timer and posts `WM_PAINT`, retaining no Rust pointer. The
+redraw/proxy handlers service Flutter work and rearm the next deadline even
+while Win32 owns the move/resize loop. Native window destruction removes its
+timers. Idle windows do not acquire a periodic polling timer.
+
+The Python-backed stress task passes both 40 and 500 iterations, including
+foreground keyboard-triggered redraw, resize/maximize/minimize/restore,
+mouse-driven modal live resize with presentations advancing during dragging,
+and exit status zero under Khronos Vulkan validation. Evidence:
+`%TEMP%/flutter-rust-stress-vxwvl0oa` and
+`%TEMP%/flutter-rust-stress-co81_g0m`. The full ordinary check suite also passes:
+47 host tests, 17 C++ tests, core/queue and ordinary GPU checks, two Python
+build-helper tests, 14 accounting tests and all eight native desktop tests.
+
+A separate real mouse/keyboard run clicked Increment and entered `hello123`
+in the text field. Its client capture visibly shows `Count: 1` and `hello123`
+with readable text, followed by status-zero close and no Vulkan VUIDs. Evidence:
+`out/host_debug/counter-input-validated/window.png` and `runner.log`.
+The six-color probe also has readable text and correct colors with the
+production Intel workaround, including after programmatic resize under
+synchronization validation.
+
+The first-build milestone (ordinary window, correct Flutter frame, pointer and
+basic keyboard input, resizing, minimize/restore, focus and clean shutdown) is
+now verified on Windows x64 / Intel HD Graphics 530 / driver 31.0.101.2111.
+This is not full Phase 3 parity. IME conformance, clipboard/DPI, textures/FRB,
+additional window kinds, DWM pacing, rlutter Windows tooling and release/CI
+remain pending. Other Windows adapters and Linux/Android regression runtime
+coverage are unavailable on this host.

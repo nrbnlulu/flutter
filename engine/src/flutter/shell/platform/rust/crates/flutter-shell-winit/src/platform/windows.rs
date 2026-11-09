@@ -3,6 +3,9 @@
 use super::super::{NativeWindowKind, PopupPlacement};
 use super::PlatformBackend;
 use flutter_shell_core::{FlutterRustKeyEvent, FlutterRustKeyEventType};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use std::ffi::c_void;
+use std::time::Instant;
 use winit::{
     event_loop::ActiveEventLoop,
     keyboard::PhysicalKey,
@@ -11,11 +14,57 @@ use winit::{
 
 #[link(name = "user32")]
 unsafe extern "system" {
+    fn SetTimer(
+        hwnd: *mut c_void,
+        id: usize,
+        interval: u32,
+        callback: Option<unsafe extern "system" fn(*mut c_void, u32, usize, u32)>,
+    ) -> usize;
+    fn KillTimer(hwnd: *mut c_void, id: usize) -> i32;
+    fn PostMessageW(hwnd: *mut c_void, message: u32, wparam: usize, lparam: isize) -> i32;
     fn GetKeyState(key: i32) -> i16;
     fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
 }
 
 pub(crate) struct WindowsPlatform;
+
+const WAKE_TIMER: usize = 0x46525357;
+
+unsafe extern "system" fn wake_timer(hwnd: *mut c_void, _: u32, id: usize, _: u32) {
+    // A one-shot HWND timer is dispatched inside Win32's modal sizing loop.
+    // Queue a paint event instead of entering Flutter from the native callback.
+    unsafe {
+        KillTimer(hwnd, id);
+        PostMessageW(hwnd, 0x000f, 0, 0);
+    }
+}
+
+impl WindowsPlatform {
+    pub(crate) fn arm_wake(window: &dyn Window, deadline: Option<Instant>) {
+        let Ok(handle) = window.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return;
+        };
+        let hwnd = handle.hwnd.get() as *mut c_void;
+        // SAFETY: winit owns this live HWND on the calling thread. Windows
+        // removes its timers on destruction, so no callback retains Rust data.
+        unsafe {
+            KillTimer(hwnd, WAKE_TIMER);
+            if let Some(deadline) = deadline {
+                let milliseconds = deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis()
+                    .saturating_add(1)
+                    .min(u32::MAX as u128) as u32;
+                if SetTimer(hwnd, WAKE_TIMER, milliseconds, Some(wake_timer)) == 0 {
+                    log::error!("Failed to arm Win32 Flutter task deadline timer");
+                }
+            }
+        }
+    }
+}
 
 // Values mirror RawKeyEventDataWindows and keyboard_key_channel_handler.cc.
 fn modifiers() -> u32 {

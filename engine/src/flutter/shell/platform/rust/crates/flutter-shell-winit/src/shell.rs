@@ -5131,6 +5131,10 @@ impl ApplicationHandler for ShellApplication {
                 self.send_pointer_events(events);
             }
             WindowEvent::RedrawRequested => {
+                // WaitUntil does not run while Win32 owns the modal sizing
+                // loop. A one-shot HWND timer posts this event at our deadline.
+                #[cfg(target_os = "windows")]
+                self.about_to_wait(event_loop);
                 self.deliver_vsync();
             }
             WindowEvent::CloseRequested => {
@@ -5258,6 +5262,8 @@ impl ApplicationHandler for ShellApplication {
                 }
             }
         }
+        #[cfg(target_os = "windows")]
+        self.about_to_wait(event_loop);
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -5502,6 +5508,10 @@ impl ApplicationHandler for ShellApplication {
         if self.text_input_session.ime_allowed() {
             let poll_deadline = Instant::now() + Duration::from_millis(16);
             next_deadline = Some(next_deadline.map_or(poll_deadline, |d| d.min(poll_deadline)));
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(window) = self.pacing_window() {
+            CurrentPlatform::arm_wake(window.as_ref(), next_deadline);
         }
         match next_deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
