@@ -23,6 +23,7 @@ type Reply = Result<Value, AgentError>;
 enum Event {
     Request(Result<Request, AgentError>),
     Semantics(i64, Vec<u8>),
+    Bridge(Vec<u8>),
     Changed,
     Disconnected,
     Stop,
@@ -43,8 +44,53 @@ pub(super) struct Shared {
     sequence: std::sync::atomic::AtomicU64,
     logs: Mutex<VecDeque<Value>>,
     build_mode: String,
+    bridge: Mutex<Value>,
+    bridge_responses: Mutex<BTreeMap<u64, Value>>,
+    bridge_sequence: std::sync::atomic::AtomicU64,
 }
 impl Shared {
+    pub(super) fn publish_bridge(&self, bytes: Vec<u8>) {
+        if self.sender.try_send(Event::Bridge(bytes)).is_err() {
+            self.fail(AgentError::new(
+                "app_exception",
+                "Dart bridge event queue overflow",
+            ));
+        }
+    }
+    fn bridge_event(&self, bytes: &[u8]) -> Result<(), AgentError> {
+        let value: Value = serde_json::from_slice(bytes).map_err(|e| {
+            AgentError::new("app_exception", format!("invalid Dart bridge message: {e}"))
+        })?;
+        match value["type"].as_str() {
+            Some("ready") => *self.bridge.lock() = value,
+            Some("error") => self.fail(
+                AgentError::new(
+                    "app_exception",
+                    value["message"]
+                        .as_str()
+                        .unwrap_or("Dart bridge reported an error"),
+                )
+                .with_data(value),
+            ),
+            Some("response") => {
+                let id = value["id"]
+                    .as_u64()
+                    .ok_or_else(|| AgentError::new("app_exception", "bridge response has no id"))?;
+                let mut responses = self.bridge_responses.lock();
+                if responses.len() >= 32 {
+                    responses.clear();
+                }
+                responses.insert(id, value);
+            }
+            _ => {
+                return Err(AgentError::new(
+                    "app_exception",
+                    "unknown Dart bridge message",
+                ));
+            }
+        }
+        Ok(())
+    }
     pub(super) fn failure(&self) -> Option<AgentError> {
         self.fatal.lock().clone()
     }
@@ -216,6 +262,9 @@ impl Session {
             sequence: std::sync::atomic::AtomicU64::new(0),
             logs: Mutex::new(VecDeque::new()),
             build_mode,
+            bridge: Mutex::new(Value::Null),
+            bridge_responses: Mutex::new(BTreeMap::new()),
+            bridge_sequence: std::sync::atomic::AtomicU64::new(0),
         });
         let connection = Arc::new(Mutex::new(None));
         let thread_shared = shared.clone();
@@ -439,6 +488,9 @@ impl Client {
                 }
             }
             Event::Request(Err(error)) => self.write(Value::Null, Err(error))?,
+            Event::Bridge(bytes) => {
+                self.shared.bridge_event(&bytes)?;
+            }
             Event::Semantics(view, bytes) => {
                 if self.shared.view(view).is_ok() {
                     let revision = self.cache.apply(view, &bytes)?;
@@ -615,6 +667,9 @@ fn serve(
                 Ok(Event::Semantics(view, bytes)) => {
                     cache.apply(view, &bytes)?;
                 }
+                Ok(Event::Bridge(bytes)) => {
+                    shared.bridge_event(&bytes)?;
+                }
                 Ok(Event::Stop | Event::Disconnected) => return Ok(()),
                 Ok(_) => {}
                 Err(_) => break,
@@ -786,6 +841,7 @@ enum UiCommand {
         handle: Value,
     },
     ReleaseInput,
+    Bridge(Value),
 }
 
 impl Client {
@@ -795,7 +851,8 @@ impl Client {
             "buildMode":self.shared.build_mode,
             "adapter":self.shared.adapter,"windowDefaults":self.shared.windows.lock().clone(),
             "capabilities":{"windows":true,"semantics":true,"physicalInput":true,"textInput":true,
-                "screenshots":true,"captureCorrelation":"uiBuildFrame","widgetBridge":false,
+                "screenshots":true,"captureCorrelation":"uiBuildFrame","widgetBridge":!self.shared.bridge.lock().is_null(),
+                "frameworkErrors":!self.shared.bridge.lock().is_null(),"assertions":true,
                 "recording":false,"restart":false,"nativeDialogs":false}})
     }
     fn target(&self, request: &Request) -> Result<Option<Value>, AgentError> {
@@ -1150,11 +1207,193 @@ impl Client {
                 request.check_params(&[])?;
                 self.ui(request, UiCommand::ReleaseInput, deadline)
             }
+            "verify.assert" | "verify.wait" => self.verify(request, deadline),
             "capture.screenshot" => self.capture(request, deadline),
             _ => Err(AgentError::new(
                 "unsupported_capability",
                 format!("unknown method {}", request.method),
             )),
+        }
+    }
+    fn verify(&mut self, request: &Request, deadline: Instant) -> Reply {
+        request.check_params(&[
+            "kind", "viewId", "selector", "where", "count", "exists", "value", "enabled",
+            "focused", "stableMs", "query", "equals",
+        ])?;
+        let kind = request
+            .params
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("semantics");
+        let stable = request
+            .params
+            .get("stableMs")
+            .map(|v| {
+                v.as_u64()
+                    .filter(|v| *v <= 120000)
+                    .ok_or_else(|| AgentError::new("invalid_request", "invalid stableMs"))
+            })
+            .transpose()?
+            .unwrap_or(0);
+        if !["semantics", "windows", "widget", "app"].contains(&kind) {
+            return Err(AgentError::new("invalid_request", "unknown assertion kind"));
+        }
+        let selector = if kind == "semantics" {
+            Some(Selector::parse(
+                request
+                    .params
+                    .get("selector")
+                    .cloned()
+                    .ok_or_else(|| AgentError::new("invalid_request", "selector required"))?,
+            )?)
+        } else {
+            None
+        };
+        for field in ["exists", "enabled", "focused"] {
+            if request.params.get(field).is_some_and(|v| !v.is_boolean()) {
+                return Err(AgentError::new(
+                    "invalid_request",
+                    format!("{field} must be boolean"),
+                ));
+            }
+        }
+        if request
+            .params
+            .get("count")
+            .is_some_and(|v| v.as_u64().is_none())
+        {
+            return Err(AgentError::new(
+                "invalid_request",
+                "count must be nonnegative integer",
+            ));
+        }
+        let where_fields = request
+            .params
+            .get("where")
+            .map(|v| {
+                v.as_object()
+                    .ok_or_else(|| AgentError::new("invalid_request", "where must be an object"))
+            })
+            .transpose()?;
+        if let Some(fields) = where_fields {
+            if fields.keys().any(|k| {
+                ![
+                    "viewId",
+                    "title",
+                    "kind",
+                    "parentViewId",
+                    "focused",
+                    "ready",
+                    "visible",
+                    "removing",
+                ]
+                .contains(&k.as_str())
+            }) {
+                return Err(AgentError::new("invalid_request", "unknown window field"));
+            }
+        }
+        let mut stable_since = None;
+        loop {
+            self.cancel(&request.id)?;
+            let observed = match kind {
+                "semantics" => {
+                    let view = request.view_id()?;
+                    let nodes = if self.shared.view(view).is_ok() {
+                        self.cache.find_all(view, selector.as_ref().unwrap())
+                    } else {
+                        Vec::new()
+                    };
+                    json!({"count":nodes.len(),"nodes":nodes,"semanticsRevision":self.cache.revision(view)})
+                }
+                "windows" => {
+                    let windows = self.shared.windows.lock().clone();
+                    let matches: Vec<_> = windows["views"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|v| {
+                            where_fields.is_none_or(|fields| {
+                                fields.iter().all(|(k, value)| v.get(k) == Some(value))
+                            })
+                        })
+                        .cloned()
+                        .collect();
+                    json!({"count":matches.len(),"nodes":matches})
+                }
+                _ => self.bridge_query(request, kind, deadline)?,
+            };
+            let mut matched = true;
+            if matches!(kind, "semantics" | "windows") {
+                let count = observed["count"].as_u64().unwrap();
+                if let Some(expected) = request.params.get("count") {
+                    matched &= count == expected.as_u64().unwrap();
+                }
+                if let Some(exists) = request.params.get("exists") {
+                    matched &= (count > 0) == exists.as_bool().unwrap();
+                }
+                if !request.params.contains_key("count") && !request.params.contains_key("exists") {
+                    matched &= count == 1;
+                }
+                for field in ["value", "enabled", "focused"] {
+                    if let Some(expected) = request.params.get(field) {
+                        matched &= count == 1 && observed["nodes"][0].get(field) == Some(expected);
+                    }
+                }
+            } else {
+                let expected = request.params.get("equals").ok_or_else(|| {
+                    AgentError::new("invalid_request", "bridge assertion needs equals")
+                })?;
+                matched = observed == *expected;
+            }
+            if matched {
+                let since = *stable_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= Duration::from_millis(stable) {
+                    return Ok(
+                        json!({"passed":true,"observed":observed,"actionSequence":self.shared.sequence.load(Ordering::Acquire),"epoch":self.shared.epoch}),
+                    );
+                }
+            } else {
+                stable_since = None;
+            }
+            if request.method == "verify.assert" || Instant::now() >= deadline {
+                return Err(AgentError::new(if request.method=="verify.assert" {"assertion_failed"} else {"timeout"},"verification predicate did not match")
+                    .with_data(json!({"predicate":request.params,"lastObserved":observed,"windows":self.shared.windows.lock().clone(),"logs":self.shared.logs.lock().clone()})));
+            }
+            self.wait_event(deadline)?;
+        }
+    }
+    fn bridge_query(&mut self, request: &Request, kind: &str, deadline: Instant) -> Reply {
+        if self.shared.bridge.lock().is_null() {
+            return Err(AgentError::new(
+                "unsupported_capability",
+                "optional Dart bridge is not attached",
+            ));
+        }
+        let query = request
+            .params
+            .get("query")
+            .cloned()
+            .ok_or_else(|| AgentError::new("invalid_request", "bridge query required"))?;
+        let id = self.shared.bridge_sequence.fetch_add(1, Ordering::AcqRel) + 1;
+        self.ui(
+            request,
+            UiCommand::Bridge(
+                json!({"id":id,"kind":kind,"query":query,"viewId":request.params.get("viewId")}),
+            ),
+            deadline,
+        )?;
+        loop {
+            self.cancel(&request.id)?;
+            if let Some(response) = self.shared.bridge_responses.lock().remove(&id) {
+                if response.get("error").is_some() {
+                    return Err(
+                        AgentError::new("invalid_request", "Dart bridge query failed")
+                            .with_data(response["error"].clone()),
+                    );
+                }
+                return Ok(response["result"].clone());
+            }
+            self.wait_event(deadline)?;
         }
     }
     fn capture(&mut self, request: &Request, deadline: Instant) -> Reply {
@@ -1510,6 +1749,14 @@ fn send_key(host: &VirtualHost, event: FlutterRustKeyEvent) {
 }
 fn dispatch(host: &VirtualHost, shared: &Shared, command: UiCommand) -> Reply {
     let result = match command {
+        UiCommand::Bridge(message) => {
+            send_cpp_platform_message(
+                host.shell.get(),
+                b"flutter.rs.agent/query",
+                &serde_json::to_vec(&message).unwrap(),
+            );
+            return Ok(json!({"dispatched":true}));
+        }
         UiCommand::Observation { view, capture } => {
             let id = FlutterRustViewId(view);
             if !host

@@ -84,7 +84,28 @@ mod linux {
                     .write(true)
                     .open(artifacts.join("build.log"))?,
             );
-            let build = super::super::build::build_linux(ctx, mode, target, defines)?;
+            let project = crate::project::Project::discover()?;
+            let source = super::super::provenance::sources(&project.dir, target)?;
+            let mut defines = defines.to_vec();
+            defines.retain(|v| !v.starts_with("FLUTTER_RUST_AGENT="));
+            defines.push("FLUTTER_RUST_AGENT=true".into());
+            let build = super::super::build::build_linux(ctx, mode, target, &defines)?;
+            if source != super::super::provenance::sources(&project.dir, target)? {
+                bail!("source changed during the verification build; start a new session");
+            }
+            let manifest = super::super::provenance::manifest(
+                &project.dir,
+                ctx.flutter.root(),
+                &build.runner,
+                target,
+                mode.name(),
+                &defines,
+                source,
+            )?;
+            fs::write(
+                artifacts.join("build-manifest.json"),
+                serde_json::to_vec_pretty(&manifest)?,
+            )?;
             let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
             let endpoint = std::env::temp_dir()
                 .join(format!("flutter-rs-agent-{}-{nonce:x}", std::process::id()));

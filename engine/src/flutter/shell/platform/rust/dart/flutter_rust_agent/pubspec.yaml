@@ -1,0 +1,9 @@
+name: flutter_rust_agent
+description: Opt-in UI-isolate observations and errors for Rust shell verification.
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.11.0
+dependencies:
+  flutter:
+    sdk: flutter

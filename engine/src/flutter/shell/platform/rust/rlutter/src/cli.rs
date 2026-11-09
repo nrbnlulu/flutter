@@ -36,6 +36,8 @@ pub enum Command {
     Run(RunArgs),
     /// Build and supervise a display-free verification session over stdio.
     Agent(AgentArgs),
+    /// Build a fresh app process and execute a versioned verification scenario.
+    Verify(VerifyArgs),
     /// Generate a VS Code workspace with one-button Linux debugging.
     Vscode,
     /// List the devices the app can run on.
@@ -186,6 +188,25 @@ pub struct AgentArgs {
     /// Fresh directory for build/app logs and captured artifacts.
     #[arg(long, value_name = "DIR")]
     pub artifacts: PathBuf,
+    #[arg(long,default_value="1280x800",value_parser=parse_headless_size)]
+    pub size: (u32, u32),
+    #[arg(long,default_value="1",value_parser=parse_pixel_ratio)]
+    pub pixel_ratio: f64,
+}
+
+#[derive(Args, Debug)]
+pub struct VerifyArgs {
+    pub scenario: PathBuf,
+    #[command(flatten)]
+    pub mode: ModeArgs,
+    #[command(flatten)]
+    pub defines: DartDefineArgs,
+    #[arg(short, long, default_value = "lib/main.dart")]
+    pub target: String,
+    #[arg(long, required = true)]
+    pub headless: bool,
+    #[arg(long)]
+    pub report: PathBuf,
     #[arg(long,default_value="1280x800",value_parser=parse_headless_size)]
     pub size: (u32, u32),
     #[arg(long,default_value="1",value_parser=parse_pixel_ratio)]

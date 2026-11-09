@@ -1936,6 +1936,7 @@ struct TextInputInbox {
     /// Titles requested by the app for its main window, oldest first.
     window_titles: Mutex<VecDeque<String>>,
     texture_fixture_messages: Mutex<VecDeque<String>>,
+    agent_messages: Mutex<VecDeque<Vec<u8>>>,
     wake_proxy: HostEventSender,
     exit: Arc<ApplicationExitCoordinator>,
     #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -1980,6 +1981,7 @@ impl TextInputInbox {
             cursor_commands: Mutex::new(VecDeque::new()),
             window_titles: Mutex::new(VecDeque::new()),
             texture_fixture_messages: Mutex::new(VecDeque::new()),
+            agent_messages: Mutex::new(VecDeque::new()),
             wake_proxy: wake_proxy.clone(),
             exit: Arc::new(ApplicationExitCoordinator {
                 initialized: AtomicBool::new(false),
@@ -2036,6 +2038,23 @@ extern "C" fn handle_platform_message(
         // SAFETY: checked non-null above; C++ owns this range for the call.
         unsafe { std::slice::from_raw_parts(message, message_size) }
     };
+    if channel == b"flutter.rs.agent/events" {
+        let inbox = unsafe { &*user_data.cast::<TextInputInbox>() };
+        if !inbox.headless || std::env::var_os("FLUTTER_RUST_AGENT_SOCKET").is_none() {
+            return FlutterRustPlatformMessageDisposition::Unhandled;
+        }
+        let mut queue = inbox.agent_messages.lock();
+        if message.len() > 1024 * 1024 || queue.len() >= 64 {
+            queue.clear();
+            queue.push_back(
+                br#"{"type":"error","message":"Dart bridge message overflow"}"#.to_vec(),
+            );
+        } else {
+            queue.push_back(message.to_vec());
+        }
+        let _ = inbox.wake_proxy.send_event(HostEvent::TaskScheduled);
+        return FlutterRustPlatformMessageDisposition::Success;
+    }
     if channel == PLATFORM_CHANNEL {
         let inbox = unsafe { &*user_data.cast::<TextInputInbox>() };
         if is_initialization_complete(message) {

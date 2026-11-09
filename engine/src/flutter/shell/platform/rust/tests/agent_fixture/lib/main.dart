@@ -7,11 +7,14 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_rust_agent/flutter_rust_agent.dart';
 import 'package:flutter/src/widgets/_window.dart';
 
 void main() {
   stdout.writeln('fixture stdout is not a protocol message: {broken json');
   WidgetsFlutterBinding.ensureInitialized();
+  print('fixture Dart bridge enabled: ${FlutterRustAgent.enabled}');
+  FlutterRustAgent.install();
   runWidget(const AgentFixture());
 }
 
@@ -34,6 +37,14 @@ class _AgentFixtureState extends State<AgentFixture> {
   void initState() {
     super.initState();
     mainWindow;
+    FlutterRustAgent.registerPredicate('savedValue', (_) => saved);
+    if (const bool.fromEnvironment('AGENT_STARTUP_ERROR')) {
+      scheduleMicrotask(
+        () => FlutterError.reportError(
+          FlutterErrorDetails(exception: StateError('intentional startup error')),
+        ),
+      );
+    }
   }
 
   void open() {
@@ -111,7 +122,9 @@ class _AgentFixtureState extends State<AgentFixture> {
                     identifier: 'saved_value',
                     label: 'Saved value',
                     value: saved,
-                    child: ExcludeSemantics(child: Text('Saved: $saved')),
+                    child: ExcludeSemantics(
+                      child: Text('Saved: $saved', key: const ValueKey<String>('saved_text')),
+                    ),
                   ),
                   button('increment', 'Increment', () => setState(() => clicks++)),
                   Semantics(

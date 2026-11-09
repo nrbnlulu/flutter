@@ -2344,3 +2344,16 @@ persisted values, fractional DPR captures, stale/ambiguous targets, cancellation
 and view removal while capture is pending. GPU-free protocol/cache/PNG checks
 and native shell tests remain separate. See
 [agent protocol](engine/src/flutter/shell/platform/rust/docs/agent-protocol.md).
+
+### Headless agent Phase 3 — reproducible scenarios
+
+Added `rlutter verify`, bounded predicate waits/assertions, separate action and
+observation results, fresh-process builds with SHA-256 provenance, and reports
+with per-view evidence. The opt-in Dart bridge supplies ValueKey/public property
+queries, named predicates and chained structured framework error hooks. Ordinary
+builds leave it disabled. Fixed comma splitting of multiple assemble Dart defines.
+
+The generated multi-window fixture passes the Unicode save workflow. The same
+scenario fails with the intentional persisted-value regression, and startup and
+interaction framework errors cannot pass. See
+[verification](engine/src/flutter/shell/platform/rust/docs/verification.md).

@@ -68,7 +68,9 @@ fn assemble_args(
         format!("-dTargetPlatform={platform}"),
         format!("-dBuildMode={}", mode.name()),
         format!("-dTargetFile={target}"),
-        format!("-dDartDefines={}", encode_dart_defines(dart_defines)),
+        // The deprecated -d option splits commas and silently discards later
+        // defines. This alias preserves the complete base64 list as one value.
+        format!("--DartDefines={}", encode_dart_defines(dart_defines)),
         "copy_flutter_bundle".to_owned(),
     ];
     if mode.config().dart_aot {
@@ -149,7 +151,7 @@ mod tests {
                 "-dTargetPlatform=linux-x64",
                 "-dBuildMode=debug",
                 "-dTargetFile=lib/main.dart",
-                "-dDartDefines=RkxVVFRFUl9FTkFCTEVEX0ZFQVRVUkVfRkxBR1M9d2luZG93aW5n",
+                "--DartDefines=RkxVVFRFUl9FTkFCTEVEX0ZFQVRVUkVfRkxBR1M9d2luZG93aW5n",
                 "copy_flutter_bundle"
             ]
         );
@@ -175,7 +177,7 @@ mod tests {
             Path::new("/o"),
         );
         assert!(args.contains(
-            &"-dDartDefines=RkxVVFRFUl9FTkFCTEVEX0ZFQVRVUkVfRkxBR1M9d2luZG93aW5n,QT0x".to_owned()
+            &"--DartDefines=RkxVVFRFUl9FTkFCTEVEX0ZFQVRVUkVfRkxBR1M9d2luZG93aW5n,QT0x".to_owned()
         ));
     }
 

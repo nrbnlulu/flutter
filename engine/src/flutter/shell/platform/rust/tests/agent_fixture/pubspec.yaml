@@ -6,5 +6,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_rust_agent:
+    path: ../../dart/flutter_rust_agent
 flutter:
   uses-material-design: true

@@ -1028,6 +1028,9 @@ fn event_loop(
         }
         if let Some(agent) = host.agent.borrow().as_ref() {
             agent.publish_windows(host.snapshot());
+            for message in std::mem::take(&mut *inbox.agent_messages.lock()) {
+                agent.publish_bridge(message);
+            }
         }
         let deadline = match (tasks.next_deadline(), next_pulse) {
             (Some(a), Some(b)) => Some(a.min(b)),
