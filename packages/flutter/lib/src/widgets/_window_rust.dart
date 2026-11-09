@@ -20,7 +20,8 @@ const String _createDialogSymbol = 'FlutterRustShellWindowCreateDialog';
 /// Whether this process is hosted by Flutter's Rust shell.
 @internal
 bool get isRustShellWindowingAvailable {
-  return Platform.isLinux && ffi.DynamicLibrary.process().providesSymbol(_createRegularSymbol);
+  return (Platform.isLinux || Platform.isWindows) &&
+      ffi.DynamicLibrary.process().providesSymbol(_createRegularSymbol);
 }
 
 /// Host operations used by the regular-window controller.

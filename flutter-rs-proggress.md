@@ -1942,3 +1942,22 @@ Linux/Android runtime regression validation remains unavailable on this host.
 Windows texture/FRB smoke parity is now verified on the Intel HD 530 host;
 additional window kinds, DWM pacing and rlutter tooling remain next, with native
 IME composition and real DPI transitions still awaiting suitable coverage.
+
+### Windows Rust window-owner routing (2026-11-09)
+
+Enabled the existing symbol-probed Rust window owner on Windows. Both the
+availability getter and `_window_io.dart` selection order needed changes:
+Windows previously constructed the stock Win32 owner before considering the
+Rust host, causing an unresolved `InternalFlutterWindows_WindowManager_Initialize`
+at binding initialization. Standard processes without Rust ABI symbols still
+select their platform owner. Native malloc/free lookup worked in the actual
+Windows multi-view fixture; no allocation exports were needed.
+
+`python tools/rust_shell/tasks.py windowing` now passes 60 view removals with
+284 primary presentations, child resize and additional rendered views alive
+through whole-shell teardown under Vulkan validation, with status-zero exit.
+Evidence: `%TEMP%/flutter-rust-windowing-2kztf4p7`. The windowing harness now
+retains logs/status/statistics, including timeout failures, and accepts a bounded
+timeout override for diagnosis. The original owner-selection error is retained
+at `%TEMP%/flutter-rust-windowing-z2j8_nl9`. This checkpoint verifies regular
+multi-view routing/lifetime, not additional window-kind parity.
