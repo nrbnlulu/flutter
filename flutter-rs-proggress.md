@@ -1677,3 +1677,80 @@ cargo +1.93.1 test --locked --target x86_64-pc-windows-msvc -p flutter-shell-wgp
 This validates device creation and texture transfers, not a Win32 swapchain or
 Flutter frame. Linux/Android builds and device regressions have not been run
 on this Windows host. The minimal Windows host is the next checkpoint.
+
+
+### Windows W2 subset and portable validation harness (2026-11-08)
+
+The Windows platform adapter now compiles with the pinned Rust 1.93.1 toolchain.
+Ordinary windows use the existing merged winit platform/UI runner, timer
+pacing, pointer/metrics/focus/close handling, and shared Vulkan synchronization.
+Other window kinds return explicit unsupported errors for this first-build
+subset. Desktop clipboard handling is shared with Linux. Windows legacy key
+JSON uses native virtual keys/scans, Windows modifier bits and character code
+points; AltGr text is distinguished from Ctrl+LeftAlt shortcuts. Native lock
+state is read with GetKeyState and reconciled before key packets, including
+avoiding a double toggle on the lock key's own down event.
+
+All 47 Windows host unit tests pass, including Windows key-message encoding,
+lock reconciliation and AltGr. MSVC retains C ABI references in the Rust test
+executable, so the harness explicitly links the matching engine import library.
+All 17 C++ shell tests and both Python build-helper tests pass through the
+portable task runner. The benchmark accounting suite passes all 14 tests.
+Basic native desktop tests create a temporary Tk window and verify PID-scoped
+lookup, resizing, minimize/restore, deterministic capture and clean close.
+Modal drag is a separate test and reports a skip when foreground input is
+unavailable; the real stress task treats unavailable input as a failure.
+
+`Taskfile.yml` now delegates its shell/build/test orchestration to
+`tools/rust_shell/tasks.py`. Lifecycle and GPU/input/resize stress loops are
+Python, with process exit checks and retained evidence instead of Bash, jq,
+pgrep and status-file wrappers. Native desktop and benchmark operations have
+Hyprland and Win32 adapters. Texture and FRB pixel checks use the same adapters;
+Win32 captures reject occlusion so overlapping windows cannot produce a false
+pixel-change pass. Host-independent benchmark accounting remains shared.
+See `tools/rust_shell/README.md` for commands, overrides and coverage limits.
+No Linux/Android runtime regression coverage was available on this host.
+
+The portable Windows build also completed the matching Dart SDK and frontend
+server targets. Dart's SDK helper initially found the Windows Store python3
+alias; the runner now generates a build-local python3.cmd pointing at its own
+Python interpreter, without changing machine configuration. The root Flutter
+CLI bootstrapped successfully. Task itself was tested using a local v3.40.1
+binary in the ignored GN output tree.
+
+### Cargo smoke runner and first-frame investigation (2026-11-08)
+
+Added a small Cargo fixture in `tests/smoke_runner` and a counter/text-field
+Flutter app in `tests/smoke_fixture`. The runner uses the same C entry point as
+the Linux GN executable, including presentation-statistics and texture-fixture
+environment switches. The Windows bundle in `out/host_debug/rust-smoke` holds
+the executable, engine DLL and ICU data. Its import-library link and checked-in
+lockfile use the matching engine and pinned workspace dependency revisions.
+The FRB fixture's build helper also selects the Windows import library instead
+of Unix rpath/export-dynamic arguments.
+
+`python tools/rust_shell/tasks.py lifecycle --lifecycle-iterations 1` built the
+Dart bundle, started a VM service, recorded two 800x600 presentations and closed
+with status zero under Khronos validation. This proves startup/presentation/
+close, not correct rendered output. The first desktop capture was obscured by
+the Windows Start menu, which also prevented foreground input from the test
+process; running outside the sandbox did not remove that foreground restriction.
+The API now detects occluded captures, and the real stress task refuses to
+claim input or modal-resize success when it cannot obtain foreground access.
+
+An independent LunarG screenshot-layer run captured the application's own
+swapchain (`out/host_debug/rust-swapchain-capture/0.ppm` and `1.ppm`, with a PNG
+conversion for inspection). It shows genuine corrupted text/colors, independent
+of desktop occlusion. This rendering failure remains unresolved. That diagnostic
+run also exceeded its close timeout and was terminated; it is not a shutdown
+pass. The normal validation-only lifecycle run did close cleanly. No Vulkan
+validation VUID accompanied the corrupted frame in the retained runner logs.
+
+**The readable, interactive first-frame milestone is not complete.** Investigate
+the Impeller/shared-device rendering corruption before claiming W3/first-frame
+success. Keyboard/live-resize automation also needs an unobstructed interactive
+desktop. Full window-kind parity, DWM pacing, rlutter Windows support, release
+packaging and CI remain pending.
+
+Git author identity was configured from the authenticated GitHub account on
+2026-11-09, allowing the verified checkpoints to be committed separately.

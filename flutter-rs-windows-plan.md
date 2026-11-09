@@ -2,7 +2,9 @@
 
 Plan for Phase 3 of [`flutter-rs.md`](flutter-rs.md). Progress is recorded in
 [`flutter-rs-proggress.md`](flutter-rs-proggress.md). W0 is verified on Windows
-x64: the engine DLL builds and loads, and all 17 C++ shell tests pass. The Rust Windows host and first frame remain unverified.
+x64: the engine DLL builds and loads, and all 17 C++ shell tests pass. W1 hardware transfer tests and the W2 ordinary-window
+host checks pass. The Cargo smoke runner presents and closes, but its captured
+output has corrupted text/colors; the first-frame milestone remains incomplete.
 
 ## First Windows build: execution plan (2026-11-08)
 
@@ -33,7 +35,27 @@ clean shutdown. Full Phase 3 parity follows separately.
   core static library built and linked successfully without extra system libs.
 - Existing uncommitted GN/build-helper changes are preserved. The winit
   platform selector still rejects Windows, and the GPU crates still gate
-  the required code to Linux/Android. **Resume at checkpoint 2 (W1).**
+  the required code to Linux/Android. **W1 GPU checks are verified; continue with checkpoint 3 (W2).**
+
+### Current first-frame investigation (2026-11-08)
+
+- Windows GPU crates and all three hardware upload/readback/shutdown tests pass
+  under driver validation after the documented Intel empty-pool HAL workaround.
+- The minimal Windows host compiles; all 47 host unit tests and 17 C++ shell
+  tests pass. Ordinary-window startup/presentation/close was exercised through
+  the staged Cargo smoke runner. Additional window kinds remain unsupported.
+- The matching Dart SDK/frontend server and counter/text-field bundle build.
+  A normal validation-only run recorded two 800x600 presentations and exited
+  cleanly on native close.
+- A direct swapchain capture shows corrupted text/colors. **Investigate this
+  rendering failure next; presentation counts alone do not complete checkpoint 5.**
+  See the progress log for retained evidence and the separate screenshot-layer
+  close timeout. No rendering-correctness claim is made.
+- Desktop captures and real input/live-resize checks were blocked by the open
+  Start menu/foreground restrictions. The shared Python harness detects these
+  conditions instead of accepting unrelated pixels or silently skipping stress.
+- Validation commands now live behind one Taskfile and per-platform Python APIs;
+  see [`tools/rust_shell/README.md`](tools/rust_shell/README.md).
 
 ### Ordered checkpoints
 
@@ -55,7 +77,7 @@ clean shutdown. Full Phase 3 parity follows separately.
    This target builds the C++ engine boundary without requiring a working
    Windows winit adapter.
 
-2. **Enable the Windows Rust GPU path (W1).** Add Windows dependencies in
+2. **Windows Rust GPU path (W1; GPU crates verified 2026-11-08).** Add Windows dependencies in
    `flutter-shell-wgpu`, `flutter-shell-winit`, and `flutter-gpu-queue` as
    needed. Widen shared Vulkan and desktop-surface cfgs while retaining
    Linux-only Wayland/X11 code. Use the pinned workspace dependencies and
@@ -63,6 +85,11 @@ clean shutdown. Full Phase 3 parity follows separately.
    and use FIFO presentation with the existing timer pacing. Exit: relevant
    crates pass `cargo check --target x86_64-pc-windows-msvc`; unavailable
    Vulkan produces a useful diagnostic.
+
+   GPU crate checks and unit tests pass on Windows. All three non-benchmark
+   hardware upload/readback/shutdown tests pass under driver validation on
+   Intel HD Graphics 530 after the documented empty-descriptor-pool HAL fix.
+   The host crate is covered by W2; swapchain/runtime validation remains W2/W3.
 
 3. **Add the minimal Windows host (W2 subset).** Implement
    `platform/windows.rs`, select it in `platform.rs`, and gate Linux-only

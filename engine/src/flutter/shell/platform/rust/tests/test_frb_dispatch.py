@@ -5,6 +5,8 @@
 
 """End-to-end FRB isolate dispatch and texture test for the Rust shell."""
 
+from native_desktop import desktop
+
 import argparse
 import json
 import os
@@ -21,15 +23,18 @@ DIAGNOSTIC = re.compile(
     re.IGNORECASE,
 )
 
+_desktop = None
 
-def clients() -> list[dict[str, object]]:
-  result = subprocess.run(
-      ["hyprctl", "clients", "-j"],
-      check=True,
-      capture_output=True,
-      text=True,
-  )
-  return json.loads(result.stdout)
+
+def native():
+  global _desktop
+  if _desktop is None:
+    _desktop = desktop()
+  return _desktop
+
+
+def clients():
+  return native().clients()
 
 
 def wait_until(predicate, process: subprocess.Popen[bytes], timeout: float = 15.0):
@@ -152,20 +157,8 @@ def main() -> None:
         width, height = client["size"]
         left_width = width // 2
         right_width = width - left_width
-        subprocess.run(
-            ["grim", "-g", f"{x},{y} {left_width}x{height}",
-             str(gpu_first)],
-            check=True,
-        )
-        subprocess.run(
-            [
-                "grim",
-                "-g",
-                f"{x + left_width},{y} {right_width}x{height}",
-                str(pixels_first),
-            ],
-            check=True,
-        )
+        native().capture_window(address, gpu_first, (0, 0, left_width, height))
+        native().capture_window(address, pixels_first, (left_width, 0, right_width, height))
 
         gpu_baseline = int(baseline["gpuFrames"])
         pixel_baseline = int(baseline["pixelFrames"])
@@ -179,30 +172,14 @@ def main() -> None:
               f"latest={read_status(status_path)!r}"
           )
 
-        subprocess.run(
-            ["grim", "-g", f"{x},{y} {left_width}x{height}",
-             str(gpu_second)],
-            check=True,
-        )
-        subprocess.run(
-            [
-                "grim",
-                "-g",
-                f"{x + left_width},{y} {right_width}x{height}",
-                str(pixels_second),
-            ],
-            check=True,
-        )
+        native().capture_window(address, gpu_second, (0, 0, left_width, height))
+        native().capture_window(address, pixels_second, (left_width, 0, right_width, height))
         if gpu_first.read_bytes() == gpu_second.read_bytes():
           raise RuntimeError("wgpu texture frames advanced but its pixels did not change")
         if pixels_first.read_bytes() == pixels_second.read_bytes():
           raise RuntimeError("pixel-buffer frames advanced but its pixels did not change")
 
-        subprocess.run(
-            ["hyprctl", "dispatch", "closewindow", f"address:{address}"],
-            check=True,
-            stdout=subprocess.DEVNULL,
-        )
+        native().action("close", address)
         if process.wait(timeout=10) != 0:
           raise RuntimeError("FRB fixture exited unsuccessfully")
         log.flush()

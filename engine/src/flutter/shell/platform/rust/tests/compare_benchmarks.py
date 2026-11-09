@@ -208,7 +208,7 @@ def main():
   all_children = sorted({s["children"] for run in base_runs for s in run})
 
   print(
-      f"\n{'Stage':>8}  {'Metric':<30}  {'Base med':>10}  {'Cand med':>10}  {'Δ':>8}  {'Thr':>6}  Verdict"
+      f"\n{'Stage':>8}  {'Metric':<30}  {'Base med':>10}  {'Cand med':>10}  {'Delta':>8}  {'Thr':>6}  Verdict"
   )
   print("-" * 90)
 
@@ -230,7 +230,7 @@ def main():
         missing.append(result)
       verdict = result["verdict"]
       delta_str = fmt_rel(result["rel_change"]) if result.get("rel_change") is not None else "n/a"
-      thr_str = f"±{result.get('threshold', 0) * 100:.0f}%"
+      thr_str = f"+/-{result.get('threshold', 0) * 100:.0f}%"
       print(
           f"{children:>8}  {label:<30}  "
           f"{fmt_median(result['base']['median']):>10}  "
@@ -250,20 +250,20 @@ def main():
     print("REVERT: required metrics are missing from one or more runs.")
     sys.exit(1)
   elif regressions:
-    print("❌  REVERT: guard metric regressions detected:")
+    print("REVERT: guard metric regressions detected:")
     for r in regressions:
       print(
-          f"   {r['children']}-child {r['label']}: {fmt_rel(r['rel_change'])} (threshold ±{r['threshold']*100:.0f}%)"
+          f"   {r['children']}-child {r['label']}: {fmt_rel(r['rel_change'])} (threshold +/-{r['threshold']*100:.0f}%)"
       )
     print()
     sys.exit(1)
   elif primary_improved:
-    print("✅  KEEP: primary metric improved beyond noise with no guard regressions.")
+    print("KEEP: primary metric improved beyond noise with no guard regressions.")
     print(f"   Improved stages: {', '.join(str(r['children']) for r in improvements)}")
     print()
     sys.exit(0)
   else:
-    print("⚠️   REVERT: no primary metric improvement detected beyond noise.")
+    print("REVERT: no primary metric improvement detected beyond noise.")
     print()
     sys.exit(1)
 
