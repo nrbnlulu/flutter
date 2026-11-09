@@ -2,6 +2,7 @@
 
 pub mod android;
 pub mod linux;
+pub mod windows;
 
 use std::{
     io::{BufRead, BufReader, IsTerminal, Read},
@@ -52,13 +53,14 @@ pub fn discover() -> Vec<Box<dyn Device>> {
     if linux::LinuxHost::is_supported() {
         devices.push(Box::new(linux::LinuxHost));
     }
+    if windows::WindowsHost::is_supported() { devices.push(Box::new(windows::WindowsHost)); }
     let (android, _) = android::discover_all();
     devices.extend(android.into_iter().map(|d| Box::new(d) as Box<dyn Device>));
     devices
 }
 
 /// Platform names accepted by `-d` as a filter.
-const PLATFORMS: [&str; 2] = ["linux", "android"];
+const PLATFORMS: [&str; 3] = ["linux", "windows", "android"];
 
 /// Picks the device to run on. `requested` is an exact device id, or a
 /// platform name (`android`) to choose among that platform's devices. Several

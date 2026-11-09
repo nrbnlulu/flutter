@@ -16,7 +16,7 @@ use crate::{
     util::{copy_dir, copy_if_changed, retain_files, run},
 };
 
-pub struct LinuxBuild {
+pub struct DesktopBuild {
     pub project: Project,
     pub engine: Engine,
     pub runner: PathBuf,
@@ -29,14 +29,25 @@ pub fn build_linux(
     mode: BuildMode,
     target: &str,
     dart_defines: &[String],
-) -> Result<LinuxBuild> {
+) -> Result<DesktopBuild> {
+    build_desktop(ctx, mode, target, dart_defines, "linux")
+}
+
+pub fn build_windows(ctx: &Ctx, mode: BuildMode, target: &str, dart_defines: &[String]) -> Result<DesktopBuild> {
+    build_desktop(ctx, mode, target, dart_defines, "windows")
+}
+
+fn build_desktop(ctx: &Ctx, mode: BuildMode, target: &str, dart_defines: &[String], platform: &str) -> Result<DesktopBuild> {
+    if std::env::consts::OS != platform || !cfg!(target_arch = "x86_64") {
+        bail!("{platform} desktop builds require a native {platform} x64 host");
+    }
     let project = Project::discover()?;
     project.require_rust_shell()?;
     let engine = prepare(ctx, &project, mode)?;
 
     let output = project
         .build_dir()
-        .join("linux")
+        .join(platform)
         .join(mode.name())
         .join("flutter_assets");
     let bundle = dart::assemble_bundle(
@@ -44,7 +55,7 @@ pub fn build_linux(
         &project,
         &engine,
         mode,
-        "linux-x64",
+        &format!("{platform}-x64"),
         target,
         dart_defines,
         &output,
@@ -67,7 +78,7 @@ pub fn build_linux(
             .unwrap_or(&runner)
             .display()
     );
-    Ok(LinuxBuild {
+    Ok(DesktopBuild {
         project,
         engine,
         runner,
@@ -91,7 +102,7 @@ pub fn runner_binary(project: &Project, mode: BuildMode) -> PathBuf {
         .runner_dir()
         .join("target")
         .join(mode.cargo_profile_dir())
-        .join(&project.name)
+        .join(format!("{}{}", project.name, std::env::consts::EXE_SUFFIX))
 }
 
 /// Copies `flutter_assets` and `icudtl.dat` into `<runner dir>/data/`, and the
@@ -115,14 +126,15 @@ fn stage_bundle(
     copy_if_changed(&engine.target.join("icudtl.dat"), &data.join("icudtl.dat"))
         .context("cannot copy icudtl.dat")?;
 
-    let libs = runner_dir.join("libs");
+    // Keep Windows DLLs beside the executable; Linux uses its rpath directory.
+    let libs = if cfg!(windows) { runner_dir.to_owned() } else { runner_dir.join("libs") };
     fs::create_dir_all(&libs)?;
     copy_if_changed(
-        &engine.target.join("libflutter_rust_engine.so"),
-        &libs.join("libflutter_rust_engine.so"),
+        &engine.target.join(crate::sdk::host_engine_library()),
+        &libs.join(crate::sdk::host_engine_library()),
     )
     .context("cannot copy libflutter_rust_engine.so")?;
-    let mut keep = vec![libs.join("libflutter_rust_engine.so")];
+    let mut keep = vec![libs.join(crate::sdk::host_engine_library())];
     let native = native_libs::staging_dir(project, mode, None);
     if native.is_dir() {
         for entry in fs::read_dir(&native)? {
@@ -134,7 +146,23 @@ fn stage_bundle(
             }
         }
     }
-    retain_files(&libs, &keep)?;
+    if cfg!(windows) {
+        // The executable directory also contains Cargo outputs and application data.
+        // Prune only DLLs previously staged by this tool.
+        let record = runner_dir.join(".rlutter-dlls.json");
+        let previous: Vec<PathBuf> = fs::read_to_string(&record).ok()
+            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        for name in previous {
+            if name.components().count() == 1 && name.extension().is_some_and(|ext| ext == "dll") {
+                let path = runner_dir.join(name);
+                if !keep.contains(&path) { crate::util::remove_path(&path)?; }
+            }
+        }
+        let names: Vec<_> = keep.iter().filter_map(|p| p.file_name()).collect();
+        fs::write(record, serde_json::to_vec(&names)?)?;
+    } else {
+        retain_files(&libs, &keep)?;
+    }
     if !runner.is_file() {
         bail!("cargo did not produce {}", runner.display());
     }
@@ -207,7 +235,7 @@ mod tests {
         let engine_dir = p.dir.join("engine");
         fs::create_dir_all(&engine_dir).unwrap();
         fs::write(engine_dir.join("icudtl.dat"), "icu").unwrap();
-        fs::write(engine_dir.join("libflutter_rust_engine.so"), "engine").unwrap();
+        fs::write(engine_dir.join(crate::sdk::host_engine_library()), "engine").unwrap();
         let engine = Engine {
             target: engine_dir.clone(),
             host: engine_dir,

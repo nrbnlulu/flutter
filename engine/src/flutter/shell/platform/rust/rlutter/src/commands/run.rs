@@ -17,8 +17,8 @@ pub fn run_app(ctx: &Ctx, args: &RunArgs) -> Result<i32> {
     let mode = args.mode.resolve()?;
     let device = device::select(device::discover(), args.device.as_deref())?;
     if let Some(path) = &args.vm_service_info_file {
-        if !mode.config().vm_service || device.platform() != "linux" {
-            bail!("--vm-service-info-file requires a Linux debug or profile run");
+        if !mode.config().vm_service || !matches!(device.platform(), "linux" | "windows") {
+            bail!("--vm-service-info-file requires a desktop debug or profile run");
         }
         crate::util::remove_path(path)?;
     }

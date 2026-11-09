@@ -1,6 +1,5 @@
 use std::{
     fs, io,
-    os::unix::fs::symlink,
     path::{Component, Path, PathBuf},
     process::Command,
 };
@@ -27,6 +26,7 @@ pub fn run(command: &mut Command) -> Result<()> {
 
 /// Points `link` at `target`, replacing whatever is there. A link that already
 /// has the right target is left alone so file times stay stable.
+#[cfg(unix)]
 pub fn replace_link(link: &Path, target: &Path) -> Result<()> {
     match fs::symlink_metadata(link) {
         Ok(meta) => {
@@ -41,8 +41,30 @@ pub fn replace_link(link: &Path, target: &Path) -> Result<()> {
     if let Some(parent) = link.parent() {
         fs::create_dir_all(parent)?;
     }
-    symlink(target, link)
+    std::os::unix::fs::symlink(target, link)
         .with_context(|| format!("link {} -> {}", link.display(), target.display()))
+}
+
+/// Prefer native links; copy when Windows developer-mode symlinks are unavailable.
+#[cfg(windows)]
+pub fn replace_link(link: &Path, target: &Path) -> Result<()> {
+    let target = if target.is_absolute() { target.to_owned() } else {
+        link.parent().context("link has no parent")?.join(target)
+    };
+    if fs::symlink_metadata(link).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        if fs::read_link(link)? == target && link.exists() { return Ok(()); }
+        remove_path(link)?;
+    }
+    if !link.exists() {
+        if let Some(parent) = link.parent() { fs::create_dir_all(parent)?; }
+        let result = if target.is_dir() {
+            std::os::windows::fs::symlink_dir(&target, link)
+        } else {
+            std::os::windows::fs::symlink_file(&target, link)
+        };
+        if result.is_ok() { return Ok(()); }
+    }
+    if target.is_dir() { copy_dir(&target, link) } else { copy_if_changed(&target, link) }
 }
 
 /// Removes a file, symlink or directory tree; missing paths are fine.
@@ -52,6 +74,13 @@ pub fn remove_path(path: &Path) -> Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error).with_context(|| format!("stat {}", path.display())),
     };
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if meta.file_type().is_symlink_dir() {
+            return fs::remove_dir(path).with_context(|| format!("remove {}", path.display()));
+        }
+    }
     if meta.is_dir() {
         fs::remove_dir_all(path)
     } else {

@@ -57,6 +57,7 @@ pub struct PassthroughArgs {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum RustPlatform {
     Linux,
+    Windows,
     Android,
 }
 
@@ -66,7 +67,7 @@ pub struct CreateArgs {
     pub dir: PathBuf,
 
     /// Rust shells to generate.
-    #[arg(long, value_enum, value_delimiter = ',', default_value = "linux")]
+    #[arg(long, value_enum, value_delimiter = ',', default_value = if cfg!(windows) { "windows" } else { "linux" })]
     pub rust_platforms: Vec<RustPlatform>,
 
     /// Organization, forwarded to `flutter create`.
@@ -87,6 +88,8 @@ pub struct CreateArgs {
 pub enum BuildTarget {
     /// Build for the Linux host.
     Linux(BuildArgs),
+    /// Build for the Windows x64 host.
+    Windows(BuildArgs),
     /// Build an Android APK.
     Android(AndroidBuildArgs),
 }

@@ -21,6 +21,7 @@ impl Flutter {
         if let Some(root) = explicit {
             return Self::at(root);
         }
+        if cfg!(windows) { bail!("the managed Windows SDK is not published yet; pass --flutter-root"); }
         let cache = env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
             .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
@@ -76,7 +77,7 @@ impl Flutter {
     }
 
     fn at(root: &Path) -> Result<Self> {
-        let binary = root.join("bin").join("flutter");
+        let binary = root.join("bin").join(if cfg!(windows) { "flutter.bat" } else { "flutter" });
         if !binary.is_file() {
             bail!(
                 "{} is not a Flutter SDK (missing bin/flutter)",
@@ -96,7 +97,7 @@ impl Flutter {
     /// flags make the tool compile with the Dart SDK matching the Rust shell's
     /// engine (anything else fails at launch with "Invalid SDK hash").
     pub fn command(&self, engine: Option<&Engine>) -> Command {
-        let mut command = Command::new(self.root.join("bin").join("flutter"));
+        let mut command = Command::new(self.root.join("bin").join(if cfg!(windows) { "flutter.bat" } else { "flutter" }));
         command.env_remove("FLUTTER_ROOT");
         if self.root.join(".rlutter-complete").is_file() {
             // Flutter otherwise treats a fork's cached release version as
@@ -112,7 +113,7 @@ impl Flutter {
     }
 
     pub fn dart_command(&self) -> Command {
-        let mut command = Command::new(self.root.join("bin/cache/dart-sdk/bin/dart"));
+        let mut command = Command::new(self.root.join(if cfg!(windows) { "bin/cache/dart-sdk/bin/dart.exe" } else { "bin/cache/dart-sdk/bin/dart" }));
         command.env("FLUTTER_ROOT", &self.root);
         command
     }

@@ -18,6 +18,7 @@ mod util;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
 use crate::{
@@ -53,7 +54,10 @@ fn run() -> Result<()> {
                 command.args(["language-server", "--protocol=lsp"]);
             }
             command.args(args.args);
-            Err(command.exec()).context("failed to start bundled Dart")
+            #[cfg(unix)]
+            { Err(command.exec()).context("failed to start bundled Dart") }
+            #[cfg(windows)]
+            { std::process::exit(command.status().context("failed to start bundled Dart")?.code().unwrap_or(1)); }
         }
         Command::Create(args) => commands::create::run_create(&ctx, &args),
         Command::Clean(args) => commands::clean::run_clean(&ctx, &args),
@@ -65,6 +69,9 @@ fn run() -> Result<()> {
                 &args.defines.dart_defines,
             )
             .map(drop),
+            BuildTarget::Windows(args) => commands::build::build_windows(
+                &ctx, args.mode.resolve()?, &args.target, &args.defines.dart_defines,
+            ).map(drop),
             BuildTarget::Android(args) => commands::build_android::build_android(
                 &ctx,
                 args.build.mode.resolve()?,

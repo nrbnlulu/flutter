@@ -3,7 +3,6 @@
 
 use std::{
     fs,
-    os::unix::fs::{PermissionsExt, symlink},
     path::Path,
 };
 
@@ -153,7 +152,9 @@ pub fn ensure(project: &Project, org: &str) -> Result<bool> {
         } else {
             fs::write(&destination, file.contents)?;
         }
+        #[cfg(unix)]
         if file.executable {
+            use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&destination, fs::Permissions::from_mode(0o755))?;
         }
     }
@@ -174,7 +175,7 @@ fn disable_release_shrinking(project: &Project) -> Result<()> {
 fn expose_to_flutter(project: &Project) -> Result<()> {
     let android = project.dir.join("android");
     if fs::symlink_metadata(&android).is_err() {
-        symlink("android-rs", android)?;
+        crate::util::replace_link(&android, Path::new("android-rs"))?;
     }
     Ok(())
 }

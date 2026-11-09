@@ -47,7 +47,11 @@ impl Device for LinuxHost {
         target: &str,
         dart_defines: &[String],
     ) -> Result<RunningApp> {
-        let build = build_linux(ctx, mode, target, dart_defines)?;
+        launch_desktop(build_linux(ctx, mode, target, dart_defines)?, mode)
+    }
+}
+
+pub(super) fn launch_desktop(build: crate::commands::build::DesktopBuild, mode: BuildMode) -> Result<RunningApp> {
         eprintln!("Launching {}...", build.runner.display());
         let mut child = Command::new(&build.runner)
             .current_dir(&build.project.dir)
@@ -102,4 +106,3 @@ impl Device for LinuxHost {
             }),
         })
     }
-}
