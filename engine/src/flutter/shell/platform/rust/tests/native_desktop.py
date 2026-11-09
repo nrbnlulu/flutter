@@ -83,13 +83,24 @@ class Hyprland(Desktop):
 
   def action(self, action, address, *, width=0, height=0):
     selector = f'address:{address}'
-    if self.lua and action in ('close', 'float', 'resize', 'focus'):
+    if action == 'tab':
+      self.chord(address, 'Tab')
+      return
+    if self.lua:
       options = f'window = {json.dumps(selector)}'
+      dispatcher = 'hl.dsp.focus' if action == 'focus' else f'hl.dsp.window.{action}'
       if action == 'resize':
         options += f', x = {width}, y = {height}, relative = false'
       elif action == 'float':
         options += ', action = "enable"'
-      command = ['hyprctl', 'dispatch', f'hl.dsp.window.{action}({{{options}}})']
+      elif action in ('hide', 'restore'):
+        if action == 'hide':
+          client = next(c for c in self.clients() if str(c['address']) == address)
+          self.workspace = client['workspace']['id']
+        workspace = 'special:rust-shell-stress' if action == 'hide' else str(self.workspace)
+        options += f', workspace = {json.dumps(workspace)}, follow = false'
+        dispatcher = 'hl.dsp.window.move'
+      command = ['hyprctl', 'dispatch', f'{dispatcher}({{{options}}})']
     else:
       names = dict(
           close='closewindow',
@@ -123,19 +134,34 @@ class Hyprland(Desktop):
 
   def click(self, address, x, y):
     self.action('focus', address)
-    if not shutil.which('ydotool'):
-      raise RuntimeError('ydotool and its daemon are required for native pointer injection')
-    subprocess.run(['hyprctl', 'dispatch', 'movecursor', str(round(x)), str(round(y))], check=True)
-    subprocess.run(['ydotool', 'click', '0xC0'], check=True)
+    command = ['hyprctl', 'dispatch']
+    if self.lua:
+      command += [f'hl.dsp.cursor.move({{x = {round(x)}, y = {round(y)}}})']
+    else:
+      command += ['movecursor', str(round(x)), str(round(y))]
+    subprocess.run(command, check=True)
+    # A window selector makes Hyprland reset the pointer position to (1, 1).
+    # The cursor is already on our focused window; preserve its hit-test point.
+    command = ['hyprctl', 'dispatch']
+    if self.lua:
+      command += ['hl.dsp.send_shortcut({mods = "", key = "mouse:272"})']
+    else:
+      command += ['sendshortcut', ',mouse:272']
+    subprocess.run(command, check=True)
 
   def chord(self, address, *keys):
     self.action('focus', address)
     modifiers = [key.upper() for key in keys[:-1]]
-    subprocess.run([
-        'hyprctl', 'dispatch', 'sendshortcut',
-        ','.join([' '.join(modifiers), keys[-1], f'address:{address}'])
-    ],
-                   check=True)
+    command = ['hyprctl', 'dispatch']
+    if self.lua:
+      options = (
+          f'mods = {json.dumps(" ".join(modifiers))}, key = {json.dumps(keys[-1])}, '
+          f'window = {json.dumps(f"address:{address}")}'
+      )
+      command += [f'hl.dsp.send_shortcut({{{options}}})']
+    else:
+      command += ['sendshortcut', ','.join([' '.join(modifiers), keys[-1], f'address:{address}'])]
+    subprocess.run(command, check=True)
 
   def capture(self, rect, path):
     if not shutil.which('grim'):

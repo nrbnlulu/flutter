@@ -1625,6 +1625,18 @@ class _DebugViewMetricsPlatformDispatcher implements ui.PlatformDispatcher {
   set onMetricsChanged(ui.VoidCallback? callback) => _dispatcher.onMetricsChanged = callback;
 
   @override
+  ui.VoidCallback? get onMarkAllViewsNeedRender => _dispatcher.onMarkAllViewsNeedRender;
+  @override
+  set onMarkAllViewsNeedRender(ui.VoidCallback? callback) =>
+      _dispatcher.onMarkAllViewsNeedRender = callback;
+
+  @override
+  void Function(int textureId)? get onTextureFrameAvailable => _dispatcher.onTextureFrameAvailable;
+  @override
+  set onTextureFrameAvailable(void Function(int textureId)? callback) =>
+      _dispatcher.onTextureFrameAvailable = callback;
+
+  @override
   ui.VoidCallback? get onPlatformBrightnessChanged => _dispatcher.onPlatformBrightnessChanged;
   @override
   set onPlatformBrightnessChanged(ui.VoidCallback? callback) =>

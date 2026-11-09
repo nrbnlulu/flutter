@@ -4,6 +4,13 @@ This file records implementation progress for the architecture in
 [`flutter-rs.md`](flutter-rs.md). It is an implementation log, not a replacement
 for the architectural plan.
 
+Headless agent verification is now specified in
+[`flutter-rs-agent-plan.md`](flutter-rs-agent-plan.md), following a source review
+on 2026-11-09. It covers fully offscreen rendering, virtual multi-window behavior,
+semantics and optional widget assertions, input, screenshots, video and CI
+evidence. All implementation phases remain pending; the existing headless GPU
+device constructor is not a headless application host.
+
 ## Current focus
 
 Android hardware-buffer textures have an experimental SDK capability and a
@@ -2241,3 +2248,32 @@ conformance, managed SDK downloads, release/profile/AOT builds, general plugin/
 FRB packaging, icon/version resources and Windows CI remain follow-ups.
 Symlink-denied fallback, Linux/Android runtime regressions and broader Windows
 GPU/display coverage remain unverified; real IME/DPI-transition gaps are unchanged.
+
+
+## Linux test repairs and matching framework tester
+
+The debug metrics dispatcher now forwards the texture-frame and all-views-render
+callbacks required by the local engine. The texture rendering test supplies its
+fake view's dispatcher. Framework test configuration starts with experimental
+windowing disabled; individual windowing tests opt in explicitly, independent of
+the developer's global Flutter settings.
+
+Added `task test-rust-shell-framework`, which builds the matching Flutter tester,
+Dart SDK and frontend server before testing. The previous tester was stale and
+failed with an invalid SDK hash. Hyprland automation now uses the correct Lua
+focus, cursor, shortcut and workspace dispatchers, and mouse injection preserves
+the requested position instead of resetting it through a window selector.
+Wayland tooltip tests wait for compositor-confirmed parent mapping. Generated-app
+pixel comparisons use matching viewports and a stable reference frame after
+native resizing.
+
+Verified on Linux: 448 foundation/windowing/rendering/texture framework tests;
+Rust workspace and 17 C++ tests; Python suites; 108 rlutter tests and Clippy;
+four hardware GPU tests; animated wgpu/pixel textures, 40 texture replacements,
+regular/owned/tooltip multi-view lifecycle, 20 startup/shutdown cycles, 500 resizes,
+native Unicode typing/clipboard/selection/metrics, and FRB. Generated-app launch,
+rendered hot reload with preserved state, hot restart, relocation and clean close
+also pass. Formatting, analysis against current engine sources, Python compilation
+and whitespace checks pass. Windows-only automation is skipped on Linux; native
+IME composition, actual monitor-scale transitions and Windows popup behavior are
+not established by these runs.

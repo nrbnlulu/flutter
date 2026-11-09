@@ -207,6 +207,11 @@ tasks:
     cmds:
       - '{{.RUST_TASK}} gpu-tests'
 
+  test-rust-shell-framework:
+    desc: Build the matching Flutter tester and run foundation, view-metrics and texture checks.
+    cmds:
+      - '{{.RUST_TASK}} framework-tests'
+
   test-rust-shell-text-input:
     desc: Validate native typing, Unicode clipboard, lifecycle and current-scale DPI.
     deps: [build-rust-shell]

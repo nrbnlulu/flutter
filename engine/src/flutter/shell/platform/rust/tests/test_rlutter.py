@@ -115,7 +115,31 @@ def main():
       if not client or read_field('lastRenderedLabel') != 'rlutter-before':
         raise RuntimeError('Generated application did not initialize')
       address = client['address']
+      if sys.platform != 'win32':
+        api.action('float', address)
+      api.action('resize', address, width=800, height=600)
       api.action('focus', address)
+      client = wait_until(
+          lambda: (c if (c := find_window()) and c['size'] == [800, 600] else None), process
+      )
+      if not client:
+        raise RuntimeError('Could not establish the probe viewport')
+      # Native geometry can report its destination before the compositor's
+      # resize animation and Flutter's resized frame have reached that size.
+      previous = None
+      stable_since = time.monotonic()
+
+      def stable_frame():
+        nonlocal previous, stable_since
+        api.capture_window(address, evidence / 'before.png')
+        current = (evidence / 'before.png').read_bytes()
+        if current != previous:
+          previous = current
+          stable_since = time.monotonic()
+        return time.monotonic() - stable_since >= .5
+
+      if not wait_until(stable_frame, process):
+        raise RuntimeError('Probe viewport did not produce a stable reference frame')
       api.capture_window(address, evidence / 'before.png')
       # Compare the centered widget, excluding desktop corners and client
       # edges that may extend beyond the screen on small desktops.
@@ -203,6 +227,11 @@ def main():
       )
       if not client:
         raise RuntimeError('Relocated bundle did not map a window')
+      address = client['address']
+      if sys.platform != 'win32':
+        api.action('float', address)
+      api.action('resize', address, width=800, height=600)
+      api.action('focus', address)
 
       def same_frame():
         api.capture_window(client['address'], evidence / 'standalone.png')

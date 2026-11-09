@@ -32,6 +32,12 @@ class Host:
     self.out = self.src / 'out' / args.engine
     self.env = os.environ.copy()
     paths = [self.src / 'flutter/third_party/depot_tools']
+    # depot_tools and engine build helpers still require modules removed from
+    # newer system Pythons (for example, pipes in Python 3.13). Use the
+    # checkout's DEPS-pinned interpreter for their python3 subprocesses.
+    python_bin = self.src / 'flutter/third_party/cpython3/bin'
+    if not self.windows and (python_bin / 'python3').is_file():
+      paths.insert(0, python_bin)
     for key in ('DEPOT_PY_BIN', 'DEPOT_TOOLS'):
       if self.env.get(key):
         paths.insert(0, Path(self.env[key]))
@@ -155,6 +161,25 @@ class Host:
     if not runner.is_file():
       raise RuntimeError(f'Native runner is missing: {runner}. Build the smoke runner first.')
     return runner
+
+  def framework_tests(self):
+    # A Rust-shell build does not refresh flutter_tester. Build the test host
+    # and compiler together to avoid an Invalid SDK hash from a stale tester.
+    self.run(['ninja', '-C', self.out, 'flutter_tester', 'dart_sdk', 'frontend_server_aot'])
+    self.flutter(
+        'test',
+        f'--local-engine={self.args.engine}',
+        f'--local-engine-host={self.args.engine}',
+        f'--local-engine-src-path={self.src}',
+        'test/foundation',
+        'test/widgets/debug_view_metrics_override_test.dart',
+        'test/widgets/windowing_test.dart',
+        'test/rendering/binding_test.dart',
+        'test/rendering/multi_view_binding_test.dart',
+        'test/rendering/texture_test.dart',
+        'test/widgets/texture_test.dart',
+        cwd=ROOT / 'packages/flutter'
+    )
 
   def bundle(self, project, target='lib/main.dart', windowing=False):
     if windowing:
@@ -344,6 +369,8 @@ def main():
     host.smoke()
   elif task == 'test':
     host.tests()
+  elif task == 'framework-tests':
+    host.framework_tests()
   elif task == 'gpu-tests':
     env = host.env | {
         'WGPU_VALIDATION': '1', 'WGPU_DEBUG': '1', 'VK_INSTANCE_LAYERS':
@@ -412,7 +439,8 @@ def main():
     host.fixture('test_windowing.py', assets, '--popup-dismissal')
   elif task == 'tooltip-windowing':
     assets = host.bundle(TESTS / 'windowing_fixture', 'lib/tooltips.dart', True)
-    host.fixture('test_windowing.py', assets, *(['--tooltip-motion'] if host.windows else []))
+    host.fixture('test_windowing.py', assets,
+                 '--tooltip-motion' if host.windows else '--wait-parent-mapped')
   elif task == 'owned-windowing':
     assets = host.bundle(TESTS / 'windowing_fixture', 'lib/owned.dart', True)
     host.fixture('test_windowing.py', assets)

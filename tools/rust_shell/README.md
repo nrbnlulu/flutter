@@ -4,6 +4,8 @@
 owns environment setup, argument lists, builds, fixture bundles, process
 lifetimes, and assertions. It does not require Bash, jq, sed, or pgrep.
 `DEPOT_TOOLS` and `DEPOT_PY_BIN` remain optional environment overrides.
+On Unix, subprocesses use the checkout's DEPS-pinned Python when available so
+depot_tools and engine helpers remain compatible with newer system Pythons.
 
 Native automation has a common API in
 `engine/src/flutter/shell/platform/rust/tests/native_desktop.py`:
@@ -25,6 +27,7 @@ Examples (the same commands on Linux and Windows):
 task build-rust-shell
 task test-rust-shell
 task test-rust-shell-gpu
+task test-rust-shell-framework
 task test-rust-shell-lifecycle LIFECYCLE_ITERATIONS=20
 task stress-rust-shell RESIZE_ITERATIONS=500
 task test-rust-shell-frb-dispatch
@@ -37,6 +40,12 @@ python tools/rust_shell/tasks.py --help
 python tools/rust_shell/tasks.py build
 python tools/rust_shell/tasks.py test
 ```
+
+`test-rust-shell-framework` (or `framework-tests`) builds `flutter_tester`, the
+Dart SDK and frontend server from the selected local engine before running the
+foundation suite and the view-metrics, rendering-binding and texture tests. A
+Rust-shell runner build alone does not update `flutter_tester`; mixing an older
+tester with the current compiler can fail with `Invalid SDK hash`.
 
 Override `PYTHON` when Task cannot find the desired interpreter. Override
 `LOCAL_ENGINE`, sample/example paths, and iteration counts using Task variables.
@@ -82,8 +91,10 @@ text/UTF-16 selection, verifies Unicode clipboard copy/paste and `hasStrings`,
 checks minimize/restore lifecycle and compares native client size/DPI with
 Flutter metrics before and after resize. Widget-reported control bounds keep
 pointer coordinates independent of display scale. Windows uses Win32 input and
-`GetDpiForWindow`; Hyprland uses `sendshortcut`, `movecursor` and `ydotool`
-(with its daemon) for clicks. Hyprland coverage is not yet validated here.
+`GetDpiForWindow`; Hyprland uses its shortcut and cursor dispatchers (including
+their Lua forms on newer releases) for clicks, without a separate input daemon.
+Mouse injection preserves the cursor's hit-test point instead of supplying a
+window selector, which would reset the pointer to the window's top-left corner.
 
 The fixture temporarily replaces clipboard text and restores the previous text
 before closing; rich clipboard formats are not preserved. Logs, screenshots and
@@ -109,7 +120,9 @@ below.
 
 `task test-rust-shell-tooltips` renders owned no-activate tooltips alongside
 regular/dialog/satellite views and verifies 60 owner-driven removals and each
-view's presentations. Windows has initial monitor-work-area placement with
+view's presentations. On Wayland the fixture waits for the compositor to map
+each parent before creating its tooltip; frame submission alone is insufficient.
+Windows has initial monitor-work-area placement with
 unit-tested flip/slide/resize constraints; native tests check owner/style and
 foreground preservation. The owned-window fixture also uses parent-only destruction;
 native tests verify owned children hide/return on owner minimize/restore.

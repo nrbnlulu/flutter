@@ -66,6 +66,21 @@ class _WindowingFixtureState extends State<_WindowingFixture> with SingleTickerP
         initialPositioner: const WindowPositioner(offset: Offset(30, 40)),
         delegate: _SatelliteDelegate(() => destroyed++),
       );
+      // Wayland configures a popup only after its parent has been mapped.
+      // Let Flutter render the parent before synchronously creating the popup.
+      setState(() => windows.addAll([parent, other, dialog, satellite]));
+      await WidgetsBinding.instance.endOfFrame;
+      final String? readyPath = Platform.environment['FLUTTER_RUST_WINDOWING_PARENT_READY'];
+      if (readyPath != null) {
+        final ready = File(readyPath);
+        final DateTime deadline = DateTime.now().add(const Duration(seconds: 10));
+        while (!ready.existsSync() || ready.readAsStringSync() != '$cycle') {
+          if (DateTime.now().isAfter(deadline)) {
+            throw StateError('Tooltip parent $cycle did not map');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+      }
       final tooltip = TooltipWindowController(
         parent: parent,
         anchorRect: const Rect.fromLTWH(30, 30, 20, 20),
@@ -73,7 +88,7 @@ class _WindowingFixtureState extends State<_WindowingFixture> with SingleTickerP
         constraints: const BoxConstraints.tightFor(width: 160, height: 100),
         delegate: _TooltipDelegate(() => destroyed++),
       );
-      setState(() => windows.addAll([parent, other, dialog, satellite, tooltip]));
+      setState(() => windows.add(tooltip));
       final String? motionPath = Platform.environment['FLUTTER_RUST_TOOLTIP_MOTION'];
       if (cycle == 0 && motionPath != null) {
         final signal = File(motionPath);

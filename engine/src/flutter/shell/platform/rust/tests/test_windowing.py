@@ -24,6 +24,7 @@ def main():
   parser.add_argument("--icu", required=True, type=Path)
   parser.add_argument("--timeout", type=float, default=90)
   parser.add_argument("--tooltip-motion", action="store_true")
+  parser.add_argument("--wait-parent-mapped", action="store_true")
   parser.add_argument("--popup-dismissal", action="store_true")
   args = parser.parse_args()
   directory = tempfile.mkdtemp(prefix="flutter-rust-windowing-")
@@ -40,6 +41,9 @@ def main():
       "FLUTTER_RUST_WINDOWING_STATUS": str(status),
   })
   motion = Path(directory) / "motion"
+  parent_ready = Path(directory) / 'parent-ready'
+  if args.wait_parent_mapped:
+    environment['FLUTTER_RUST_WINDOWING_PARENT_READY'] = str(parent_ready)
   if args.tooltip_motion:
     environment['FLUTTER_RUST_TOOLTIP_MOTION'] = str(motion)
   popup_status = Path(directory) / 'popup-status.json'
@@ -187,7 +191,21 @@ def main():
         print(
             'Tooltip parent movement, anchored resizing and explicit/partial position updates passed.'
         )
-      returncode = process.wait(timeout=args.timeout)
+      if args.wait_parent_mapped:
+        api = desktop()
+        deadline = time.monotonic() + args.timeout
+        while process.poll() is None:
+          if time.monotonic() >= deadline:
+            raise RuntimeError('Timed out waiting for tooltip lifecycle completion')
+          for client in api.clients():
+            if client['pid'] == process.pid and client['title'].startswith('Owned parent '):
+              cycle = client['title'].removeprefix('Owned parent ')
+              if not parent_ready.exists() or parent_ready.read_text() != cycle:
+                parent_ready.write_text(cycle)
+          time.sleep(.02)
+        returncode = process.returncode
+      else:
+        returncode = process.wait(timeout=args.timeout)
     finally:
       if process.poll() is None:
         process.kill()
