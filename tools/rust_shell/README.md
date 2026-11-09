@@ -158,7 +158,7 @@ is composition-wide. Mixed-refresh monitors, VRR and physical presentation
 latency require separate measurements; a passing resize/lifecycle test verifies
 liveness and teardown rather than precise display scanout timing.
 
-Windows local-engine rlutter debug workflows are available:
+Windows local-engine rlutter workflows:
 
 ```powershell
 cargo +1.93.1 build --locked --manifest-path engine/src/flutter/shell/platform/rust/rlutter/Cargo.toml
@@ -166,16 +166,27 @@ cargo +1.93.1 build --locked --manifest-path engine/src/flutter/shell/platform/r
 rlutter create C:/work/my_app --rust-platforms windows --flutter-root C:/path/to/flutter
 # From the generated application:
 rlutter build windows --debug --flutter-root C:/path/to/flutter
+rlutter build windows --release --flutter-root C:/path/to/flutter
 rlutter run -d windows --flutter-root C:/path/to/flutter
 ```
 
-Use the executable built by Cargo above, or add its directory to PATH. Windows
-currently requires an explicit local Flutter checkout (`--local-engine-src` can
-override its engine/src); managed Windows SDK downloads are not published yet.
-The Windows bundle is `runner-rs/target/debug/<name>.exe`, engine/plugin DLLs
-beside it, and `data/{icudtl.dat,flutter_assets}`. The executable contains a
-PerMonitorV2/UTF-8/common-controls manifest. Icon/version resources and Windows
-release/profile/AOT packaging remain separate work.
+Use the executable built by Cargo above, or add its directory to PATH.
+`--local-engine-src` can override the engine/src directory. The Windows bundle is
+`runner-rs/target/<debug|release>/<name>.exe`, engine/plugin DLLs beside it, and
+`data/{icudtl.dat,flutter_assets}`. Release assets contain the AOT `app.so` instead
+of a debug kernel. The executable contains a PerMonitorV2/UTF-8/common-controls
+manifest. Icon/version resources remain separate work.
+
+Once the Windows BETA archives have been published, omitting `--flutter-root`
+uses the managed Windows x64 SDK. Its Flutter tools are cached under
+`%LOCALAPPDATA%/rlutter/flutter-BETA` (or `$XDG_CACHE_HOME/rlutter/flutter-BETA`).
+Each project downloads `flutter-rust-windows-x64.tar.gz` for its physical shell
+sources and matching debug/release engines. Profile remains a local-engine
+workflow; the Windows distribution currently ships debug and release.
+`package_windows_sdk.py` stages complete compiler tools and both patched Rust
+source dependencies. Flutter packaging requires `--version-tag`, fetches its
+history and validates the SDK's numeric version before archiving. GitHub Actions
+builds generated apps using the extracted archives before publishing them alongside `rlutter.exe` and checksums.
 
 Runner version 10 updates the desktop dependency table, MSVC link arguments and
 the required vendored wgpu-hal patch. Migrating an existing runner with a lockfile
@@ -202,5 +213,12 @@ the earlier HTTP-only probe was a false negative, not an engine debugger defect.
 Viewport stabilization is shared with Linux. Windows `resize_client` accounts
 for native frame borders; the existing `resize` action retains outer-window
 semantics. The new debugger probe and client-sizing check are Windows-validated.
-Linux debugger/DAP conformance, Windows symlink-denied fallback, Android runtime,
+Linux debugger/DAP conformance, Android runtime,
 native IME composition and display-scale transitions remain separate coverage.
+
+`task test-rlutter-aot` builds a release engine and a disposable generated app,
+requires `app.so` with no debug kernel, relocates its executable/DLL/data bundle,
+checks a native click changes the rendered frame, and requires clean native
+close under Vulkan validation. Logs, captures and `result.json` remain in the
+reported `flutter-rust-release-*` evidence directory. The underlying script also
+accepts `--mode=profile` when a matching local profile engine is available.

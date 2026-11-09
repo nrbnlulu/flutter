@@ -21,20 +21,27 @@ impl Flutter {
         if let Some(root) = explicit {
             return Self::at(root);
         }
-        if cfg!(windows) {
-            bail!("the managed Windows SDK is not published yet; pass --flutter-root");
-        }
         let cache = env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
+            .or_else(|| {
+                if cfg!(windows) {
+                    env::var_os("LOCALAPPDATA").map(PathBuf::from)
+                } else {
+                    None
+                }
+            })
             .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-            .context("set HOME or XDG_CACHE_HOME for the rlutter SDK cache")?;
+            .context("set LOCALAPPDATA, HOME or XDG_CACHE_HOME for the rlutter SDK cache")?;
         Self::managed(&cache.join("rlutter"))
     }
 
     fn managed(cache: &Path) -> Result<Self> {
-        if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        if !cfg!(all(
+            any(target_os = "linux", target_os = "windows"),
+            target_arch = "x86_64"
+        )) {
             bail!(
-                "the release Flutter SDK is only available for Linux x86_64; pass --flutter-root"
+                "the release Flutter SDK is only available for Linux and Windows x86_64; pass --flutter-root"
             );
         }
         let root = cache.join("flutter-BETA");
@@ -56,12 +63,19 @@ impl Flutter {
         eprintln!("Downloading the rlutter Flutter SDK from the BETA release...");
         let result = (|| {
             crate::sdk::download_and_unpack(
-                "https://github.com/nrbnlulu/flutter/releases/download/BETA/rlutter-flutter-linux-x64.tar.gz",
+                &format!(
+                    "https://github.com/nrbnlulu/flutter/releases/download/BETA/rlutter-flutter-{}.tar.gz",
+                    crate::sdk::host_platform()
+                ),
                 &staging,
             )?;
             Self::at(&staging)?;
             for entry in [
-                "bin/cache/dart-sdk/bin/dart",
+                if cfg!(windows) {
+                    "bin/cache/dart-sdk/bin/dart.exe"
+                } else {
+                    "bin/cache/dart-sdk/bin/dart"
+                },
                 "bin/cache/flutter_tools.snapshot",
                 ".git/HEAD",
             ] {
@@ -152,7 +166,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn completed_managed_sdk_is_reused_without_discovery_or_network() {
         let cache = tempdir("flutter_managed");
         let root = cache.join("flutter-BETA");

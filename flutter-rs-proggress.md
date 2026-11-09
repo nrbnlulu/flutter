@@ -2345,3 +2345,34 @@ plan's ELF note and an initial probe assertion were corrected; the initial
 format-rejected run was not counted as a runtime pass. The native engine already
 loads this library correctly, so no AOT engine change was needed. Profile is not
 covered by this release run. SDK distribution and input follow as separate phases.
+
+
+## Windows SDK distribution checkpoint (2026-11-09)
+
+Windows x64 managed SDK discovery now uses LOCALAPPDATA (or XDG_CACHE_HOME),
+Windows BETA archive names and dart.exe validation. The physical Rust SDK ships
+debug/release engines with their import libraries, ICU, compiler tools, matching
+Dart SDKs, patched SDKs and sky_engine. Both patched Rust source dependencies
+(winit-wayland and wgpu-hal) are packaged; the Linux archive also now includes
+its required wgpu-hal patch. Profile remains a local-engine workflow on Windows.
+
+The standalone Flutter packager imports the resolved numeric Flutter tag with
+its history, checks the common ancestor, warms the Windows wrapper and rejects
+unknown version metadata before archiving. A fresh-create test caught the first
+local clone's missing numeric tag (0.0.0-unknown); the corrected archive reports
+3.50.0-1.0.pre-666 and passes creation/dependency resolution without overrides.
+
+Local validation extracts both exact archives into an isolated managed cache
+and a new project, with the packaging-stage directory hidden. No checkout engine
+or external source links are used. Both debug (kernel) and release (PE app.so,
+no kernel) generated-app builds pass. Evidence: engine/src/out/windows-distribution-
+result.json and windows-distribution-builds.log; project:
+%TEMP%/rlutter-windows-distribution-rv0v88gs. All 111 rlutter tests and Clippy pass,
+including managed-cache reuse, required import libraries and forced symlink-
+privilege failure with real copy/refresh/stale-file cleanup.
+
+The BETA workflow now has parallel Windows debug/release engine jobs and a
+Windows packaging job that tests extracted SDKs before publishing Windows SDK
+archives, rlutter.exe and checksums. actionlint and the PowerShell blocks pass
+local syntax checks. Cloud execution and actual BETA download/publication are
+pending the branch merge; local archive validation is distinct from publication.
