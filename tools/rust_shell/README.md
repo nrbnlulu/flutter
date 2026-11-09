@@ -222,3 +222,10 @@ checks a native click changes the rendered frame, and requires clean native
 close under Vulkan validation. Logs, captures and `result.json` remain in the
 reported `flutter-rust-release-*` evidence directory. The underlying script also
 accepts `--mode=profile` when a matching local profile engine is available.
+
+Text-input validation records native monitor work areas and moves the fixture
+between available displays, checking Flutter dimensions and scale against Win32.
+A different-scale transition is reported as passed only when the observed monitor
+scales differ. An RDP session with one monitor leaves that coverage open. Installed
+IMM32 layout discovery and Unicode clipboard checks do not establish real IME
+composition.

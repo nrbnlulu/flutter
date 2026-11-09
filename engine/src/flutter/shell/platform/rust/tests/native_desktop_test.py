@@ -104,6 +104,11 @@ class WindowsTest(unittest.TestCase):
     except ImportError:
       self.skipTest('Python Tk is unavailable')
     api = desktop()
+    areas = api.monitor_work_areas()
+    self.assertTrue(areas)
+    for left, top, right, bottom in areas:
+      self.assertGreater(right, left)
+      self.assertGreater(bottom, top)
     source = 'import tkinter as t; root=t.Tk(); root.title("Rust desktop adapter test"); root.geometry("320x240"); root.mainloop()'
     process = subprocess.Popen([sys.executable, '-c', source])
     try:

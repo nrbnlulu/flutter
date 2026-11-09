@@ -2376,3 +2376,30 @@ Windows packaging job that tests extracted SDKs before publishing Windows SDK
 archives, rlutter.exe and checksums. actionlint and the PowerShell blocks pass
 local syntax checks. Cloud execution and actual BETA download/publication are
 pending the branch merge; local archive validation is distinct from publication.
+
+
+## Windows packaged release input checkpoint (2026-11-09)
+
+The native text-input suite passes against both the current debug smoke runner
+and an AOT release app compiled by the extracted Windows SDK, with the packaging
+stage still hidden. It verifies real keyboard typing, copy/paste, the emoji/RTL
+Unicode clipboard sample, UTF-16 selection, minimize/restore lifecycle, resize,
+Flutter/native physical dimensions and current monitor scale, clipboard text
+restoration and status-zero shutdown under Vulkan validation. Evidence:
+%TEMP%/flutter-rust-input-mp6jhfg0 (debug) and
+%TEMP%/flutter-rust-input-at9z3ktr (packaged release).
+
+The adapter now enumerates native monitor work areas. When multiple displays
+are available, the input probe moves between them and compares Flutter/native
+metrics; it reports a scale transition as passed only if different native scales
+were actually observed. This RDP host exposes one 1024x720 work area at scale 1,
+so real mixed-DPI transitions remain unverified. IMM32 layout enumeration is not
+proof of composition; real IME composition remains unverified too.
+
+The fixture places its 800x600 viewport within a small Windows desktop. Initial
+capture/focus failures were traced by native hit-testing to Start/Search system
+menus; only those verified menus were dismissed before retrying. Occlusion and
+foreground checks remain strict, and blocked runs were not counted as passes.
+All eight native adapter tests pass without skips, including real monitor
+geometry enumeration and exact client resizing. Python compilation/formatting
+and whitespace checks pass. No native input implementation change was needed.
