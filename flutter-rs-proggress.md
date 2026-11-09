@@ -2414,3 +2414,11 @@ packages under the same Rust test tree remain audited. The actual engine tree
 has no unlisted packages, the regression passes, and the full offline-pub hook
 exits zero locally. Windows CI runs the regression after sync. Artifact publication
 still depends on the restarted cloud builds; no failed run is counted as a pass.
+
+
+The next Windows bootstrap run passed the package audit and exposed the hook
+installer's legacy git.bat assumption. It now resolves installed Git from PATH
+and honors its explicit argv. A Windows regression installs and uninstalls the
+hooks in a real temporary repository whose PATH contains only native git.exe.
+The regression passes; hooks remain enabled in CI. Both bootstrap regression
+checks run after sync before the engine build.

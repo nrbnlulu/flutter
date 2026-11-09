@@ -9,6 +9,7 @@ Sets up githooks.
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 
@@ -16,11 +17,6 @@ SRC_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 FLUTTER_DIR = os.path.join(SRC_ROOT, 'flutter')
-
-
-def IsWindows():
-  os_id = sys.platform
-  return os_id.startswith('win32') or os_id.startswith('cygwin')
 
 
 def is_worktree(git: str, cwd: str) -> bool:
@@ -47,11 +43,11 @@ def Main(argv):
 
   parser.add_argument('--unset', action=argparse.BooleanOptionalAction, default=False)
 
-  args = parser.parse_args()
+  args = parser.parse_args(argv[1:])
 
-  git = 'git'
-  if IsWindows():
-    git = 'git.bat'
+  git = shutil.which('git')
+  if git is None:
+    parser.error('Git was not found on PATH')
 
   in_worktree = is_worktree(git, FLUTTER_DIR)
   if in_worktree:
