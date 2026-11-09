@@ -519,6 +519,11 @@ mod vulkan {
             &self.device
         }
 
+        /// Adapter fingerprint for renderer feasibility evidence.
+        pub fn adapter_info(&self) -> wgpu::AdapterInfo {
+            self.adapter.get_info()
+        }
+
         /// The lock-guarded shared queue.
         pub fn shared_queue(&self) -> &flutter_gpu_queue::SharedQueue {
             &self.queue
@@ -1929,6 +1934,7 @@ mod vulkan {
 
         pub fn presentation_callbacks(&self) -> FlutterRustVulkanPresentationCallbacks {
             FlutterRustVulkanPresentationCallbacks {
+                presentation_mode: 0,
                 user_data: (self as *const Self).cast_mut().cast::<c_void>(),
                 acquire_image: Some(acquire_image_callback),
                 present_image: Some(present_image_callback),
@@ -2201,3 +2207,8 @@ mod vulkan {
 pub use vulkan::GpuBroker;
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "android"))]
 pub use vulkan::{GpuContext, VulkanContextData, WgpuTextureRing};
+
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "android"))]
+mod offscreen;
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "android"))]
+pub use offscreen::{OffscreenBroker, OffscreenFrame, OffscreenReadback};

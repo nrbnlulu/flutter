@@ -1,0 +1,10 @@
+name: flutter_rust_headless_fixture
+description: Display-free private engine rendering fixture.
+publish_to: none
+environment:
+  sdk: ^3.11.0
+dependencies:
+  flutter:
+    sdk: flutter
+flutter:
+  uses-material-design: true

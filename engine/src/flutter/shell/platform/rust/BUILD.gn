@@ -88,6 +88,7 @@ action("flutter_shell_winit_rust") {
     "crates/flutter-shell-winit/src/shell.rs",
     "crates/flutter-shell-wgpu/Cargo.toml",
     "crates/flutter-shell-wgpu/src/lib.rs",
+    "crates/flutter-shell-wgpu/src/offscreen.rs",
   ]
 
   outputs = [ _flutter_shell_winit_output ]
@@ -115,6 +116,7 @@ action("flutter_shell_wgpu_rust") {
     "rust-toolchain.toml",
     "crates/flutter-shell-wgpu/Cargo.toml",
     "crates/flutter-shell-wgpu/src/lib.rs",
+    "crates/flutter-shell-wgpu/src/offscreen.rs",
   ]
 
   outputs = [ _flutter_shell_wgpu_output ]

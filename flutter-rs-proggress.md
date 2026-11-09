@@ -8,8 +8,34 @@ Headless agent verification is now specified in
 [`flutter-rs-agent-plan.md`](flutter-rs-agent-plan.md), following a source review
 on 2026-11-09. It covers fully offscreen rendering, virtual multi-window behavior,
 semantics and optional widget assertions, input, screenshots, video and CI
-evidence. All implementation phases remain pending; the existing headless GPU
-device constructor is not a headless application host.
+evidence. Phase 0 rendering feasibility is complete on Linux x64; the virtual
+host and agent runtime are not available yet.
+
+### Headless Phase 0 (2026-11-09)
+
+Implemented the offscreen presentation seam (private ABI 15), owned targets,
+padded readback and a minimal display-free engine probe. Native presentation
+retains mode 0; mode 1 restores COLOR_ATTACHMENT_OPTIMAL for wgpu tracking.
+Current runners check the engine-compiled ABI before passing shell callbacks.
+The probe serializes capture on raster and publishes a bounded set of completed
+frames; production asynchronous capture is later work.
+
+Twelve real Flutter frames passed on both RTX 5060 and llvmpipe under Vulkan
+validation with no display variables or X11/Wayland socket connections. Pixel
+assertions cover channels, orientation, alpha, external wgpu texture content,
+animation, odd widths, reuse, resize and fractional DPR. Retained artifacts
+include raw pixels, normalized PNGs, reports, logs and syscall traces. The
+[feasibility audit](engine/src/flutter/shell/platform/rust/docs/offscreen-feasibility.md)
+records the exact validated sequence and reproduction commands.
+
+Validation: 17 C++ tests, 1 core test, 6 wgpu tests and 52 winit tests passed;
+5 existing manual GPU unit tests stayed ignored. The rebuilt native animated
+texture fixture passed with 17 presentations. Evidence is in the Rust
+workspace's `target/offscreen-probe/flutter-{hardware,software}-final/`.
+
+Next: shared display-free scheduling, virtual views, plugin services and CLI
+launch (Phase 1). Agent transport, semantics, input, assertions, screenshot
+observation boundaries, recordings and distribution remain pending.
 
 ## Current focus
 

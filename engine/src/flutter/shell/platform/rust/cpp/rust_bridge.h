@@ -19,7 +19,7 @@ extern "C" {
 
 // This private ABI is lockstep-versioned with the Flutter fork. It is not the
 // Flutter Embedder API and is never exposed to application plugins.
-#define FLUTTER_RUST_SHELL_ABI_VERSION 14u
+#define FLUTTER_RUST_SHELL_ABI_VERSION 15u
 #define FLUTTER_RUST_PLUGIN_SDK_API_VERSION 1u
 
 typedef struct FlutterRustShellAbi {
@@ -251,7 +251,13 @@ typedef int (*FlutterRustPresentVulkanImageCallback)(
     void* user_data,
     FlutterRustVulkanImage image);
 
+// Native images return in PRESENT_SRC_KHR; offscreen images return in
+// COLOR_ATTACHMENT_OPTIMAL, matching the wgpu COLOR_TARGET state.
+#define FLUTTER_RUST_PRESENTATION_NATIVE 0u
+#define FLUTTER_RUST_PRESENTATION_OFFSCREEN 1u
+
 typedef struct FlutterRustVulkanPresentationCallbacks {
+  uint32_t presentation_mode;
   void* user_data;
   FlutterRustAcquireVulkanImageCallback acquire_image;
   FlutterRustPresentVulkanImageCallback present_image;
@@ -297,6 +303,9 @@ typedef struct FlutterRustExternalTextureCallbacks {
 } FlutterRustExternalTextureCallbacks;
 
 FlutterRustShellAbi FlutterRustShellGetAbi(void);
+
+// Compiled engine version, queried before passing versioned callback tables.
+FLUTTER_RUST_SHELL_EXPORT uint32_t FlutterRustShellGetEngineAbiVersion(void);
 
 // Creates and destroys the C++ half of a Rust-owned task runner. The returned
 // handle is opaque to Rust; only the callback table's owner may destroy it.

@@ -768,6 +768,10 @@ flutter::Settings ToSettings(const FlutterRustShellSettings& settings) {
 
 }  // namespace
 
+extern "C" uint32_t FlutterRustShellGetEngineAbiVersion(void) {
+  return FLUTTER_RUST_SHELL_ABI_VERSION;
+}
+
 extern "C" void* FlutterRustShellCreateShell(
     void* task_runner,
     FlutterRustVulkanContextData context_data,

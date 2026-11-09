@@ -788,6 +788,7 @@ fn create_cpp_shell(
     settings: FlutterRustShellSettings,
 ) -> *mut c_void {
     unsafe extern "C" {
+        fn FlutterRustShellGetEngineAbiVersion() -> u32;
         fn FlutterRustShellCreateShell(
             task_runner: *mut c_void,
             context_data: FlutterRustVulkanContextData,
@@ -799,6 +800,10 @@ fn create_cpp_shell(
         ) -> *mut c_void;
     }
     // SAFETY: the struct layouts are ABI-compatible with rust_bridge.h.
+    if unsafe { FlutterRustShellGetEngineAbiVersion() } != flutter_shell_core::SHELL_ABI_VERSION {
+        eprintln!("Flutter Rust shell: engine/runner ABI mismatch");
+        return std::ptr::null_mut();
+    }
     unsafe {
         FlutterRustShellCreateShell(
             task_runner,

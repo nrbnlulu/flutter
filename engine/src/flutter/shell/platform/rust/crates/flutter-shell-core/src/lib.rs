@@ -11,7 +11,7 @@
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 14;
+pub const SHELL_ABI_VERSION: u32 = 15;
 /// Plugin SDK API version expected by this lockstep private runtime.
 pub const PLUGIN_SDK_API_VERSION: u32 = 1;
 
@@ -242,6 +242,8 @@ pub struct FlutterRustVulkanImage {
 /// ABI-compatible with `FlutterRustVulkanPresentationCallbacks`.
 #[repr(C)]
 pub struct FlutterRustVulkanPresentationCallbacks {
+    /// 0: native PRESENT_SRC_KHR, 1: owned offscreen COLOR_ATTACHMENT_OPTIMAL.
+    pub presentation_mode: u32,
     pub user_data: *mut c_void,
     pub acquire_image:
         Option<extern "C" fn(*mut c_void, u32, u32, *mut FlutterRustVulkanImage) -> i32>,
