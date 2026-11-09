@@ -5,8 +5,8 @@
 
 // This module is Vulkan/wgpu code with no Linux-specific dependencies; it
 // currently builds for every platform that has a working `ash`/`wgpu`
-// Vulkan target dependency block in Cargo.toml (Linux and Android so far).
-#[cfg(any(target_os = "linux", target_os = "android"))]
+// Vulkan target dependency block in Cargo.toml (Linux, Windows, and Android).
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "android"))]
 mod vulkan {
     use ash::vk::Handle as _;
     use flutter_plugin_sdk::{
@@ -17,26 +17,26 @@ mod vulkan {
     use flutter_shell_core::{
         FlutterRustExternalTextureCallbacks, FlutterRustExternalTextureFrame,
     };
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     use flutter_shell_core::{FlutterRustVulkanImage, FlutterRustVulkanPresentationCallbacks};
     use parking_lot::Mutex;
     use std::collections::VecDeque;
     use std::ffi::c_void;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     use std::fs::File;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     use std::io::Write;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
     use std::time::Duration;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     use std::time::Instant;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     const ACQUIRE_BACKOFF_BASE: Duration = Duration::from_millis(500);
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     const ACQUIRE_BACKOFF_MAX: Duration = Duration::from_secs(8);
     use tokio::sync::mpsc;
 
@@ -89,7 +89,7 @@ mod vulkan {
     /// Wgpu owns the instance, device, queue, and surface. The broker exposes
     /// Vulkan values only through [`Self::with_vulkan_context`], preventing a
     /// Rust reference from escaping the handoff into C++.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     pub struct GpuBroker {
         context: std::sync::Arc<GpuContext>,
         // Swappable as a pair so `recreate_surface` can replace both without
@@ -101,7 +101,7 @@ mod vulkan {
         presentation_stats: Option<Mutex<PresentationStats>>,
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     struct Presentable {
         surface: Option<wgpu::Surface<'static>>,
         // Retained both for the unsafe surface lifetime and so presentation
@@ -347,7 +347,7 @@ mod vulkan {
         state: AtomicU8,
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     struct PresentationStats {
         file: File,
         count: u64,
@@ -356,7 +356,7 @@ mod vulkan {
         submits_this_frame: u32,
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     impl PresentationStats {
         fn create(path: PathBuf) -> Result<Self, String> {
             let file = File::create(&path).map_err(|error| {
@@ -398,7 +398,7 @@ mod vulkan {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     struct SurfaceState {
         configuration: Option<wgpu::SurfaceConfiguration>,
         // Holds the acquired frame between `acquire_image` and `present_image`.
@@ -431,7 +431,7 @@ mod vulkan {
         acquire_skipped: u32,
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     struct PendingFrame {
         texture: wgpu::SurfaceTexture,
         sync: FrameSync,
@@ -439,7 +439,7 @@ mod vulkan {
         swapchain_us: u128,
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     struct RetiredFrame {
         submission: wgpu::SubmissionIndex,
         sync: FrameSync,
@@ -453,7 +453,7 @@ mod vulkan {
 
     /// A Vulkan swapchain image borrowed from the broker's current frame.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     pub struct AcquiredImage {
         pub image: u64,
         pub format: u32,
@@ -461,7 +461,7 @@ mod vulkan {
         pub render_semaphore: u64,
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn vulkan_format(format: wgpu::TextureFormat) -> Option<ash::vk::Format> {
         use wgpu::TextureFormat::*;
         Some(match format {
@@ -483,7 +483,7 @@ mod vulkan {
         ) -> Result<Option<wgpu::Surface<'static>>, String>;
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     impl SurfaceSource for &Arc<dyn winit::window::Window> {
         fn create_surface(
             self,
@@ -533,7 +533,7 @@ mod vulkan {
             );
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         fn new_for_window(
             window: &std::sync::Arc<dyn winit::window::Window>,
         ) -> Result<std::sync::Arc<Self>, String> {
@@ -562,7 +562,7 @@ mod vulkan {
                     compatible_surface: surface.as_ref(),
                     apply_limit_buckets: false,
                 }))
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| format!("No present-capable Vulkan adapter is available. Install a Vulkan-capable GPU driver; the Rust shell requires Vulkan: {error}"))?;
             let device_descriptor = wgpu::DeviceDescriptor {
                 label: Some("Flutter Rust Shell Vulkan device"),
                 required_features: wgpu::Features::empty(),
@@ -1307,7 +1307,7 @@ mod vulkan {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     impl GpuBroker {
         /// Creates an engine-owned external texture ring on this application's
         /// shared wgpu device.
@@ -1925,7 +1925,7 @@ mod vulkan {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     impl Drop for GpuBroker {
         fn drop(&mut self) {
             // Drop can run on winit. Only an unconfigured startup failure or
@@ -1941,7 +1941,7 @@ mod vulkan {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     extern "C" fn release_surface_callback(user_data: *mut c_void) {
         // SAFETY: the host retains the broker until raster release completes.
         let broker = unsafe { &*user_data.cast::<GpuBroker>() };
@@ -2138,7 +2138,7 @@ mod vulkan {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     extern "C" fn acquire_image_callback(
         user_data: *mut c_void,
         width: u32,
@@ -2169,7 +2169,7 @@ mod vulkan {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     extern "C" fn present_image_callback(
         user_data: *mut c_void,
         image: FlutterRustVulkanImage,
@@ -2185,7 +2185,7 @@ mod vulkan {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub use vulkan::GpuBroker;
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "android"))]
 pub use vulkan::{GpuContext, VulkanContextData, WgpuTextureRing};

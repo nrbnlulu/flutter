@@ -33,3 +33,6 @@ android-activity = { git = "https://github.com/nrbnlulu/android-activity", rev =
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(frb_expand)"] }
+
+[patch."https://github.com/gfx-rs/wgpu.git"]
+wgpu-hal = { path = "../../../third_party/wgpu-hal" }

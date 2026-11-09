@@ -1626,3 +1626,54 @@ These generated outputs are not checked in. W1 (Windows Rust Vulkan cfgs and
 dependencies) is next. The Windows host, Cargo smoke runner, first frame,
 resize/input/validation checks, and Linux/Android regression builds remain
 unverified.
+
+
+### Windows W1 Vulkan broker and Intel descriptor-pool fix (2026-11-08)
+
+Enabled Windows dependencies in the GPU broker, shared queue, and winit host
+manifests. Desktop surface and presentation cfgs now include Linux and Windows;
+shared Vulkan texture/queue code includes Android as before. Vulkan-only
+backend selection, surface-compatible adapter selection, FIFO presentation,
+and the existing queue mutex/semaphore ownership are preserved. Failure to
+find a compatible adapter now explains the Vulkan driver requirement.
+
+Pinned Rust 1.93.1 Windows checks pass for `flutter-shell-wgpu` and
+`flutter-gpu-queue`. Five GPU unit tests and the raw-queue-access integration
+test pass (four hardware/benchmark tests are ignored in the ordinary run).
+The three non-benchmark hardware tests were also run explicitly under
+`VK_LAYER_KHRONOS_validation`, `WGPU_VALIDATION=1`, and `WGPU_DEBUG=1`.
+
+Hardware validation exposed an access violation during device creation on
+Intel HD Graphics 530 (PCI 8086:1912, Windows driver 31.0.101.2111, Vulkan
+1.3.215). CDB located it inside `igvk64.dll` during `vkCreateDescriptorPool`
+for wgpu's internal empty bind-group layout. An independent Vulkan-only
+ctypes reproduction crashed with `poolSizeCount=0` and succeeded with one
+unused sampler descriptor. This occurs before shell upload/presentation.
+
+Vendored `third_party/wgpu-hal` from the exact workspace revision
+`014d9e84813a2946febfa4888694c0b70565b2f5`, retaining its licenses and
+normalizing Cargo workspace inheritance. The only source change adds one
+unused sampler descriptor to otherwise empty pools. Workspace and fixture
+Git-source patches retain all other wgpu crates at the same revision.
+See `third_party/wgpu-hal/README.flutter` for provenance and the local delta.
+With this fix, direct padded-row upload/readback, aligned/unaligned slot reuse,
+and slow-writer/shutdown tests pass on this GPU under driver validation.
+The slot-reuse test intentionally catches producer panics as part of its
+reservation-recovery coverage; those expected panic messages are not failures.
+
+Commands from `engine/src/flutter/shell/platform/rust`:
+
+```powershell
+cargo +1.93.1 check --locked --target x86_64-pc-windows-msvc -p flutter-shell-wgpu -p flutter-gpu-queue
+cargo +1.93.1 test --locked --target x86_64-pc-windows-msvc -p flutter-shell-wgpu -p flutter-gpu-queue
+$env:VK_INSTANCE_LAYERS = 'VK_LAYER_KHRONOS_validation'
+$env:WGPU_VALIDATION = '1'
+$env:WGPU_DEBUG = '1'
+cargo +1.93.1 test --locked --target x86_64-pc-windows-msvc -p flutter-shell-wgpu direct_pixel_upload_preserves_padded_rows_and_can_mix_with_staged_writes -- --ignored --nocapture
+cargo +1.93.1 test --locked --target x86_64-pc-windows-msvc -p flutter-shell-wgpu pixel_upload_reuses_aligned_and_unaligned_slots -- --ignored --nocapture
+cargo +1.93.1 test --locked --target x86_64-pc-windows-msvc -p flutter-shell-wgpu slow_pixel_writer_allows_other_slots_and_shutdown -- --ignored --nocapture
+```
+
+This validates device creation and texture transfers, not a Win32 swapchain or
+Flutter frame. Linux/Android builds and device regressions have not been run
+on this Windows host. The minimal Windows host is the next checkpoint.
