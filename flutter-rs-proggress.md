@@ -2422,3 +2422,11 @@ and honors its explicit argv. A Windows regression installs and uninstalls the
 hooks in a real temporary repository whose PATH contains only native git.exe.
 The regression passes; hooks remain enabled in CI. Both bootstrap regression
 checks run after sync before the engine build.
+
+
+The cloud sync itself then completed; the regression exposed the runner's 8.3
+TEMP alias. Hook setup now canonicalizes and case-normalizes Git/common paths
+and hook/repository paths, avoiding false linked-worktree detection and invalid
+relative hook paths. Real native-Git tests cover an available short-path alias
+and a linked worktree, including preservation of worktree-scoped configuration.
+Both tests pass locally; the CI step continues to run them before compilation.

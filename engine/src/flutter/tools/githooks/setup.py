@@ -24,16 +24,18 @@ def is_worktree(git: str, cwd: str) -> bool:
     git_dir = subprocess.check_output([git, 'rev-parse', '--git-dir'], cwd=cwd, text=True).strip()
     common_dir = subprocess.check_output([git, 'rev-parse', '--git-common-dir'], cwd=cwd,
                                          text=True).strip()
-    return os.path.abspath(os.path.join(cwd,
-                                        git_dir)) != os.path.abspath(os.path.join(cwd, common_dir))
+    git_dir = os.path.normcase(os.path.realpath(os.path.join(cwd, git_dir)))
+    common_dir = os.path.normcase(os.path.realpath(os.path.join(cwd, common_dir)))
+    return git_dir != common_dir
   except (subprocess.CalledProcessError, OSError):
     return False
 
 
 def get_repo_root(git: str, cwd: str) -> str:
   try:
-    return subprocess.check_output([git, 'rev-parse', '--show-toplevel'], cwd=cwd,
+    root = subprocess.check_output([git, 'rev-parse', '--show-toplevel'], cwd=cwd,
                                    text=True).strip()
+    return os.path.realpath(root)
   except (subprocess.CalledProcessError, OSError):
     return ''
 
@@ -82,7 +84,7 @@ def Main(argv):
     ]
     print('Uninstalling Git Hooks')
   else:
-    githooks = os.path.join(FLUTTER_DIR, 'tools', 'githooks')
+    githooks = os.path.realpath(os.path.join(FLUTTER_DIR, 'tools', 'githooks'))
     repo_root = get_repo_root(git, FLUTTER_DIR)
     hooks_path = os.path.relpath(githooks, repo_root) if repo_root else githooks
     hooks_path = hooks_path.replace(os.sep, '/')
