@@ -90,6 +90,11 @@ void RustVulkanPresentation::SetActiveViewId(int64_t view_id) {
   active_view_id_ = view_id;
 }
 
+void RustVulkanPresentation::SetUIFrameNumber(uint64_t frame_number) {
+  std::scoped_lock lock(views_mutex_);
+  active_ui_frame_number_ = frame_number;
+}
+
 void RustVulkanPresentation::ReleaseSurfaces() {
   std::vector<std::shared_ptr<ViewPresentation>> views;
   {
@@ -235,6 +240,7 @@ bool RustVulkanPresentation::PresentImage(VkImage image, VkFormat format) {
   }
 
   FlutterRustVulkanImage rust_image = {
+      .ui_frame_number = active_ui_frame_number_,
       .image = reinterpret_cast<uint64_t>(image),
       .format = static_cast<uint32_t>(format),
       .acquire_semaphore = reinterpret_cast<uintptr_t>(view->acquire_semaphore),

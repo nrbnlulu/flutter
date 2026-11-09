@@ -287,6 +287,7 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
 }
 
 void Engine::BeginFrame(fml::TimePoint frame_time, uint64_t frame_number) {
+  ui_frame_number_ = frame_number;
   runtime_controller_->BeginFrame(frame_time, frame_number);
 }
 
@@ -534,6 +535,7 @@ void Engine::Render(int64_t view_id,
     return;
   }
 
+  layer_tree->set_ui_frame_number(ui_frame_number_);
   animator_->Render(view_id, std::move(layer_tree), device_pixel_ratio);
 }
 

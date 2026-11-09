@@ -60,6 +60,12 @@ void GPUSurfaceVulkanImpeller::SetActiveViewId(int64_t view_id) {
   }
 }
 
+void GPUSurfaceVulkanImpeller::SetUIFrameNumber(uint64_t frame_number) {
+  if (delegate_) {
+    delegate_->SetUIFrameNumber(frame_number);
+  }
+}
+
 // |Surface|
 void GPUSurfaceVulkanImpeller::CollectView(int64_t view_id) {
   view_transients_.erase(view_id);

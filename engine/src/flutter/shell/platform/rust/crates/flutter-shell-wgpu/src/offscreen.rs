@@ -185,6 +185,7 @@ use std::{ffi::c_void, sync::mpsc::SyncSender};
 /// A completed probe frame. The raster-thread callback publishes owned bytes,
 /// never an in-flight image or a pointer into engine storage.
 pub struct OffscreenFrame {
+    pub ui_frame_number: u64,
     pub view_id: i64,
     pub width: u32,
     pub height: u32,
@@ -201,8 +202,11 @@ pub struct OffscreenBroker {
     state: Mutex<BrokerState>,
     frames: SyncSender<Result<OffscreenFrame, String>>,
     capture: std::sync::atomic::AtomicBool,
+    capture_after: std::sync::atomic::AtomicU64,
+    single_capture: std::sync::atomic::AtomicBool,
     view_id: std::sync::atomic::AtomicI64,
     dimensions: std::sync::atomic::AtomicU64,
+    generation: std::sync::atomic::AtomicU64,
     notification: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
@@ -250,10 +254,17 @@ impl OffscreenBroker {
             }),
             frames,
             capture: std::sync::atomic::AtomicBool::new(true),
+            capture_after: std::sync::atomic::AtomicU64::new(0),
+            single_capture: std::sync::atomic::AtomicBool::new(false),
             view_id: std::sync::atomic::AtomicI64::new(0),
             dimensions: std::sync::atomic::AtomicU64::new(0),
+            generation: std::sync::atomic::AtomicU64::new(0),
             notification: Mutex::new(None),
         })
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn dimensions(&self) -> Option<(u32, u32)> {
@@ -274,6 +285,16 @@ impl OffscreenBroker {
         if let Some(notify) = self.notification.lock().as_ref() {
             notify();
         }
+    }
+
+    /// Capture one frame built strictly after a merged-thread observation.
+    pub fn request_capture_after(&self, ui_frame_number: u64) {
+        self.capture_after
+            .store(ui_frame_number, std::sync::atomic::Ordering::Release);
+        self.single_capture
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.capture
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     /// Disable continuous readback for ordinary headless runs. The rendering
@@ -337,6 +358,8 @@ impl OffscreenBroker {
                 pending: false,
             });
             state.generation += 1;
+            self.generation
+                .store(state.generation, std::sync::atomic::Ordering::Release);
             self.dimensions.store(
                 (u64::from(width) << 32) | u64::from(height),
                 std::sync::atomic::Ordering::Release,
@@ -381,6 +404,7 @@ impl OffscreenBroker {
         };
         target.pending = true;
         Ok(FlutterRustVulkanImage {
+            ui_frame_number: 0,
             image,
             format: vk::Format::R8G8B8A8_UNORM.as_raw() as u32,
             acquire_semaphore: target.acquire.as_raw(),
@@ -393,6 +417,7 @@ impl OffscreenBroker {
 
     fn present(&self, image: FlutterRustVulkanImage) -> Result<Option<OffscreenFrame>, String> {
         let mut state = self.state.lock();
+        let frame_id = state.frame + 1;
         let target = state.target.as_mut().ok_or("offscreen target missing")?;
         if !target.pending || image.render_semaphore != target.render.as_raw() {
             return Err("offscreen presentation does not match acquisition".into());
@@ -408,15 +433,32 @@ impl OffscreenBroker {
                 std::iter::empty(),
             )
             .ok_or("offscreen render wait submission failed")?;
-        if !self.capture.load(std::sync::atomic::Ordering::Acquire) {
+        if !self.capture.load(std::sync::atomic::Ordering::Acquire)
+            || (self
+                .single_capture
+                .load(std::sync::atomic::Ordering::Acquire)
+                && image.ui_frame_number
+                    <= self
+                        .capture_after
+                        .load(std::sync::atomic::Ordering::Acquire))
+        {
             target.pending = false;
+            state.frame = frame_id;
             return Ok(None);
         }
         let rgba = target.readback.read_rgba(Duration::from_secs(10))?;
         target.pending = false;
+        if self
+            .single_capture
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            self.capture
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
         let (width, height) = (target.readback.width, target.readback.height);
-        state.frame += 1;
+        state.frame = frame_id;
         Ok(Some(OffscreenFrame {
+            ui_frame_number: image.ui_frame_number,
             view_id: self.view_id.load(std::sync::atomic::Ordering::Acquire),
             width,
             height,

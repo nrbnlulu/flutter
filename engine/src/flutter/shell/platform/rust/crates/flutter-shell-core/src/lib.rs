@@ -11,7 +11,7 @@
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 15;
+pub const SHELL_ABI_VERSION: u32 = 16;
 /// Plugin SDK API version expected by this lockstep private runtime.
 pub const PLUGIN_SDK_API_VERSION: u32 = 1;
 
@@ -227,6 +227,7 @@ pub struct FlutterRustVulkanContextData {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FlutterRustVulkanImage {
+    pub ui_frame_number: u64,
     pub image: u64,
     pub format: u32,
     /// Binary semaphore signalled by wgpu after swapchain acquisition.
@@ -237,6 +238,18 @@ pub struct FlutterRustVulkanImage {
     pub cpp_submits: u64,
     pub image_views: u64,
     pub transients: u64,
+}
+
+#[repr(C)]
+pub struct FlutterRustDiagnosticCallbacks {
+    pub user_data: *mut c_void,
+    pub report: Option<extern "C" fn(*mut c_void, i32, *const u8, u64, *const u8, u64)>,
+}
+
+#[repr(C)]
+pub struct FlutterRustSemanticsCallbacks {
+    pub user_data: *mut c_void,
+    pub update: Option<extern "C" fn(*mut c_void, i64, *const u8, u64)>,
 }
 
 /// ABI-compatible with `FlutterRustVulkanPresentationCallbacks`.

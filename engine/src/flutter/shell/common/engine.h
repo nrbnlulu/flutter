@@ -572,6 +572,7 @@ class Engine final : public RuntimeDelegate {
   ///                          debug information with frame timings and timeline
   ///                          events.
   void BeginFrame(fml::TimePoint frame_time, uint64_t frame_number);
+  uint64_t GetUIFrameNumber() const { return ui_frame_number_; }
 
   //----------------------------------------------------------------------------
   /// @brief      Notifies the engine that the UI task runner is not expected to
@@ -1048,6 +1049,7 @@ class Engine final : public RuntimeDelegate {
   void FlushMicrotaskQueue();
 
  private:
+  uint64_t ui_frame_number_ = 0;
   // |RuntimeDelegate|
   std::string DefaultRouteName() override;
 

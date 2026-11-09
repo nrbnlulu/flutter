@@ -1,0 +1,10 @@
+name: flutter_rust_agent_fixture
+description: Display-free multi-window observation and input fixture.
+publish_to: none
+environment:
+  sdk: ^3.11.0
+dependencies:
+  flutter:
+    sdk: flutter
+flutter:
+  uses-material-design: true

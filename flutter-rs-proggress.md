@@ -2329,3 +2329,18 @@ also pass. Formatting, analysis against current engine sources, Python compilati
 and whitespace checks pass. Windows-only automation is skipped on Linux; native
 IME composition, actual monitor-scale transitions and Windows popup behavior are
 not established by these runs.
+
+### Headless agent Phase 2 — observation and control
+
+Implemented protocol v1 over a private local socket with CLI stdio isolation,
+owned-process shutdown, bounded parsing/dispatch, diagnostics and event traces.
+ABI 16 adds per-view semantics enable/update/actions and UI build frame stamps.
+Incremental caches expose identifiers, actions, transformed bounds and revisioned
+handles; obscured values and editing traces are redacted. Virtual windows support
+real pointer/key input, Unicode editing, focus and correlated PNG capture.
+
+The real-engine fixture passes Unicode/RTL input, two windows, pointer activation,
+persisted values, fractional DPR captures, stale/ambiguous targets, cancellation
+and view removal while capture is pending. GPU-free protocol/cache/PNG checks
+and native shell tests remain separate. See
+[agent protocol](engine/src/flutter/shell/platform/rust/docs/agent-protocol.md).

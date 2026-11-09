@@ -37,6 +37,7 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    util::set_protocol_output(matches!(&cli.command, Command::Agent(_)));
     let ctx = Ctx {
         flutter: Flutter::discover(cli.flutter_root.as_deref())?,
         sources: EngineSources {
@@ -96,6 +97,7 @@ fn run() -> Result<()> {
             )
             .map(drop),
         },
+        Command::Agent(args) => commands::agent::run_stdio(&ctx, &args),
         Command::Run(args) => match commands::run::run_app(&ctx, &args)? {
             0 => Ok(()),
             code => std::process::exit(code),

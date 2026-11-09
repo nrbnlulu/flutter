@@ -34,6 +34,8 @@ pub enum Command {
     },
     /// Build, launch and (in debug mode) hot reload the app on a device.
     Run(RunArgs),
+    /// Build and supervise a display-free verification session over stdio.
+    Agent(AgentArgs),
     /// Generate a VS Code workspace with one-button Linux debugging.
     Vscode,
     /// List the devices the app can run on.
@@ -167,6 +169,27 @@ pub struct RunArgs {
     /// choose among its devices. Several candidates open a picker.
     #[arg(short = 'd', long)]
     pub device: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct AgentArgs {
+    #[command(flatten)]
+    pub mode: ModeArgs,
+    #[command(flatten)]
+    pub defines: DartDefineArgs,
+    #[arg(short = 't', long, default_value = "lib/main.dart")]
+    pub target: String,
+    #[arg(long, required = true)]
+    pub headless: bool,
+    #[arg(long, required = true)]
+    pub stdio: bool,
+    /// Fresh directory for build/app logs and captured artifacts.
+    #[arg(long, value_name = "DIR")]
+    pub artifacts: PathBuf,
+    #[arg(long,default_value="1280x800",value_parser=parse_headless_size)]
+    pub size: (u32, u32),
+    #[arg(long,default_value="1",value_parser=parse_pixel_ratio)]
+    pub pixel_ratio: f64,
 }
 
 fn parse_headless_size(value: &str) -> Result<(u32, u32), String> {

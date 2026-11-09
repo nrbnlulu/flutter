@@ -83,6 +83,12 @@ action("flutter_shell_winit_rust") {
     "crates/flutter-shell-winit/src/engine.rs",
     "crates/flutter-shell-winit/src/host_events.rs",
     "crates/flutter-shell-winit/src/headless.rs",
+    "crates/flutter-shell-winit/src/headless/agent.rs",
+    "crates/flutter-shell-agent/Cargo.toml",
+    "crates/flutter-shell-agent/src/lib.rs",
+    "crates/flutter-shell-agent/src/semantics.rs",
+    "crates/flutter-shell-agent/src/codec.rs",
+    "crates/flutter-shell-agent/src/artifact.rs",
     "crates/flutter-shell-winit/src/platform.rs",
     "crates/flutter-shell-winit/src/platform/android.rs",
     "crates/flutter-shell-winit/src/platform/linux.rs",
@@ -184,6 +190,7 @@ source_set("flutter_rust_shell") {
   sources = [
     "cpp/platform_view_rust.cc",
     "cpp/rust_shell.cc",
+    "cpp/rust_agent.cc",
     "cpp/rust_task_runner.cc",
     "cpp/rust_vulkan_surface.cc",
   ]
@@ -200,6 +207,7 @@ source_set("flutter_rust_shell") {
     "//flutter/impeller/renderer/backend/vulkan",
     "//flutter/lib/ui",
     "//flutter/runtime",
+    "//flutter/third_party/rapidjson",
     "//flutter/shell/platform/common:common_cpp_switches",
   ]
 

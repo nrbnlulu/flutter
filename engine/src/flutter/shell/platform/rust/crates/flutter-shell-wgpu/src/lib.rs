@@ -2172,6 +2172,7 @@ mod vulkan {
                 // the duration of this call.
                 unsafe {
                     *out_image = FlutterRustVulkanImage {
+                        ui_frame_number: 0,
                         image: image.image,
                         format: image.format,
                         acquire_semaphore: image.acquire_semaphore,

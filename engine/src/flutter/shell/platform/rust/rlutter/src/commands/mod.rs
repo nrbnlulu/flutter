@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod build;
 pub mod build_android;
 pub mod clean;

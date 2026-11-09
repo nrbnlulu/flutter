@@ -1024,3 +1024,8 @@ attach DevTools in profile mode. The optimized Rust runner retains debug
 information and is staged in `runner-rs/target/flutter-profile/`. Profile
 requires a matching local engine build or a BETA SDK containing profile
 artifacts. See `flutter-rs-proggress.md` for build setup and verification.
+
+The Linux headless host also supports a local agent protocol (`rlutter agent
+--headless --stdio --artifacts DIR`), revisioned semantics, physical input and
+UI-frame-correlated PNG captures. See the
+[protocol contract](engine/src/flutter/shell/platform/rust/docs/agent-protocol.md).

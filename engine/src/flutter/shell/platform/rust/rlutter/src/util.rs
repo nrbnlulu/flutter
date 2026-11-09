@@ -6,6 +6,42 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
+static PROTOCOL_OUTPUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static BUILD_LOG: std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<fs::File>>>> =
+    std::sync::Mutex::new(None);
+pub fn set_protocol_output(enabled: bool) {
+    PROTOCOL_OUTPUT.store(enabled, std::sync::atomic::Ordering::Release);
+}
+pub fn set_build_log(file: fs::File) {
+    *BUILD_LOG.lock().unwrap() = Some(std::sync::Arc::new(std::sync::Mutex::new(file)));
+}
+fn forward_build(
+    mut source: impl io::Read + Send + 'static,
+) -> std::thread::JoinHandle<io::Result<()>> {
+    use io::Write;
+    let log = BUILD_LOG.lock().unwrap().clone();
+    std::thread::spawn(move || {
+        let mut buffer = [0; 8192];
+        let mut failure = None;
+        loop {
+            let count = source.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            if let Some(log) = &log {
+                if let Err(error) = log.lock().unwrap().write_all(&buffer[..count]) {
+                    failure = Some(error);
+                }
+            }
+            let _ = io::stderr().lock().write_all(&buffer[..count]);
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    })
+}
+
 pub fn describe(command: &Command) -> String {
     let mut parts = vec![command.get_program().to_string_lossy().into_owned()];
     parts.extend(command.get_args().map(|a| a.to_string_lossy().into_owned()));
@@ -15,9 +51,28 @@ pub fn describe(command: &Command) -> String {
 /// Runs `command` with inherited stdio and fails if it exits unsuccessfully.
 pub fn run(command: &mut Command) -> Result<()> {
     eprintln!("$ {}", describe(command));
-    let status = command
-        .status()
-        .with_context(|| format!("failed to start `{}`", describe(command)))?;
+    let status = if PROTOCOL_OUTPUT.load(std::sync::atomic::Ordering::Acquire) {
+        use std::process::Stdio;
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("failed to start `{}`", describe(command)))?;
+        let stdout = forward_build(child.stdout.take().unwrap());
+        let stderr = forward_build(child.stderr.take().unwrap());
+        let status = child.wait()?;
+        stdout
+            .join()
+            .map_err(|_| anyhow::anyhow!("build log worker panicked"))??;
+        stderr
+            .join()
+            .map_err(|_| anyhow::anyhow!("build log worker panicked"))??;
+        status
+    } else {
+        command
+            .status()
+            .with_context(|| format!("failed to start `{}`", describe(command)))?
+    };
     if !status.success() {
         bail!("`{}` failed ({status})", describe(command));
     }

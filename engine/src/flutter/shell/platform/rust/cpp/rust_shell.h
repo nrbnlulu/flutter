@@ -19,6 +19,7 @@ namespace flutter {
 class Shell;
 struct ThreadHost;
 class RustVulkanPresentation;
+struct RustAgentDiagnostics;
 
 // Owns the private engine-side half of one Rust-hosted Flutter application.
 // It is created and destroyed on the winit thread. Rust owns the task runner,
@@ -84,6 +85,15 @@ class RustShell final {
 
   // Delivers one compositor-aligned pulse to the platform view's waiter.
   void OnVsync(uint64_t frame_interval_nanos);
+  void SetDiagnosticCallbacks(FlutterRustDiagnosticCallbacks callbacks);
+  void SetSemanticsCallbacks(FlutterRustSemanticsCallbacks callbacks);
+  void SetSemanticsEnabled(bool enabled);
+  bool PerformSemanticsAction(int64_t view_id,
+                              int32_t node_id,
+                              int32_t action,
+                              const uint8_t* args,
+                              uint64_t length);
+  uint64_t RequestObservationFrame();
 
   int64_t RegisterExternalTexture(
       FlutterRustExternalTextureCallbacks callbacks);
@@ -134,12 +144,14 @@ class RustShell final {
                        FlutterRustViewId parent_view_id);
 
  private:
-  RustShell(std::unique_ptr<ThreadHost> thread_host,
+  RustShell(std::shared_ptr<RustAgentDiagnostics> diagnostics,
+            std::unique_ptr<ThreadHost> thread_host,
             std::shared_ptr<RustVulkanPresentation> presentation,
             std::unique_ptr<Shell> shell,
             FlutterRustWindowingCallbacks windowing_callbacks,
             Settings settings);
 
+  std::shared_ptr<RustAgentDiagnostics> diagnostics_;
   std::unique_ptr<ThreadHost> thread_host_;
   std::shared_ptr<RustVulkanPresentation> presentation_;
   std::unique_ptr<Shell> shell_;

@@ -1,4 +1,6 @@
 //! Display-free adapter for the existing merged-thread runtime and plugin SDK.
+#[path = "headless/agent.rs"]
+mod agent;
 use super::*;
 use flutter_shell_wgpu::{OffscreenBroker, OffscreenFrame};
 use std::cell::Cell;
@@ -32,8 +34,27 @@ struct VirtualHost {
     capture: bool,
     shell: Cell<*mut c_void>,
     state_path: Option<PathBuf>,
+    agent: RefCell<Option<Arc<agent::Shared>>>,
+    input: RefCell<agent::InputState>,
 }
 impl VirtualHost {
+    fn apply_text_commands(&self, inbox: &TextInputInbox) {
+        for command in inbox.drain() {
+            let mut input = self.input.borrow_mut();
+            if matches!(&command, TextInputCommand::SetClient(..)) {
+                input.text_view = self
+                    .registry
+                    .borrow()
+                    .views
+                    .iter()
+                    .find(|(_, v)| v.state.focused != 0 && !v.removing)
+                    .map(|(id, _)| *id);
+            } else if matches!(&command, TextInputCommand::ClearClient) {
+                input.text_view = None;
+            }
+            input.text.apply(command);
+        }
+    }
     fn metrics(&self, width: f64, height: f64) -> WindowMetrics {
         let physical = |value: f64| (value * self.ratio).round().max(1.) as u32;
         let (width, height) = (physical(width), physical(height));
@@ -118,10 +139,13 @@ impl VirtualHost {
             "viewId":id.0,"parentViewId":v.parent.map(|id|id.0),"kind":format!("{:?}",v.kind).to_lowercase(),
             "title":v.title,"bounds":[v.bounds.0,v.bounds.1,v.bounds.2,v.bounds.3],"pixelRatio":self.ratio,
             "focused":v.state.focused!=0,"ready":v.ready,"removing":v.removing,
-            "visible":v.state.minimized==0,
+            "visible":v.state.minimized==0,"sizeGeneration":v._broker.generation(),
         })).collect::<Vec<_>>()})
     }
     fn notify(&self, id: FlutterRustViewId, event: FlutterRustWindowEvent) {
+        if let Some(agent) = self.agent.borrow().as_ref() {
+            agent.publish_windows(self.snapshot());
+        }
         if let Some(path) = &self.state_path {
             if let Err(error) = std::fs::write(path, serde_json::to_vec(&self.snapshot()).unwrap())
             {
@@ -197,6 +221,31 @@ impl VirtualHost {
             {
                 return;
             }
+            let mut id = id;
+            for _ in 0..registry.views.len() {
+                let mut chain = HashSet::new();
+                let mut ancestor = Some(id);
+                while let Some(current) = ancestor {
+                    chain.insert(current);
+                    ancestor = registry.views.get(&current).and_then(|v| v.parent);
+                }
+                let modal = registry
+                    .views
+                    .iter()
+                    .filter(|(other, v)| {
+                        !chain.contains(other)
+                            && v.parent.is_some_and(|p| chain.contains(&p))
+                            && v.kind == NativeWindowKind::Dialog
+                            && !v.removing
+                            && v.state.minimized == 0
+                    })
+                    .map(|(id, _)| *id)
+                    .max();
+                match modal {
+                    Some(modal) => id = modal,
+                    None => break,
+                }
+            }
             let mut changed = Vec::new();
             for (view_id, view) in &mut registry.views {
                 let focused = i32::from(*view_id == id);
@@ -208,6 +257,18 @@ impl VirtualHost {
             changed
         };
         for (view_id, focused) in changed {
+            if focused == 0 {
+                agent::release_for_view(self, view_id);
+                let popup = self
+                    .registry
+                    .borrow()
+                    .views
+                    .get(&view_id)
+                    .is_some_and(|v| v.kind == NativeWindowKind::Popup && !v.removing);
+                if popup {
+                    self.notify(view_id, FlutterRustWindowEvent::CloseRequested);
+                }
+            }
             send_cpp_view_focus_event(
                 self.shell.get(),
                 view_id,
@@ -350,6 +411,9 @@ impl WindowingCallbackHost for VirtualHost {
             let metrics = self.view_metrics(registry.views.get(&id).unwrap());
             (id, callbacks, metrics)
         };
+        if let Some(agent) = self.agent.borrow().as_ref() {
+            agent.publish_windows(self.snapshot());
+        }
         add_cpp_shell_view(
             self.shell.get(),
             id,
@@ -444,6 +508,7 @@ impl WindowingCallbackHost for VirtualHost {
                 .collect::<Vec<_>>()
         };
         for id in removals {
+            agent::release_for_view(self, id);
             remove_cpp_shell_view(self.shell.get(), id, self.events.clone());
         }
     }
@@ -735,6 +800,8 @@ fn run_inner(config: ShellConfig, registration: ApplicationRegistration) -> Resu
         capture: artifacts.is_some(),
         shell: Cell::new(std::ptr::null_mut()),
         state_path: std::env::var_os("FLUTTER_RUST_HEADLESS_STATE").map(PathBuf::from),
+        agent: RefCell::new(None),
+        input: RefCell::new(agent::InputState::new()),
     });
     if !host.valid_size(width, height) {
         return Err("invalid or unsupported headless dimensions".into());
@@ -799,6 +866,7 @@ fn run_inner(config: ShellConfig, registration: ApplicationRegistration) -> Resu
     unsafe {
         context.install_queue_lock(cpp_queue_lock_hooks(shell));
     }
+    let mut agent_session = None;
     let result = (|| {
         if run_cpp_shell(shell) == 0 {
             return Err("Flutter isolate failed to start".into());
@@ -826,6 +894,14 @@ fn run_inner(config: ShellConfig, registration: ApplicationRegistration) -> Resu
             FlutterRustViewId::IMPLICIT,
             FlutterRustViewFocusState::Focused,
         );
+        if let Some(path) = std::env::var_os("FLUTTER_RUST_AGENT_SOCKET") {
+            let artifacts = std::env::var_os("FLUTTER_RUST_AGENT_ARTIFACTS")
+                .map(PathBuf::from)
+                .ok_or("agent artifacts directory is required")?;
+            let session = agent::Session::start(&host, PathBuf::from(path), artifacts)?;
+            *host.agent.borrow_mut() = Some(session.shared.clone());
+            agent_session = Some(session);
+        }
         host.notify(
             FlutterRustViewId::IMPLICIT,
             FlutterRustWindowEvent::StateChanged,
@@ -840,6 +916,10 @@ fn run_inner(config: ShellConfig, registration: ApplicationRegistration) -> Resu
             artifacts.as_deref(),
         )
     })();
+    if let Some(session) = agent_session.as_mut() {
+        session.stop();
+    }
+    agent::release_inputs(&host);
     dispatcher.shutdown_for_shell();
     // Unregister while callback owners, queue hooks and the raster runner live.
     for registration in retained.lock().iter() {
@@ -876,11 +956,18 @@ fn event_loop(
     let interval = Duration::from_nanos(16_666_667);
     let mut next_pulse = None;
     let mut last_pulse = Instant::now() - interval;
-    let mut text = TextInputSession::default();
     loop {
+        if let Some(agent) = host.agent.borrow().as_ref() {
+            if let Some(error) = agent.failure() {
+                return Err(error.to_string());
+            }
+        }
         for event in events.drain() {
             match event {
-                HostEvent::TaskScheduled => host.refresh_dimensions(),
+                HostEvent::TaskScheduled => {
+                    host.refresh_dimensions();
+                    host.apply_text_commands(inbox);
+                }
                 HostEvent::VsyncRequested => {
                     if next_pulse.is_none() {
                         next_pulse = Some((last_pulse + interval).max(Instant::now()));
@@ -899,9 +986,7 @@ fn event_loop(
             }
         }
         tasks.dispatch_due_tasks();
-        for command in inbox.drain() {
-            text.apply(command);
-        }
+        host.apply_text_commands(inbox);
         for command in inbox.drain_cursor_commands() {
             if let Some(response) = command.response {
                 complete_cpp_platform_message(response, STANDARD_METHOD_SUCCESS);
@@ -926,6 +1011,10 @@ fn event_loop(
         }
         while let Ok(frame) = completed.try_recv() {
             let frame = frame?;
+            if let Some(agent) = host.agent.borrow().as_ref() {
+                agent.publish_frame(frame);
+                continue;
+            }
             if let Some(path) = artifacts {
                 std::fs::write(
                     path.join(format!(
@@ -936,6 +1025,9 @@ fn event_loop(
                 )
                 .map_err(|e| e.to_string())?;
             }
+        }
+        if let Some(agent) = host.agent.borrow().as_ref() {
+            agent.publish_windows(host.snapshot());
         }
         let deadline = match (tasks.next_deadline(), next_pulse) {
             (Some(a), Some(b)) => Some(a.min(b)),

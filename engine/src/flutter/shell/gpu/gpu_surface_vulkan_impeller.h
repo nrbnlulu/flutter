@@ -43,6 +43,7 @@ class GPUSurfaceVulkanImpeller final : public Surface {
 
   // |Surface|
   void SetActiveViewId(int64_t view_id) override;
+  void SetUIFrameNumber(uint64_t frame_number) override;
 
   // |Surface|
   void CollectView(int64_t view_id) override;
