@@ -190,8 +190,8 @@ source_set("flutter_rust_shell") {
 
   sources = [
     "cpp/platform_view_rust.cc",
-    "cpp/rust_shell.cc",
     "cpp/rust_agent.cc",
+    "cpp/rust_shell.cc",
     "cpp/rust_task_runner.cc",
     "cpp/rust_vulkan_surface.cc",
   ]
@@ -208,8 +208,8 @@ source_set("flutter_rust_shell") {
     "//flutter/impeller/renderer/backend/vulkan",
     "//flutter/lib/ui",
     "//flutter/runtime",
-    "//flutter/third_party/rapidjson",
     "//flutter/shell/platform/common:common_cpp_switches",
+    "//flutter/third_party/rapidjson",
   ]
 
   if (is_android) {
