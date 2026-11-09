@@ -8,6 +8,7 @@
 
 import sys
 import subprocess
+import shutil
 import os
 import argparse
 
@@ -22,9 +23,9 @@ def get_repository_version(repository):
   if not os.path.exists(repository):
     raise IOError('path does not exist')
 
-  git = 'git'
-  if is_windows():
-    git = 'git.bat'
+  git = shutil.which('git')
+  if git is None:
+    raise IOError('Git was not found on PATH')
   version = subprocess.check_output([
       git,
       '-C',

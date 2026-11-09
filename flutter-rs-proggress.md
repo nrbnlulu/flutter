@@ -2430,3 +2430,11 @@ and hook/repository paths, avoiding false linked-worktree detection and invalid
 relative hook paths. Real native-Git tests cover an available short-path alias
 and a linked worktree, including preservation of worktree-scoped configuration.
 Both tests pass locally; the CI step continues to run them before compilation.
+
+
+Windows CI subsequently passed sync and both bootstrap regressions, then GN
+found the same legacy git.bat assumption in revision discovery. GN and the build
+revision helper now resolve installed Git from PATH. A real temporary-repository
+regression covers both helpers, and full Windows GN generation succeeds with
+all git.bat-containing directories removed from PATH (1901 targets). The CI
+bootstrap step runs this regression too; native runtime code is unchanged.

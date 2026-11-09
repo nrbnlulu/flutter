@@ -320,6 +320,8 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python engine/src/flutter/tools/githooks/setup_test.py
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python engine/src/flutter/tools/git_version_test.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Build and package the matching engine
         shell: pwsh
