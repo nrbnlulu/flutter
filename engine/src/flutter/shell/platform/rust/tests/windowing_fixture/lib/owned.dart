@@ -80,9 +80,10 @@ class _WindowingFixtureState extends State<_WindowingFixture> with SingleTickerP
       final retiring = List<BaseWindowController>.of(windows);
       setState(windows.clear);
       await WidgetsBinding.instance.endOfFrame;
-      for (final BaseWindowController controller in retiring.reversed) {
-        controller.destroy();
-      }
+      // Destroy only the owners. The dialog and its reparented satellite must
+      // be removed by the host's descendant teardown path.
+      parent.destroy();
+      other.destroy();
       final int expected = (cycle + 1) * 4;
       final DateTime deadline = DateTime.now().add(const Duration(seconds: 5));
       while (destroyed != expected && DateTime.now().isBefore(deadline)) {

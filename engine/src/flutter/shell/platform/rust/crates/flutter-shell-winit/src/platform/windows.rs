@@ -258,6 +258,8 @@ mod tests {
         #[link(name = "user32")]
         unsafe extern "system" {
             fn GetWindow(hwnd: *mut c_void, command: u32) -> *mut c_void;
+            fn ShowWindow(hwnd: *mut c_void, command: i32) -> i32;
+            fn IsWindowVisible(hwnd: *mut c_void) -> i32;
         }
         struct Probe;
         impl ApplicationHandler for Probe {
@@ -288,6 +290,20 @@ mod tests {
                         unsafe { GetWindowLongPtrW(child_handle, -16) } & 0x40000000,
                         0
                     );
+                    let parent_handle = hwnd(parent.as_ref()).unwrap();
+                    unsafe {
+                        ShowWindow(parent_handle, 9);
+                        ShowWindow(child_handle, 4);
+                    }
+                    assert_ne!(unsafe { IsWindowVisible(child_handle) }, 0);
+                    unsafe {
+                        ShowWindow(parent_handle, 6);
+                    }
+                    assert_eq!(unsafe { IsWindowVisible(child_handle) }, 0);
+                    unsafe {
+                        ShowWindow(parent_handle, 9);
+                    }
+                    assert_ne!(unsafe { IsWindowVisible(child_handle) }, 0);
                     if kind == NativeWindowKind::Satellite {
                         assert_ne!(unsafe { GetWindowLongPtrW(child_handle, -20) } & 0x80, 0);
                         let position = child.outer_position().unwrap();

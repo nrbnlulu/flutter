@@ -1994,3 +1994,16 @@ The strengthened harness repeat passes with all 60 per-view presentation files
 nonempty and 238 primary presentations; evidence:
 `%TEMP%/flutter-rust-windowing-9r7ln04s`. The owned-window Dart fixture analyzes
 without issues. Python compilation/format checks pass.
+
+### Owned-window parent lifecycle coverage (2026-11-09)
+
+The owned-window fixture now destroys only the regular owners, leaving dialog
+and satellite descendant removal to the host. All 60 per-view presentation
+records and destruction callbacks pass with 262 primary presentations, clean
+exit and no Vulkan/framework diagnostics. Evidence:
+`%TEMP%/flutter-rust-windowing-m7ib3dp6`. The native Win32 test now shows each
+owned dialog/satellite and verifies owner minimize hides it and owner restore
+shows it again. The full ordinary suite passes (49 host tests, 17 C++ tests,
+core/queue/ordinary GPU checks and Python suites). This closes the previously
+unverified parent-cascade and native minimize/restore checks on this host;
+no production teardown change was required.
