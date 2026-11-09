@@ -316,6 +316,8 @@ jobs:
           Copy-Item engine.gclient .gclient
           gclient sync --no-history
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python engine/src/flutter/tools/pub_get_offline_test.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Build and package the matching engine
         shell: pwsh

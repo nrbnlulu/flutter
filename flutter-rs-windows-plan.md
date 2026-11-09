@@ -549,3 +549,14 @@ foreground checks remain strict, and blocked runs were not counted as passes.
 All eight native adapter tests pass without skips, including real monitor
 geometry enumeration and exact client resizing. Python compilation/formatting
 and whitespace checks pass. No native input implementation change was needed.
+
+
+### Windows CI bootstrap follow-up (2026-11-09)
+
+The first cloud Windows jobs stopped in gclient's offline-pub audit: the Flutter
+smoke app was missing from the exclusions already used for FRB/windowing app
+fixtures. Added its narrow exclusion and a regression test proving that unknown
+packages under the same Rust test tree remain audited. The actual engine tree
+has no unlisted packages, the regression passes, and the full offline-pub hook
+exits zero locally. Windows CI runs the regression after sync. Artifact publication
+still depends on the restarted cloud builds; no failed run is counted as a pass.
