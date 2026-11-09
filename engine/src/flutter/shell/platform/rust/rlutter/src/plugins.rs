@@ -255,7 +255,7 @@ fn read_rust_package(dart_package: &str, rust_dir: &Path, manifest: &Path) -> Re
         dart_package: dart_package.to_owned(),
         cargo_package: package.name.to_string(),
         registrar: registrar.to_owned(),
-        rust_dir: rust_dir.to_owned(),
+        rust_dir: rust_dir.canonicalize()?,
     }))
 }
 
@@ -348,12 +348,25 @@ pub fn replace_generated_dependencies(manifest: &str, dependencies: &[String]) -
     ))
 }
 
-pub fn dependency_line(plugin: &RustPlugin) -> String {
+// Cargo normalizes dependency paths before opening them, so using the staged
+// symlink breaks a plugin's relative path dependencies outside its own crate.
+// Both paths are canonical; keep the generated path relative to the runner.
+pub fn dependency_line(plugin: &RustPlugin, runner: &Path) -> String {
+    let common = runner
+        .components()
+        .zip(plugin.rust_dir.components())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut path = PathBuf::new();
+    for _ in runner.components().skip(common) {
+        path.push("..");
+    }
+    path.extend(plugin.rust_dir.components().skip(common));
     format!(
-        "{} = {{ package = \"{}\", path = \"../.dart_tool/flutter_rs/plugins/{}\" }}",
+        "{} = {{ package = {:?}, path = {:?} }}",
         plugin.dependency_alias(),
         plugin.cargo_package,
-        plugin.dart_package
+        path.to_string_lossy()
     )
 }
 
@@ -405,7 +418,7 @@ fn regenerate_runner_if_outdated(project: &Project) -> Result<()> {
 /// Brings the runner project in line with the app's current Rust plugins.
 /// Requires the SDK ([`crate::sdk`]) and `flutter pub get` to have run.
 pub fn refresh(project: &Project, mode: BuildMode) -> Result<Discovered> {
-    let runner = project.runner_dir();
+    let runner = project.runner_dir().canonicalize()?;
     let cargo_manifest = runner.join("Cargo.toml");
     if !cargo_manifest.is_file() {
         bail!("Rust-shell project is missing {}", cargo_manifest.display());
@@ -432,7 +445,11 @@ pub fn refresh(project: &Project, mode: BuildMode) -> Result<Discovered> {
     }
 
     let old = fs::read_to_string(&cargo_manifest)?;
-    let lines: Vec<String> = found.plugins.iter().map(dependency_line).collect();
+    let lines: Vec<String> = found
+        .plugins
+        .iter()
+        .map(|plugin| dependency_line(plugin, &runner))
+        .collect();
     write_if_changed(
         &cargo_manifest,
         &replace_generated_dependencies(&old, &lines)?,
@@ -597,9 +614,70 @@ mod tests {
         assert!(!text.contains("let _ = registrar"));
         assert!(registrant(&[]).contains("let _ = registrar;"));
         assert_eq!(
-            dependency_line(&plugin("a")),
-            "flutter_rs_plugin_a = { package = \"a-rs\", path = \"../.dart_tool/flutter_rs/plugins/a\" }"
+            dependency_line(&plugin("a"), Path::new("/app/runner-rs")),
+            "flutter_rs_plugin_a = { package = \"a-rs\", path = \"../../x\" }"
         );
+    }
+
+    #[test]
+    fn plugin_sibling_dependencies_resolve_from_the_real_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "rlutter-plugin-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let rust_dir = root.join("libs/player/rust");
+        let models = root.join("libs/models");
+        let runner = root.join("app/runner-rs");
+        let link = root.join("app/.dart_tool/flutter_rs/plugins/player");
+        for dir in [&rust_dir, &models, &runner] {
+            fs::create_dir_all(dir.join("src")).unwrap();
+            fs::write(dir.join("src/lib.rs"), "").unwrap();
+        }
+        fs::write(
+            models.join("Cargo.toml"),
+            "[package]\nname = 'models'\nversion = '0.1.0'\nedition = '2024'\n",
+        )
+        .unwrap();
+        fs::write(
+            rust_dir.join("Cargo.toml"),
+            "[package]\nname = 'player'\nversion = '0.1.0'\nedition = '2024'\n\
+             [package.metadata.flutter]\nplugin = true\nregistrar = 'register'\n\
+             [dependencies]\nmodels = { path = '../../models' }\n",
+        )
+        .unwrap();
+        replace_link(&link, &rust_dir).unwrap();
+        // Discover through a symlink too, as Pub packages can themselves be linked.
+        let RustPackage::Plugin(plugin) =
+            read_rust_package("player", &link, &link.join("Cargo.toml")).unwrap()
+        else {
+            panic!("expected plugin")
+        };
+        let line = dependency_line(&plugin, &runner.canonicalize().unwrap());
+        assert!(line.contains("../../libs/player/rust"), "{line}");
+        fs::write(
+            runner.join("Cargo.toml"),
+            format!(
+                "[package]\nname = 'app'\nversion = '0.1.0'\nedition = '2024'\n\
+             [workspace]\n[dependencies]\n{line}\n"
+            ),
+        )
+        .unwrap();
+        let metadata = MetadataCommand::new()
+            .manifest_path(runner.join("Cargo.toml"))
+            .other_options(vec!["--offline".to_owned()])
+            .exec()
+            .unwrap();
+        assert!(
+            metadata
+                .packages
+                .iter()
+                .any(|p| p.name.as_str() == "models")
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
