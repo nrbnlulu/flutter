@@ -1,8 +1,104 @@
 # Flutter Rust Shell: Windows Plan
 
 Plan for Phase 3 of [`flutter-rs.md`](flutter-rs.md). Progress is recorded in
-[`flutter-rs-proggress.md`](flutter-rs-proggress.md). Nothing in this document
-is implemented yet.
+[`flutter-rs-proggress.md`](flutter-rs-proggress.md). W0 is verified on Windows
+x64: the engine DLL builds and loads, and all 17 C++ shell tests pass. The Rust Windows host and first frame remain unverified.
+
+## First Windows build: execution plan (2026-11-08)
+
+Target: native Windows x64, `x86_64-pc-windows-msvc`, debug/JIT, one
+ordinary window. Keep the private engine bridge and the shared wgpu/Impeller
+Vulkan device. GN produces the engine DLL; Cargo produces the application.
+The first-build milestone ends with a visible, interactive Flutter frame and
+clean shutdown. Full Phase 3 parity follows separately.
+
+### Starting point
+
+- The progress log records installation of Windows SDK 10.0.22621.0,
+  Debugging Tools, and the DEPS-pinned Clang package, followed by successful
+  GN generation and the start of compilation.
+- `engine/src/out/host_debug/args.gn` exists and targets Windows x64 with
+  `flutter_runtime_mode = "debug"`. This is an optimized engine configuration
+  (`is_debug = false`), not a release/AOT runtime.
+- W0 completed on 2026-11-08: Ninja produced `flutter_rust_engine.dll`
+  (36,725,760 bytes) and `flutter_rust_engine.dll.lib` (41,230 bytes) in
+  `engine/src/out/host_debug`. Python ctypes loaded the DLL and resolved all
+  39 private ABI exports, including all 15 window functions. A null
+  `FlutterRustShellRunTask` call returned the expected zero result.
+- PE import inspection shows Windows system DLL dependencies, with no
+  separately staged MSVC runtime DLL required on this host. This load check
+  does not initialize Dart, Vulkan, or a native window.
+- All 17 `flutter_rust_shell_unittests.exe` tests pass. The test target needed
+  `//flutter/testing:testing_fixtures` to resolve `GetFixturesPath`; its Rust
+  core static library built and linked successfully without extra system libs.
+- Existing uncommitted GN/build-helper changes are preserved. The winit
+  platform selector still rejects Windows, and the GPU crates still gate
+  the required code to Linux/Android. **Resume at checkpoint 2 (W1).**
+
+### Ordered checkpoints
+
+1. **W0: engine DLL (verified 2026-11-08).** From the repository root in PowerShell:
+
+   ```powershell
+   $env:DEPOT_TOOLS_WIN_TOOLCHAIN = '0'
+   $env:GYP_MSVS_VERSION = '2022'
+   $env:GYP_MSVS_OVERRIDE_PATH = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools'
+   python engine/src/flutter/tools/gn --runtime-mode debug --no-goma --no-prebuilt-dart-sdk
+   ninja -C engine/src/out/host_debug flutter_rust_engine.dll
+   ```
+
+   Stop on a failed command and resolve the actual compiler/linker error.
+   Check the DLL and generated import library, inspect private C ABI exports
+   (including window functions), and verify DLL loading/dependencies. Record
+   the actual import-library path for Cargo. Windows JIT already links its
+   snapshot symbols statically; no snapshot callback refactor is needed.
+   This target builds the C++ engine boundary without requiring a working
+   Windows winit adapter.
+
+2. **Enable the Windows Rust GPU path (W1).** Add Windows dependencies in
+   `flutter-shell-wgpu`, `flutter-shell-winit`, and `flutter-gpu-queue` as
+   needed. Widen shared Vulkan and desktop-surface cfgs while retaining
+   Linux-only Wayland/X11 code. Use the pinned workspace dependencies and
+   toolchain. Select Vulkan explicitly, require a present-capable adapter,
+   and use FIFO presentation with the existing timer pacing. Exit: relevant
+   crates pass `cargo check --target x86_64-pc-windows-msvc`; unavailable
+   Vulkan produces a useful diagnostic.
+
+3. **Add the minimal Windows host (W2 subset).** Implement
+   `platform/windows.rs`, select it in `platform.rs`, and gate Linux-only
+   imports in the shared host. Support ordinary-window creation, metrics,
+   pointer input, Windows keyboard messages, focus and close. Use explicit
+   unsupported results for window kinds not yet implemented. Preserve the
+   merged platform/UI runner and existing GPU synchronization. Exit: the
+   host compiles and can create and destroy its native window.
+
+4. **Link a small Cargo smoke runner.** Adapt the existing
+   `tests/frb_fixture/rust/build.rs` linking pattern or add a dedicated small
+   fixture. Link the W0 import library and stage the DLL beside the executable;
+   stage `icudtl.dat` and debug Flutter assets from this matching checkout.
+   Keep this reproducible with checked-in fixture instructions. Investigate
+   `_window_rust.dart` symbol discovery if the fixture uses Rust window APIs;
+   only add allocation exports if Windows lookup actually requires them.
+   Full rlutter Windows support is not a prerequisite for this checkpoint.
+
+5. **Prove the first frame.** Launch a minimal counter/text-field app from
+   the staged bundle. Verify readable text, redraw after a click, keyboard
+   input, resize, minimize/restore, focus changes and clean close. Exercise
+   live resizing to detect Win32 modal-loop starvation. Run repeated
+   resize/close with Vulkan validation enabled and investigate synchronization
+   or lifetime errors. Record the GPU/driver, commands and results in the
+   progress log; distinguish compile success from runtime success.
+
+Run focused Python build-helper tests and relevant Rust tests for changed
+code. Build/run the C++ shell tests where supported, resolving any separate
+Rust static-library link requirements in that test target. Check affected
+Linux/Android configurations before calling shared-code changes regression
+validated; record unavailable host/device coverage explicitly.
+
+After the first frame: complete IME/clipboard/DPI validation, texture and FRB
+smokes, additional window kinds, DWM pacing, then rlutter Windows debug/run
+and hot reload. Release/AOT, managed SDK packaging and Windows CI follow those
+checks. Menus, drag-and-drop and accessibility remain Phase 3 parity work.
 
 ## Decisions (2026-10-26)
 
@@ -62,7 +158,7 @@ authoritative clock.
 
 | Layer | State | Windows work |
 | --- | --- | --- |
-| C++ bridge (`cpp/`) | Portable. `rust_bridge.h` already defines a `_WIN32` `dllexport` macro. Only the fontconfig warning is Linux-specific. | Snapshot mapping, exports |
+| C++ bridge (`cpp/`) | Windows x64 debug/JIT DLL builds and loads; 39 ABI exports resolve; 17 C++ tests pass. | Verify Dart/Vulkan initialization with the Cargo smoke runner |
 | `flutter-shell-core`, `flutter-plugin-sdk`, `flutter-gpu-queue` | No OS dependencies; `flutter-gpu-queue` is only gated to `linux \|\| android`. | Widen cfgs |
 | `flutter-shell-wgpu` | Every `target_os = "linux"` gate really means "desktop with a winit surface". The broker and semaphore chain are plain Vulkan/wgpu-hal. | Retarget cfgs |
 | `flutter-shell-winit` | Shared host behind `PlatformBackend`; `compile_error!` for other targets. | `platform/windows.rs`, protocol fixes |
@@ -103,13 +199,11 @@ authoritative clock.
   `flutter_rust_shell_runner`. Cargo owns the final link (runner-rs and the
   FRB fixture already work this way), avoiding Rust staticlib system-library
   and CRT mismatches under clang-cl/lld-link.
-- JIT snapshot lookup: `DartSnapshot` falls back to
-  `NativeLibrary::CreateForCurrentProcess()`, which on Windows is
-  `GetModuleHandle(nullptr)` (the `.exe`), not the engine DLL. Set
-  `settings.vm_snapshot_data`/`isolate_snapshot_*` mapping callbacks in
-  `rust_shell.cc` from the linked `//flutter/lib/snapshot` symbols. This works
-  on every platform and lets the snapshot symbols leave
-  `rust_engine_exports.lst` and `rust_runner_exports.sym`.
+- JIT snapshot lookup needs no Windows change: `DART_SNAPSHOT_STATIC_LINK`
+  in `runtime/dart_snapshot.cc` already selects linked snapshot symbols on
+  Windows and Android JIT builds. The original concern about process lookup
+  applied to the dynamic fallback, which Windows JIT does not use. Keep the
+  existing Linux export lists and the `//flutter/lib/snapshot` dependency.
 - `build_rust.py`: `x86_64-pc-windows-msvc` and `.lib`/`.dll` names.
 
 ### W1: wgpu broker
@@ -182,7 +276,7 @@ authoritative clock.
 ## Milestones
 
 1. **Seam refactor on Linux**: desktop cfg alias, `PlatformBackend` methods,
-   Rust positioner, snapshot mapping callbacks. Exit: all Linux tests and
+   Rust positioner. Exit: all Linux tests and
    fixtures pass with no behavior change.
 2. **Engine DLL on Windows**: GN builds `flutter_rust_engine.dll` with Impeller
    Vulkan; C++ unit tests pass on Windows.

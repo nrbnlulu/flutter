@@ -1331,6 +1331,11 @@ def main(argv):
       '--export-compile-commands',
   ]
 
+  if sys.platform.startswith('win'):
+    # .gn's hermetic bin/python3 path is a Unix package layout. Use the
+    # interpreter running this entry point for Windows scripts/actions.
+    command.append('--script-executable=%s' % sys.executable)
+
   if not args.web:
     if args.ide != '':
       command.append('--ide=%s' % args.ide)

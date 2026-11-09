@@ -6,9 +6,28 @@ import("//build/config/android/config.gni")
 import("//flutter/build/bin_to_obj.gni")
 import("//flutter/testing/testing.gni")
 
-_flutter_shell_core_output = "$target_gen_dir/rust/libflutter_shell_core.a"
-_flutter_shell_winit_output = "$target_gen_dir/rust/libflutter_shell_winit.a"
-_flutter_shell_wgpu_output = "$target_gen_dir/rust/libflutter_shell_wgpu.a"
+_rust_target_args = []
+if (is_win) {
+  assert(target_cpu == "x64" || target_cpu == "arm64" || target_cpu == "x86",
+         "Unsupported Windows Rust target CPU")
+  _rust_arch = "x86_64"
+  if (target_cpu == "arm64") {
+    _rust_arch = "aarch64"
+  } else if (target_cpu == "x86") {
+    _rust_arch = "i686"
+  }
+  _rust_target_args = [
+    "--target",
+    "${_rust_arch}-pc-windows-msvc",
+  ]
+  _flutter_shell_core_output = "$target_gen_dir/rust/flutter_shell_core.lib"
+  _flutter_shell_winit_output = "$target_gen_dir/rust/flutter_shell_winit.lib"
+  _flutter_shell_wgpu_output = "$target_gen_dir/rust/flutter_shell_wgpu.lib"
+} else {
+  _flutter_shell_core_output = "$target_gen_dir/rust/libflutter_shell_core.a"
+  _flutter_shell_winit_output = "$target_gen_dir/rust/libflutter_shell_winit.a"
+  _flutter_shell_wgpu_output = "$target_gen_dir/rust/libflutter_shell_wgpu.a"
+}
 
 # Cargo owns Rust dependency resolution. This action produces the static
 # runtime archive consumed by the private C++/Rust ABI test and, later, by the
@@ -39,6 +58,7 @@ action("flutter_shell_core_rust") {
     "--output",
     rebase_path(_flutter_shell_core_output, root_build_dir),
   ]
+  args += _rust_target_args
 }
 
 # This archive owns winit's event loop. It remains separate from the small
@@ -80,6 +100,7 @@ action("flutter_shell_winit_rust") {
     "--output",
     rebase_path(_flutter_shell_winit_output, root_build_dir),
   ]
+  args += _rust_target_args
 }
 
 # The broker owns wgpu and is intentionally isolated from the C++ engine ABI.
@@ -106,6 +127,7 @@ action("flutter_shell_wgpu_rust") {
     "--output",
     rebase_path(_flutter_shell_wgpu_output, root_build_dir),
   ]
+  args += _rust_target_args
 }
 
 # Unlike the Java Android embedding, this shared library has no Activity/
@@ -204,6 +226,8 @@ shared_library("flutter_rust_engine") {
     "//flutter/runtime:libdart",
   ]
 
+  # Windows exports the private C ABI through FLUTTER_RUST_SHELL_EXPORT and
+  # resolves JIT snapshots by static linking in runtime/dart_snapshot.cc.
   # Export only the private C ABI plus the two debug snapshot symbols the Dart
   # VM discovers from this loaded library. The Rust executable itself remains
   # unaware of Dart, Impeller, and Skia.
@@ -218,43 +242,48 @@ shared_library("flutter_rust_engine") {
 # The standalone native runner. Rust owns the winit main loop and native
 # window; this executable is only the process entry point and the private
 # ABI callback implementations linked in through :flutter_rust_shell.
-executable("flutter_rust_shell_runner") {
-  sources = [
-    "cpp/main.cc",
-    "cpp/rust_runner.h",
-  ]
+# On Windows Cargo owns the executable link and its Rust/CRT dependencies.
+if (!is_win) {
+  executable("flutter_rust_shell_runner") {
+    sources = [
+      "cpp/main.cc",
+      "cpp/rust_runner.h",
+    ]
 
-  # The Dart VM resolves its JIT snapshot symbols by looking inside the
-  # currently loaded process; this makes them visible despite the default
-  # hidden-visibility build config. See shell_host_executable in
-  # //flutter/shell/common/BUILD.gn for the same requirement.
-  inputs = []
-  ldflags = []
-  if (is_linux) {
-    inputs += [ "cpp/rust_runner_exports.sym" ]
-    ldflags +=
-        [ "-Wl,--dynamic-list=" + rebase_path(inputs[0], root_build_dir) ]
-  } else {
-    public_configs = [ "//flutter:export_dynamic_symbols" ]
+    # The Dart VM resolves its JIT snapshot symbols by looking inside the
+    # currently loaded process; this makes them visible despite the default
+    # hidden-visibility build config. See shell_host_executable in
+    # //flutter/shell/common/BUILD.gn for the same requirement.
+    inputs = []
+    ldflags = []
+    if (is_linux) {
+      inputs += [ "cpp/rust_runner_exports.sym" ]
+      ldflags +=
+          [ "-Wl,--dynamic-list=" + rebase_path(inputs[0], root_build_dir) ]
+    } else {
+      public_configs = [ "//flutter:export_dynamic_symbols" ]
+    }
+
+    deps = [
+      ":flutter_rust_shell",
+      ":flutter_shell_winit_rust",
+      "//flutter/lib/snapshot",
+      "//flutter/runtime:libdart",
+    ]
+
+    # The Rust archive is passed directly to the linker, so declare it as an
+    # input as well as depending on its producing action. Otherwise changes to
+    # Rust-only event handling do not cause the native runner to relink.
+    inputs += [ _flutter_shell_winit_output ]
+    ldflags += [ rebase_path(_flutter_shell_winit_output, root_build_dir) ]
+
+    if (is_linux) {
+      libs = [
+        "dl",
+        "pthread",
+      ]
+    }
   }
-
-  deps = [
-    ":flutter_rust_shell",
-    ":flutter_shell_winit_rust",
-    "//flutter/lib/snapshot",
-    "//flutter/runtime:libdart",
-  ]
-
-  # The Rust archive is passed directly to the linker, so declare it as an
-  # input as well as depending on its producing action. Otherwise changes to
-  # Rust-only event handling do not cause the native runner to relink.
-  inputs += [ _flutter_shell_winit_output ]
-  ldflags += [ rebase_path(_flutter_shell_winit_output, root_build_dir) ]
-
-  libs = [
-    "dl",
-    "pthread",
-  ]
 }
 
 if (enable_unittests) {
@@ -273,6 +302,7 @@ if (enable_unittests) {
       "//flutter/common",
       "//flutter/testing",
       "//flutter/testing:dart",
+      "//flutter/testing:testing_fixtures",
     ]
 
     inputs = [ _flutter_shell_core_output ]

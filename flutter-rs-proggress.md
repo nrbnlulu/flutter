@@ -1526,3 +1526,103 @@ The `build-rust-shell-profile` task now configures `host_profile` automatically
 when `args.gn` is absent, with fontconfig enabled. Existing configurations are
 preserved. Verified from a missing output directory: GN generated the build
 successfully and Ninja started compiling the profile engine.
+
+
+## Windows engine build preparation (2026-11-08)
+
+W0 is started, but the engine DLL has not been built. GN now selects MSVC
+Rust target triples and `.lib` archives on Windows, and omits the GN-owned
+standalone runner there so Cargo can own the executable link. Unix `dl` and
+`pthread` libraries are Linux-only. The build helper stages `.lib`/`.dll`
+outputs using the target platform, including cross-builds. Existing C ABI
+functions, including window exports, already have `dllexport` declarations.
+
+The Windows GN entry point now passes its Python interpreter explicitly:
+`.gn` hardcodes the Unix hermetic `bin/python3` layout, which cannot execute
+on this host. The pinned GN binary was installed locally from DEPS.
+
+Source inspection corrected the Windows plan: Windows JIT snapshots already
+use static symbol references in `runtime/dart_snapshot.cc`; new snapshot
+callbacks and changes to Linux snapshot exports are unnecessary.
+
+Verification: the Python build-helper tests pass (target naming and staging
+in debug/profile/release), GN formatting and diff checks pass. A real minimal
+Cargo crate built with Rust 1.93.1 for `x86_64-pc-windows-msvc`; the helper
+staged its static library and DLL, and loading the DLL and calling its export
+returned the expected value. This verifies build-helper plumbing only.
+
+Engine generation stops in Windows toolchain setup: the engine requires
+Windows SDK `10.0.22621.0`, but this host has `10.0.26100.0`. Visual Studio
+Build Tools 2022 is installed and requires an explicit path for this version
+of the engine's detection script. The pinned engine Clang package is also
+absent. Install/sync these prerequisites before resuming from PowerShell:
+
+```powershell
+$env:DEPOT_TOOLS_WIN_TOOLCHAIN = '0'
+$env:GYP_MSVS_VERSION = '2022'
+$env:GYP_MSVS_OVERRIDE_PATH = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools'
+python engine/src/flutter/tools/gn --runtime-mode debug --no-goma --no-prebuilt-dart-sdk
+ninja -C engine/src/out/host_debug flutter_rust_engine.dll
+```
+
+Full GN generation, C++ compilation/linking, engine exports, and C++ tests
+remain unverified. The Windows winit adapter, GPU cfg changes, first frame,
+rlutter support, packaging, and runtime validation remain pending.
+
+
+### Windows build prerequisites installed
+
+Installed Windows SDK 10.0.22621.0 and its Debugging Tools for Windows, plus
+the DEPS-pinned Windows Clang package. With the Build Tools override and
+`--no-prebuilt-dart-sdk` command above, GN generation succeeded and Ninja
+started compiling `flutter_rust_engine.dll`. The engine build must still
+complete before the DLL or runtime can be considered verified.
+
+
+### Windows W0 engine DLL verified (2026-11-08)
+
+Resumed the incremental Windows x64 debug/JIT build with the documented
+Visual Studio environment. All 2,739 remaining Ninja steps completed, including
+the private C++ bridge and DLL link. No engine compiler or linker fix was
+needed beyond the existing W0 preparation. Clang emitted ignored
+`-fno-omit-frame-pointer` warnings during Dart compilation.
+
+Artifacts in `engine/src/out/host_debug`:
+
+- `flutter_rust_engine.dll`: 36,725,760 bytes.
+- `flutter_rust_engine.dll.lib`: 41,230 bytes; use this import library for Cargo.
+- `flutter_rust_engine.dll.pdb`: debug symbols.
+
+`llvm-readobj.exe --coff-exports --coff-imports` confirmed the x64 PE format,
+Windows system DLL imports, and 39 private `FlutterRustShell*` exports, including
+15 window functions. Python ctypes successfully loaded the DLL and resolved
+every private ABI export. Calling `FlutterRustShellRunTask(nullptr, 0)` returned
+zero as expected. No separate runtime DLL had to be staged for this host load.
+This verifies DLL loading and symbol lookup, not Dart/Vulkan initialization.
+Windows JIT retains the existing statically linked snapshot path.
+
+The C++ test executable initially failed to link because Flutter's testing
+support references `flutter::testing::GetFixturesPath`. Added the standard
+`//flutter/testing:testing_fixtures` dependency to the Rust shell test target.
+Rebuilding and running `flutter_rust_shell_unittests.exe` then passed all 17
+tests across platform-view ABI forwarding, external textures, and task runners.
+The Rust core static archive built with the pinned 1.93.1 toolchain and linked
+without additional Rust system-library flags. The two focused Python
+build-helper tests also pass.
+
+Commands (after setting the environment documented above):
+
+```powershell
+ninja -C engine/src/out/host_debug flutter_rust_engine.dll
+ninja -C engine/src/out/host_debug flutter_rust_shell_unittests
+engine/src/out/host_debug/flutter_rust_shell_unittests.exe
+python engine/src/flutter/shell/platform/rust/build_rust_test.py
+engine/src/flutter/buildtools/windows-x64/clang/bin/llvm-readobj.exe --coff-exports --coff-imports engine/src/out/host_debug/flutter_rust_engine.dll
+```
+
+Local build logs are `engine/src/out/host_debug/rust-windows-build.log` and
+`rust-windows-tests-build.log`; the PE inspection is `rust-windows-pe.txt`.
+These generated outputs are not checked in. W1 (Windows Rust Vulkan cfgs and
+dependencies) is next. The Windows host, Cargo smoke runner, first frame,
+resize/input/validation checks, and Linux/Android regression builds remain
+unverified.
