@@ -1754,3 +1754,20 @@ packaging and CI remain pending.
 
 Git author identity was configured from the authenticated GitHub account on
 2026-11-09, allowing the verified checkpoints to be committed separately.
+
+### Windows frame diagnostics and window enumeration (2026-11-09)
+
+The Win32 desktop adapter now excludes visible zero-sized event-loop helper
+windows from application enumeration. A focused regression test covers the
+filter. Closing only the main window exits with status zero under both ordinary
+Vulkan validation and the screenshot layer; the earlier diagnostic timeout
+resulted from also closing the helper HWND, not demonstrated renderer teardown
+failure. Native desktop tests: seven passed, one foreground/modal-input skip.
+
+A six-color rectangle/text probe reproduces the rendering corruption. Win32
+`PrintWindow(PW_CLIENTONLY | PW_RENDERFULLCONTENT)` independently reproduces the
+same pixels, including with the Vulkan screenshot layer disabled. CPU uniform
+values are correct at descriptor binding; uniform alignment, shader precision,
+single-sample rendering and cached host memory experiments did not repair the
+frame. These experimental renderer changes were not retained. The readable,
+interactive first-frame milestone remains incomplete.

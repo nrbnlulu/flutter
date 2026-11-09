@@ -72,6 +72,20 @@ class PortableTest(unittest.TestCase):
 @unittest.skipUnless(sys.platform == 'win32', 'Win32 native automation')
 class WindowsTest(unittest.TestCase):
 
+  def test_zero_sized_event_loop_helpers_are_not_application_windows(self):
+    api = desktop()
+
+    def enumerate_helper(callback, unused):
+      return callback(1, 0)
+    with patch.object(api.user, 'EnumWindows', side_effect=enumerate_helper), \
+         patch.object(api.user, 'IsWindowVisible', return_value=True), \
+         patch.object(api.user, 'GetWindowThreadProcessId', return_value=1), \
+         patch.object(api.user, 'GetWindowTextW', return_value=0), \
+         patch.object(api.user, 'GetClientRect', return_value=True), \
+         patch.object(api.user, 'ClientToScreen') as translate:
+      self.assertEqual(api.clients(), [])
+      translate.assert_not_called()
+
   def test_occlusion_is_rejected_before_captured_pixels_are_compared(self):
     api = desktop()
     with patch.object(api.user, 'SetWindowPos', return_value=True), \

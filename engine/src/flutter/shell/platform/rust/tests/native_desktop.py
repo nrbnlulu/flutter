@@ -181,8 +181,10 @@ class Windows(Desktop):
         title = ctypes.create_unicode_buffer(1024)
         self.user.GetWindowTextW(hwnd, title, len(title))
         rect, origin = W.RECT(), W.POINT()
-        if self.user.GetClientRect(hwnd, ctypes.byref(rect)) and self.user.ClientToScreen(
-            hwnd, ctypes.byref(origin)):
+        # Winit's event-loop helper may be marked visible but has no client
+        # surface. It must never be counted, resized, captured, or closed.
+        if (self.user.GetClientRect(hwnd, ctypes.byref(rect)) and rect.right > 0 and
+            rect.bottom > 0 and self.user.ClientToScreen(hwnd, ctypes.byref(origin))):
           result.append(
               dict(
                   address=str(hwnd),
