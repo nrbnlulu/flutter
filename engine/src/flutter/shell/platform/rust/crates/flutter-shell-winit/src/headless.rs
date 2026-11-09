@@ -1,6 +1,8 @@
 //! Display-free adapter for the existing merged-thread runtime and plugin SDK.
 #[path = "headless/agent.rs"]
 mod agent;
+#[path = "headless/recording.rs"]
+mod recording;
 use super::*;
 use flutter_shell_wgpu::{OffscreenBroker, OffscreenFrame};
 use std::cell::Cell;
@@ -140,6 +142,7 @@ impl VirtualHost {
             "title":v.title,"bounds":[v.bounds.0,v.bounds.1,v.bounds.2,v.bounds.3],"pixelRatio":self.ratio,
             "focused":v.state.focused!=0,"ready":v.ready,"removing":v.removing,
             "visible":v.state.minimized==0,"sizeGeneration":v._broker.generation(),
+            "captureStatistics":v._broker.capture_statistics(),
         })).collect::<Vec<_>>()})
     }
     fn notify(&self, id: FlutterRustViewId, event: FlutterRustWindowEvent) {

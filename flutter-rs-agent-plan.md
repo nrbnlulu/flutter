@@ -312,7 +312,7 @@ visibly renders. A session option can redact known sensitive regions.
 
 ## Delivery phases and acceptance gates
 
-Phases 0–3 are complete on Linux x64. Phases 4–5 are pending. Each phase should be
+Phases 0–4 are complete on Linux x64. Phase 5 is pending. Each phase should be
 independently reviewable and preserve existing native shell behavior.
 
 ### Phase 0 Rendering feasibility and contracts

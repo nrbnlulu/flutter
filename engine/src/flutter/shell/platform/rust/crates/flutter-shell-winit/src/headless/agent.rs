@@ -47,6 +47,7 @@ pub(super) struct Shared {
     bridge: Mutex<Value>,
     bridge_responses: Mutex<BTreeMap<u64, Value>>,
     bridge_sequence: std::sync::atomic::AtomicU64,
+    recordings: Mutex<BTreeMap<i64, Arc<recording::Sink>>>,
 }
 impl Shared {
     pub(super) fn publish_bridge(&self, bytes: Vec<u8>) {
@@ -95,6 +96,17 @@ impl Shared {
         self.fatal.lock().clone()
     }
     pub(super) fn publish_windows(&self, windows: Value) {
+        self.recordings.lock().retain(|view, sink| {
+            let alive = windows["views"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|v| v["viewId"].as_i64() == Some(*view) && v["removing"] != true);
+            if !alive {
+                sink.stop("view_closed");
+            }
+            alive
+        });
         let mut previous = self.windows.lock();
         if *previous != windows {
             *previous = windows;
@@ -102,7 +114,11 @@ impl Shared {
         }
     }
     pub(super) fn publish_frame(&self, frame: OffscreenFrame) {
-        self.frames.lock().insert(frame.view_id, Arc::new(frame));
+        let frame = Arc::new(frame);
+        if let Some(sink) = self.recordings.lock().get(&frame.view_id) {
+            sink.publish(frame.clone());
+        }
+        self.frames.lock().insert(frame.view_id, frame);
         let _ = self.sender.try_send(Event::Changed);
     }
     pub(super) fn fail(&self, error: AgentError) {
@@ -265,6 +281,7 @@ impl Session {
             bridge: Mutex::new(Value::Null),
             bridge_responses: Mutex::new(BTreeMap::new()),
             bridge_sequence: std::sync::atomic::AtomicU64::new(0),
+            recordings: Mutex::new(BTreeMap::new()),
         });
         let connection = Arc::new(Mutex::new(None));
         let thread_shared = shared.clone();
@@ -397,6 +414,7 @@ struct Client {
     trace: std::fs::File,
     trace_bytes: u64,
     capture_id: u64,
+    recordings: BTreeMap<String, recording::Recording>,
 }
 impl Client {
     fn trace(&mut self, direction: &str, value: &Value) -> Result<(), AgentError> {
@@ -577,6 +595,7 @@ impl Client {
                 "input.replaceText",
                 "input.release",
                 "diagnostics.snapshot",
+                "recording.status",
             ];
             if let Some(index) = self
                 .pending
@@ -734,6 +753,7 @@ fn serve(
             .map_err(|e| AgentError::new("artifact_error", e.to_string()))?,
         trace_bytes: 0,
         capture_id: 0,
+        recordings: BTreeMap::new(),
     };
     let mut handshake = false;
     let result = (|| {
@@ -775,6 +795,21 @@ fn serve(
         }
         Ok(())
     })();
+    for recording in client.recordings.values() {
+        recording.sink.stop("session_closed");
+    }
+    let mut recording_errors = Vec::new();
+    for recording in client.recordings.values_mut() {
+        if let Err(error) = recording.finish() {
+            recording_errors.push(error);
+        }
+    }
+    if !recording_errors.is_empty() {
+        shared.fail(
+            AgentError::new("recording_failed", "recording finalization failed")
+                .with_data(json!(recording_errors)),
+        );
+    }
     let failure = result
         .as_ref()
         .err()
@@ -842,6 +877,10 @@ enum UiCommand {
     },
     ReleaseInput,
     Bridge(Value),
+    Recording {
+        view: i64,
+        sink: Option<Arc<recording::Sink>>,
+    },
 }
 
 impl Client {
@@ -853,7 +892,7 @@ impl Client {
             "capabilities":{"windows":true,"semantics":true,"physicalInput":true,"textInput":true,
                 "screenshots":true,"captureCorrelation":"uiBuildFrame","widgetBridge":!self.shared.bridge.lock().is_null(),
                 "frameworkErrors":!self.shared.bridge.lock().is_null(),"assertions":true,
-                "recording":false,"restart":false,"nativeDialogs":false}})
+                "recording":true,"recordingEncoder":"optional FFmpeg ffv1","restart":false,"nativeDialogs":false}})
     }
     fn target(&self, request: &Request) -> Result<Option<Value>, AgentError> {
         let view = request.view_id()?;
@@ -944,6 +983,16 @@ impl Client {
             }
             "session.health" => {
                 request.check_params(&[])?;
+                if self
+                    .recordings
+                    .values()
+                    .any(|r| r.status()["status"] == "failed")
+                {
+                    return Err(AgentError::new(
+                        "recording_failed",
+                        "one or more recordings failed",
+                    ));
+                }
                 Ok(
                     json!({"healthy":true,"epoch":self.shared.epoch,"actionSequence":self.shared.sequence.load(Ordering::Acquire)}),
                 )
@@ -1208,11 +1257,102 @@ impl Client {
                 self.ui(request, UiCommand::ReleaseInput, deadline)
             }
             "verify.assert" | "verify.wait" => self.verify(request, deadline),
+            "recording.start" | "recording.stop" | "recording.status" => {
+                self.recording(request, deadline)
+            }
             "capture.screenshot" => self.capture(request, deadline),
             _ => Err(AgentError::new(
                 "unsupported_capability",
                 format!("unknown method {}", request.method),
             )),
+        }
+    }
+    fn recording(&mut self, request: &Request, deadline: Instant) -> Reply {
+        request.check_params(if request.method == "recording.start" {
+            &["viewId", "name", "rate"]
+        } else {
+            &["name"]
+        })?;
+        let name = request
+            .params
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|s| {
+                !s.is_empty()
+                    && s.len() <= 64
+                    && s.bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+            })
+            .ok_or_else(|| {
+                AgentError::new(
+                    "invalid_request",
+                    "recording name must be 1..=64 ASCII letters/digits/hyphens/underscores",
+                )
+            })?
+            .to_owned();
+        match request.method.as_str() {
+            "recording.start" => {
+                let view = request.view_id()?;
+                self.shared.view(view)?;
+                if self.recordings.len() >= 8
+                    || self.recordings.contains_key(&name)
+                    || self.shared.recordings.lock().contains_key(&view)
+                {
+                    return Err(AgentError::new(
+                        "invalid_request",
+                        "recording name/view already active or session limit (8) exceeded",
+                    ));
+                }
+                let rate = request
+                    .params
+                    .get("rate")
+                    .map(|v| {
+                        v.as_u64().filter(|v| *v > 0 && *v <= 60).ok_or_else(|| {
+                            AgentError::new("invalid_request", "rate must be 1..=60")
+                        })
+                    })
+                    .transpose()?
+                    .unwrap_or(15) as u32;
+                let recording = recording::Recording::start(
+                    self.shared.artifacts.clone(),
+                    name.clone(),
+                    view,
+                    rate,
+                    self.shared.start,
+                )?;
+                self.ui(
+                    request,
+                    UiCommand::Recording {
+                        view,
+                        sink: Some(recording.sink.clone()),
+                    },
+                    deadline,
+                )?;
+                let status = recording.status();
+                self.recordings.insert(name, recording);
+                Ok(status)
+            }
+            "recording.status" => self
+                .recordings
+                .get(&name)
+                .map(recording::Recording::status)
+                .ok_or_else(|| AgentError::new("not_found", "recording not found")),
+            _ => {
+                let recording = self
+                    .recordings
+                    .get(&name)
+                    .ok_or_else(|| AgentError::new("not_found", "recording not found"))?;
+                let view = recording.view;
+                recording.sink.stop("requested");
+                if self.shared.view(view).is_ok() {
+                    self.ui(request, UiCommand::Recording { view, sink: None }, deadline)?;
+                }
+                while !self.recordings[&name].is_finished() {
+                    self.cancel(&request.id)?;
+                    self.wait_event(deadline)?;
+                }
+                self.recordings.get_mut(&name).unwrap().finish()
+            }
         }
     }
     fn verify(&mut self, request: &Request, deadline: Instant) -> Reply {
@@ -1511,9 +1651,24 @@ impl Client {
             ));
         }
         let path = self.shared.artifacts.join(&name);
+        let retained: u64 = std::fs::read_dir(&self.shared.artifacts)
+            .map_err(|e| AgentError::new("artifact_error", e.to_string()))?
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|s| s == "png"))
+            .filter_map(|e| e.metadata().ok())
+            .map(|m| m.len())
+            .sum();
+        if self.capture_id > 256
+            || retained.saturating_add(frame.rgba.len() as u64) > 128 * 1024 * 1024
+        {
+            return Err(AgentError::new(
+                "artifact_error",
+                "screenshot retention limit exceeded (256 captures / 128 MiB)",
+            ));
+        }
         write_png(&path, frame.width, frame.height, &frame.rgba)?;
         let metadata = json!({"path":path,"viewId":view,"frameId":frame.frame,"uiFrameNumber":frame.ui_frame_number,
-            "uiFrameBoundary":boundary,"sizeGeneration":frame.generation,"width":frame.width,"height":frame.height,
+            "uiFrameBoundary":boundary,"completedSessionMicros":frame.completed_at.saturating_duration_since(self.shared.start).as_micros() as u64,"readbackMicros":frame.readback_micros,"sizeGeneration":frame.generation,"width":frame.width,"height":frame.height,
             "pixelRatio":self.shared.view(view)?["pixelRatio"],"semanticsRevision":self.cache.revision(view),
             "actionSequence":self.shared.sequence.load(Ordering::Acquire),"epoch":self.shared.epoch,
             "colorConvention":"linear RGBA8, straight alpha, PNG gAMA=1.0"});
@@ -1749,6 +1904,28 @@ fn send_key(host: &VirtualHost, event: FlutterRustKeyEvent) {
 }
 fn dispatch(host: &VirtualHost, shared: &Shared, command: UiCommand) -> Reply {
     let result = match command {
+        UiCommand::Recording { view, sink } => {
+            let id = FlutterRustViewId(view);
+            let registry = host.registry.borrow();
+            let target = registry
+                .views
+                .get(&id)
+                .filter(|v| !v.removing && v.ready)
+                .ok_or_else(|| AgentError::new("view_closed", "recording view is closed"))?;
+            if let Some(sink) = sink {
+                unsafe extern "C" {
+                    fn FlutterRustShellRequestObservationFrame(shell: *mut c_void) -> u64;
+                }
+                let boundary = unsafe { FlutterRustShellRequestObservationFrame(host.shell.get()) };
+                sink.minimum_ui.store(boundary + 1, Ordering::Release);
+                shared.recordings.lock().insert(view, sink);
+                target._broker.set_recording_enabled(true);
+            } else {
+                shared.recordings.lock().remove(&view);
+                target._broker.set_recording_enabled(false);
+            }
+            return Ok(json!({"viewId":view,"dispatched":true}));
+        }
         UiCommand::Bridge(message) => {
             send_cpp_platform_message(
                 host.shell.get(),

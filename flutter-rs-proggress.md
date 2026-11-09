@@ -2357,3 +2357,16 @@ The generated multi-window fixture passes the Unicode save workflow. The same
 scenario fails with the intentional persisted-value regression, and startup and
 interaction framework errors cannot pass. See
 [verification](engine/src/flutter/shell/platform/rust/docs/verification.md).
+
+### Headless agent Phase 4 — video evidence
+
+Added bounded per-view FFmpeg/FFV1 recording with idle duration preservation,
+resize segments, session timestamps, source frame/UI stamps and drop/overhead
+counters. Screenshot and recording readback requests coexist. Stream/view/session
+shutdown finalizes encoding off the UI thread, with supervised timeout and partial
+manifests after encoder or runner failures. Retention limits fail explicitly.
+
+Decoded real-engine recordings validate dimensions, timestamps, idle duplication,
+visible pointer actions, resize, and two views on a common timeline. Missing,
+crashing and blocked encoders and a killed owned runner all retain explicit
+failure evidence. See [recording](engine/src/flutter/shell/platform/rust/docs/recording.md).

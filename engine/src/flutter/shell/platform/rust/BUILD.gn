@@ -84,6 +84,7 @@ action("flutter_shell_winit_rust") {
     "crates/flutter-shell-winit/src/host_events.rs",
     "crates/flutter-shell-winit/src/headless.rs",
     "crates/flutter-shell-winit/src/headless/agent.rs",
+    "crates/flutter-shell-winit/src/headless/recording.rs",
     "crates/flutter-shell-agent/Cargo.toml",
     "crates/flutter-shell-agent/src/lib.rs",
     "crates/flutter-shell-agent/src/semantics.rs",

@@ -185,6 +185,8 @@ use std::{ffi::c_void, sync::mpsc::SyncSender};
 /// A completed probe frame. The raster-thread callback publishes owned bytes,
 /// never an in-flight image or a pointer into engine storage.
 pub struct OffscreenFrame {
+    pub completed_at: std::time::Instant,
+    pub readback_micros: u64,
     pub ui_frame_number: u64,
     pub view_id: i64,
     pub width: u32,
@@ -202,6 +204,11 @@ pub struct OffscreenBroker {
     state: Mutex<BrokerState>,
     frames: SyncSender<Result<OffscreenFrame, String>>,
     capture: std::sync::atomic::AtomicBool,
+    recording: std::sync::atomic::AtomicBool,
+    readbacks: std::sync::atomic::AtomicU64,
+    readback_micros: std::sync::atomic::AtomicU64,
+    max_readback_micros: std::sync::atomic::AtomicU64,
+    dropped: std::sync::atomic::AtomicU64,
     capture_after: std::sync::atomic::AtomicU64,
     single_capture: std::sync::atomic::AtomicBool,
     view_id: std::sync::atomic::AtomicI64,
@@ -254,6 +261,11 @@ impl OffscreenBroker {
             }),
             frames,
             capture: std::sync::atomic::AtomicBool::new(true),
+            recording: std::sync::atomic::AtomicBool::new(false),
+            readbacks: std::sync::atomic::AtomicU64::new(0),
+            readback_micros: std::sync::atomic::AtomicU64::new(0),
+            max_readback_micros: std::sync::atomic::AtomicU64::new(0),
+            dropped: std::sync::atomic::AtomicU64::new(0),
             capture_after: std::sync::atomic::AtomicU64::new(0),
             single_capture: std::sync::atomic::AtomicBool::new(false),
             view_id: std::sync::atomic::AtomicI64::new(0),
@@ -299,6 +311,21 @@ impl OffscreenBroker {
 
     /// Disable continuous readback for ordinary headless runs. The rendering
     /// handoff remains synchronized, without mapping or encoding idle frames.
+    /// Recording independently retains readback while one-shot captures finish.
+    pub fn set_recording_enabled(&self, enabled: bool) {
+        self.recording
+            .store(enabled, std::sync::atomic::Ordering::Release);
+    }
+    /// Atomic counters never wait on the raster thread's target lock.
+    pub fn capture_statistics(&self) -> (u64, u64, u64, u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (
+            self.readbacks.load(Relaxed),
+            self.readback_micros.load(Relaxed),
+            self.max_readback_micros.load(Relaxed),
+            self.dropped.load(Relaxed),
+        )
+    }
     pub fn set_capture_enabled(&self, enabled: bool) {
         self.capture
             .store(enabled, std::sync::atomic::Ordering::Release);
@@ -433,24 +460,38 @@ impl OffscreenBroker {
                 std::iter::empty(),
             )
             .ok_or("offscreen render wait submission failed")?;
-        if !self.capture.load(std::sync::atomic::Ordering::Acquire)
-            || (self
-                .single_capture
-                .load(std::sync::atomic::Ordering::Acquire)
-                && image.ui_frame_number
-                    <= self
-                        .capture_after
-                        .load(std::sync::atomic::Ordering::Acquire))
+        if !self.recording.load(std::sync::atomic::Ordering::Acquire)
+            && (!self.capture.load(std::sync::atomic::Ordering::Acquire)
+                || (self
+                    .single_capture
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    && image.ui_frame_number
+                        <= self
+                            .capture_after
+                            .load(std::sync::atomic::Ordering::Acquire)))
         {
             target.pending = false;
             state.frame = frame_id;
             return Ok(None);
         }
+        let started = std::time::Instant::now();
         let rgba = target.readback.read_rgba(Duration::from_secs(10))?;
+        let completed_at = std::time::Instant::now();
+        let readback_micros = started.elapsed().as_micros() as u64;
+        self.readbacks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.readback_micros
+            .fetch_add(readback_micros, std::sync::atomic::Ordering::Relaxed);
+        self.max_readback_micros
+            .fetch_max(readback_micros, std::sync::atomic::Ordering::Relaxed);
         target.pending = false;
-        if self
-            .single_capture
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        if image.ui_frame_number
+            > self
+                .capture_after
+                .load(std::sync::atomic::Ordering::Acquire)
+            && self
+                .single_capture
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
         {
             self.capture
                 .store(false, std::sync::atomic::Ordering::Release);
@@ -458,6 +499,8 @@ impl OffscreenBroker {
         let (width, height) = (target.readback.width, target.readback.height);
         state.frame = frame_id;
         Ok(Some(OffscreenFrame {
+            completed_at,
+            readback_micros,
             ui_frame_number: image.ui_frame_number,
             view_id: self.view_id.load(std::sync::atomic::Ordering::Acquire),
             width,
@@ -503,7 +546,13 @@ extern "C" fn probe_present(data: *mut c_void, image: FlutterRustVulkanImage) ->
         Ok(None) => 1,
         Ok(Some(frame)) => {
             let result = match broker.frames.try_send(Ok(frame)) {
-                Ok(()) | Err(std::sync::mpsc::TrySendError::Full(_)) => 1,
+                Ok(()) => 1,
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    broker
+                        .dropped
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    1
+                }
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => 0,
             };
             broker.notify();
