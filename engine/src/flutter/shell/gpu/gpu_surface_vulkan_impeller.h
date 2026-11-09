@@ -59,6 +59,7 @@ class GPUSurfaceVulkanImpeller final : public Surface {
   struct ViewTransients {
     std::shared_ptr<impeller::SwapchainTransientsVK> transients;
     impeller::ISize size;
+    std::shared_ptr<impeller::Texture> copy_target;
   };
   /// Per-view MSAA and depth/stencil buffers, keyed by view ID.
   /// Avoids recreating these allocations every frame when the active view

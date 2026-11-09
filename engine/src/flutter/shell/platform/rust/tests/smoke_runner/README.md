@@ -43,5 +43,7 @@ The background should be `#112233`; the bars from top to bottom should be red,
 green, blue, white, cyan and magenta, with white readable text underneath.
 Each bar occupies `(20, 20 + 60*i, 240, 40)` logical pixels. These simple shapes
 help distinguish rendering corruption from input or application-state issues.
-The probe currently reproduces incorrect pixels on the Windows Intel HD 530
-host; presenting a frame alone is not a rendering pass.
+The Windows Intel HD 530 uses a cached owned render target and GPU copy to
+work around corruption when rendering directly into swapchain images. The probe
+should now display these colors and readable text on that adapter. Presenting a
+frame alone is not a rendering pass.

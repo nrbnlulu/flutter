@@ -1581,8 +1581,20 @@ mod vulkan {
             .into_iter()
             .find(|format| capabilities.formats.contains(format))
             .ok_or_else(|| "Vulkan surface has no format Impeller supports".to_owned())?;
+            let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+            let adapter = self.context.adapter.get_info();
+            // Keep in sync with the Intel HD 530 owned-target workaround in
+            // gpu_surface_vulkan_impeller.cc. Other adapters render directly.
+            if cfg!(target_os = "windows") && adapter.vendor == 0x8086 && adapter.device == 0x1912 {
+                usage |= wgpu::TextureUsages::COPY_DST;
+                if !capabilities.usages.contains(usage) {
+                    return Err(
+                        "Intel HD 530 Vulkan workaround requires swapchain COPY_DST support".into(),
+                    );
+                }
+            }
             let configuration = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                usage,
                 format,
                 color_space: wgpu::SurfaceColorSpace::Auto,
                 width,

@@ -3,8 +3,9 @@
 Plan for Phase 3 of [`flutter-rs.md`](flutter-rs.md). Progress is recorded in
 [`flutter-rs-proggress.md`](flutter-rs-proggress.md). W0 is verified on Windows
 x64: the engine DLL builds and loads, and all 17 C++ shell tests pass. W1 hardware transfer tests and the W2 ordinary-window
-host checks pass. The Cargo smoke runner presents and closes, but its captured
-output has corrupted text/colors; the first-frame milestone remains incomplete.
+host checks pass. A device-scoped owned-image/copy workaround repairs captured
+text/colors on the Intel HD 530. Foreground input and modal-resize validation
+remain pending; the interactive first-frame milestone is still incomplete.
 
 ## First Windows build: execution plan (2026-11-08)
 

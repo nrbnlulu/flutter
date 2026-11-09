@@ -1787,3 +1787,40 @@ validation, with the same corrupted pixels. The full lifecycle command correctly
 fails its occlusion guard on this desktop; evidence is retained in
 `%TEMP%/flutter-rust-lifecycle-1qyegb7a`. This is not a lifecycle-suite pass.
 Foreground input and live-resize checks still require an unobstructed desktop.
+
+### Intel HD 530 swapchain rendering workaround (2026-11-09)
+
+Isolated the corruption before the wgpu handoff: an Impeller-owned image reads
+back the expected background and all six primary/secondary color bars, whereas
+rendering the same scene into a borrowed Win32 swapchain image already contains
+incorrect pixels before presentation. Changing the render-pass final layout or
+adding transfer usage alone did not repair direct rendering. Rendering into an
+owned image and copying it into the swapchain does produce correct colors and
+readable text. The underlying Intel driver defect has not been identified.
+
+Added a conservative workaround only for Windows Intel vendor `8086`, device
+`1912` (the tested HD Graphics 530). The shell caches one owned resolve target
+per view/size and copies its pixels on the existing shared Vulkan queue before
+the established presentation handoff. Both textures remain tracked until GPU
+completion; transfer/read/write barriers order reuse. There is no CPU readback
+or queue-idle wait in this path. The broker requests `COPY_DST` only for this
+device and reports a clear error if the surface cannot provide it. The cost is
+one additional single-sample image per view and one GPU copy per frame on this
+device. Other adapters retain direct rendering.
+
+The six-color/text probe now displays correct pixels with the production
+workaround (no experimental readback code). Forty programmatic resizes followed
+by minimize/restore and native close retained the correct colors and exited
+zero with synchronization validation enabled; no VUID or synchronization hazard
+was logged. Evidence: `out/host_debug/render-probe-scoped-resize/`.
+This does not validate mouse-driven modal resizing, focus, or keyboard input.
+Linux/Android and other Windows GPU/driver coverage remain unavailable.
+
+`python tools/rust_shell/tasks.py test` passed: 47 host tests, 17 C++ tests,
+core/queue checks, five ordinary GPU tests, two build-helper tests, 14 benchmark
+accounting tests and all eight desktop tests. Foreground access became available
+in this run. The real 40-resize stress command passed foreground keyboard redraw
+and programmatic resizing, then failed its live-resize check with `Win32 modal
+live resize starved Flutter presentations`. Evidence:
+`%TEMP%/flutter-rust-stress-4bdwrcvj`. This is a newly exercised failure, not a
+stress-suite pass; fixing modal-loop scheduling is the next first-frame task.
