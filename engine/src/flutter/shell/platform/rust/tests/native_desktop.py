@@ -4,7 +4,7 @@
 
 """Native desktop automation used by Rust-shell runtime validation.
 
-Coordinates are physical screen pixels. Windows are always selected by PID by
+Coordinates use the native compositor (physical pixels on Win32). Windows are selected by PID by
 callers; adapters never operate on unrelated application windows.
 """
 from __future__ import annotations
@@ -23,6 +23,19 @@ import zlib
 
 
 class Desktop(ABC):
+
+  def click(self, address, x, y):
+    raise NotImplementedError('Pointer injection is unavailable on this desktop')
+
+  def chord(self, address, *keys):
+    raise NotImplementedError('Keyboard injection is unavailable on this desktop')
+
+  def metrics(self, address):
+    client = next(c for c in self.clients() if str(c['address']) == str(address))
+    return dict(size=client['size'], scale=None, coordinate_space='physical')
+
+  def ime_layouts(self):
+    return None
 
   def live_resize(self, address, progress):
     # Compositor resize operations are already exercised by the shared burst.
@@ -96,6 +109,27 @@ class Hyprland(Desktop):
         argument = f'0,{selector}'
       command = ['hyprctl', 'dispatch', names[action], argument]
     subprocess.run(command, check=True, capture_output=True, text=True)
+
+  def metrics(self, address):
+    result = super().metrics(address)
+    result['coordinate_space'] = 'logical'
+    return result
+
+  def click(self, address, x, y):
+    self.action('focus', address)
+    if not shutil.which('ydotool'):
+      raise RuntimeError('ydotool and its daemon are required for native pointer injection')
+    subprocess.run(['hyprctl', 'dispatch', 'movecursor', str(round(x)), str(round(y))], check=True)
+    subprocess.run(['ydotool', 'click', '0xC0'], check=True)
+
+  def chord(self, address, *keys):
+    self.action('focus', address)
+    modifiers = [key.upper() for key in keys[:-1]]
+    subprocess.run([
+        'hyprctl', 'dispatch', 'sendshortcut',
+        ','.join([' '.join(modifiers), keys[-1], f'address:{address}'])
+    ],
+                   check=True)
 
   def capture(self, rect, path):
     if not shutil.which('grim'):
@@ -260,6 +294,52 @@ class Windows(Desktop):
       super().capture_window(address, path, region)
     finally:
       self.user.SetWindowPos(hwnd, ctypes.c_void_p(-2), 0, 0, 0, 0, 0x13)
+
+  def click(self, address, x, y):
+    self.action('focus', address)
+    if not self.user.SetCursorPos(round(x), round(y)):
+      raise ctypes.WinError(ctypes.get_last_error())
+    time.sleep(.05)
+    self.user.mouse_event(2, 0, 0, 0, 0)
+    time.sleep(.05)
+    self.user.mouse_event(4, 0, 0, 0, 0)
+
+  def chord(self, address, *keys):
+    codes = {
+        'CTRL': 0x11, 'SHIFT': 0x10, 'ALT': 0x12, 'TAB': 9, 'BACKSPACE': 8, 'ENTER': 13,
+        'LEFT': 0x25, 'RIGHT': 0x27
+    }
+    values = [codes.get(key.upper(), ord(key.upper()) if len(key) == 1 else None) for key in keys]
+    if None in values:
+      raise ValueError(f'Unsupported native key chord: {keys}')
+    self.action('focus', address)
+    try:
+      for value in values:
+        self.user.keybd_event(value, 0, 0, 0)
+    finally:
+      for value in reversed(values):
+        self.user.keybd_event(value, 0, 2, 0)
+
+  def metrics(self, address):
+    result = super().metrics(address)
+    self.user.GetDpiForWindow.argtypes = [W.HWND]
+    self.user.GetDpiForWindow.restype = W.UINT
+    dpi = self.user.GetDpiForWindow(int(address))
+    if not dpi:
+      raise ctypes.WinError(ctypes.get_last_error())
+    result['scale'] = dpi / 96
+    return result
+
+  def ime_layouts(self):
+    self.user.GetKeyboardLayoutList.argtypes = [ctypes.c_int, ctypes.POINTER(W.HANDLE)]
+    self.user.GetKeyboardLayoutList.restype = ctypes.c_int
+    count = self.user.GetKeyboardLayoutList(0, None)
+    layouts = (W.HANDLE * count)()
+    count = self.user.GetKeyboardLayoutList(count, layouts)
+    imm = ctypes.WinDLL('imm32')
+    imm.ImmIsIME.argtypes = [W.HANDLE]
+    imm.ImmIsIME.restype = W.BOOL
+    return [hex(layouts[index]) for index in range(count) if imm.ImmIsIME(layouts[index])]
 
   def live_resize(self, address, progress):
     hwnd = int(address)

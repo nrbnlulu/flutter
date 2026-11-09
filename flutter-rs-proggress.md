@@ -1858,3 +1858,41 @@ This is not full Phase 3 parity. IME conformance, clipboard/DPI, textures/FRB,
 additional window kinds, DWM pacing, rlutter Windows tooling and release/CI
 remain pending. Other Windows adapters and Linux/Android regression runtime
 coverage are unavailable on this host.
+
+### Native text, Unicode clipboard and current-scale DPI checkpoint (2026-11-09)
+
+Added `smoke_fixture/lib/input_probe.dart` and the portable Python-backed
+`test-rust-shell-text-input` task. The fixture reports widget control geometry,
+editing/composition/UTF-16 selection, focus/lifecycle and viewport metrics; Python
+still drives real native mouse and keyboard events. Added click/chord/metrics
+operations to the desktop API with Win32 and Hyprland implementations. Windows
+compares Flutter DPR against `GetDpiForWindow`; Hyprland distinguishes compositor
+logical coordinates from physical viewport dimensions. Native key/mouse focus
+must succeed before typing can pass. The fixture restores prior clipboard text
+on exit (rich formats are not preserved).
+
+A native Windows run passed typing `hello123`, Ctrl+A/C, Clipboard.getData and
+hasStrings, copying `A` + emoji + Hebrew through Clipboard.setData, Ctrl+V back
+into the field, exact UTF-16 selection `[7,7]` with no composing range, readable
+Unicode capture, minimize/restore lifecycle, resize/native size agreement, DPR
+1.0 agreement at 96 DPI, and clean close under Vulkan validation. Evidence:
+`%TEMP%/flutter-rust-input-fs6hodjs`. An earlier run failed the pointer/focus
+step; the harness now explicitly checks field focus and allows the native
+pointer move/button events to settle before typing.
+
+Added a protocol-level regression for preedit cancellation/recommit, UTF-16
+replacement and suppressed duplicate keyboard text for both full-state and
+delta-model clients. The ordinary suite passes: 48 host tests, 17 C++ tests,
+core/queue/ordinary GPU checks, two build-helper tests, 14 accounting tests and
+all eight native desktop tests. The Dart input fixture analyzes without issues.
+
+**Coverage remains partial:** loaded-layout inspection reports US English
+`04090409`; an IMM32-reported layout is not evidence of a working composition
+session. Real candidate/preedit/commit/cancel behavior has not been exercised
+with a composition IME. Current-scale metrics do not validate per-monitor DPI
+transitions. No Linux/Android or additional Windows display/GPU coverage was
+available. These remain parity checks, not completed conformance milestones.
+
+The final formatted fixture also passes through
+`python tools/rust_shell/tasks.py text-input`; repeat-run evidence is
+`%TEMP%/flutter-rust-input-seiwvefs`. Task v3.40.1 lists the new task correctly.

@@ -329,3 +329,12 @@ authoritative clock.
   Windows.
 - **Dropping the GN runner on Windows** requires Cargo-runner equivalents for
   tests that use it.
+
+## Text/clipboard/DPI checkpoint (2026-11-09)
+
+`task test-rust-shell-text-input` now exercises native typing, Unicode clipboard
+copy/paste, UTF-16 selection, minimize/restore and native-versus-Flutter viewport
+metrics on resize. It passes on the Windows host at 96 DPI. Native IME candidate
+composition and real display-scaling transitions remain unverified; the task's
+coverage report records those limits explicitly. See the progress log for
+retained captures and the separate full/delta-model IME protocol tests.

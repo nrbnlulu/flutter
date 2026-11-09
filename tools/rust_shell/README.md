@@ -74,3 +74,21 @@ the actual stress task fails if it cannot perform its input/liveness checks.
 A process staying alive or a test being skipped is never counted as a render
 or input pass. The full benchmark requires a sufficiently large monitor for its
 thirteen non-overlapping windows and rejects smaller displays explicitly.
+
+Text/clipboard/current-scale viewport validation is available through
+`task test-rust-shell-text-input` (or `python tools/rust_shell/tasks.py text-input`).
+It drives real native clicks and keyboard shortcuts, checks Flutter's reported
+text/UTF-16 selection, verifies Unicode clipboard copy/paste and `hasStrings`,
+checks minimize/restore lifecycle and compares native client size/DPI with
+Flutter metrics before and after resize. Widget-reported control bounds keep
+pointer coordinates independent of display scale. Windows uses Win32 input and
+`GetDpiForWindow`; Hyprland uses `sendshortcut`, `movecursor` and `ydotool`
+(with its daemon) for clicks. Hyprland coverage is not yet validated here.
+
+The fixture temporarily replaces clipboard text and restores the previous text
+before closing; rich clipboard formats are not preserved. Logs, screenshots and
+`coverage.json` remain in a `flutter-rust-input-*` temporary directory. The
+coverage report explicitly separates current-scale checks from actual display
+scale transitions and installed-layout reporting from interactive IME
+composition. Neither composition nor cross-monitor DPI is inferred from a
+successful typing/clipboard test.

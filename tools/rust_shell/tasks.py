@@ -421,6 +421,9 @@ def main():
     if task == 'texture-lifecycle':
       flags += [f'--lifecycle-iterations={args.texture_lifecycle_iterations}']
     host.fixture('test_texture.py', assets, *flags)
+  elif task == 'text-input':
+    assets = host.bundle(TESTS / 'smoke_fixture', 'lib/input_probe.dart')
+    host.fixture('test_text_input.py', assets)
   elif task == 'frb':
     fixture = TESTS / 'frb_fixture'
     assets = host.bundle(fixture)

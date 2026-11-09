@@ -206,3 +206,9 @@ tasks:
     desc: Run hardware upload/readback, presentation-pass and shutdown tests under Vulkan validation.
     cmds:
       - '{{.RUST_TASK}} gpu-tests'
+
+  test-rust-shell-text-input:
+    desc: Validate native typing, Unicode clipboard, lifecycle and current-scale DPI.
+    deps: [build-rust-shell]
+    cmds:
+      - '{{.RUST_TASK}} text-input'

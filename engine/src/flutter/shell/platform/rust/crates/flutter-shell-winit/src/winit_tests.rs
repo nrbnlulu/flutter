@@ -1297,3 +1297,52 @@ fn windows_altgr_text_is_not_reinterpreted_as_a_control_shortcut() {
         ModifiersState::CONTROL | ModifiersState::ALT
     );
 }
+
+#[test]
+fn ime_cancel_and_recommit_preserve_utf16_replacement_and_suppress_key_echo() {
+    for delta_model in [false, true] {
+        let mut session = TextInputSession::default();
+        session.apply(TextInputCommand::SetClient(
+            TextInputClientId(11),
+            "TextInputAction.newline".to_owned(),
+            delta_model,
+        ));
+        session.apply(TextInputCommand::SetEditingState(TextEditingState {
+            text: "A\u{1f600}B".to_owned(),
+            selection_base: 1,
+            selection_extent: 3,
+            ..TextEditingState::default()
+        }));
+        session.ime(Ime::Enabled);
+        assert!(
+            session
+                .ime(Ime::Preedit("\u{5019}\u{88dc}".to_owned(), Some((6, 6))))
+                .is_some()
+        );
+        assert!(session.keyboard_text("duplicate").is_none());
+        assert!(session.ime(Ime::Preedit(String::new(), None)).is_some());
+        assert_eq!(session.editing_state.text, "AB");
+        assert_eq!(session.editing_state.selection_base, 1);
+        assert_eq!(session.editing_state.composing_base, -1);
+        session.ime(Ime::Disabled);
+        session.ime(Ime::Enabled);
+        let message = session
+            .ime(Ime::Commit("\u{6f22}\u{5b57}".to_owned()))
+            .unwrap();
+        let update: Value = serde_json::from_slice(&message).unwrap();
+        assert_eq!(update["args"][0], 11);
+        assert_eq!(
+            update["method"],
+            if delta_model {
+                "TextInputClient.updateEditingStateWithDeltas"
+            } else {
+                "TextInputClient.updateEditingState"
+            }
+        );
+        assert_eq!(session.editing_state.text, "A\u{6f22}\u{5b57}B");
+        assert_eq!(session.editing_state.selection_base, 3);
+        assert_eq!(session.editing_state.composing_base, -1);
+        assert!(session.keyboard_text("!").is_some());
+        assert_eq!(session.editing_state.text, "A\u{6f22}\u{5b57}!B");
+    }
+}
