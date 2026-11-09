@@ -31,3 +31,17 @@ evidence retention, and required interactive-desktop access.
 Full window-kind parity and rlutter Windows packaging are later checkpoints.
 This runner deliberately uses the implicit view and does not depend on the
 Dart Rust-window symbol-discovery path.
+
+For a deterministic rendering diagnostic, run the six-color rectangle/text
+probe (from the repository root):
+
+```
+python tools/rust_shell/tasks.py run --windowing-example engine/src/flutter/shell/platform/rust/tests/smoke_fixture --target lib/render_probe.dart
+```
+
+The background should be `#112233`; the bars from top to bottom should be red,
+green, blue, white, cyan and magenta, with white readable text underneath.
+Each bar occupies `(20, 20 + 60*i, 240, 40)` logical pixels. These simple shapes
+help distinguish rendering corruption from input or application-state issues.
+The probe currently reproduces incorrect pixels on the Windows Intel HD 530
+host; presenting a frame alone is not a rendering pass.

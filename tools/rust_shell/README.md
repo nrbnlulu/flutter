@@ -54,7 +54,8 @@ Windows Rust unit tests explicitly link the engine import library; C++ tests
 use the GN target as before.
 
 GPU tests require a working Vulkan driver and the Khronos validation layer.
-The three hardware tests exclude the manual benchmark. One upload test catches
+The four hardware tests cover uploads, shutdown and an empty presentation pass,
+and exclude the manual benchmark. One upload test catches
 intentional producer panics while verifying that reserved slots are recovered.
 The Intel HD Graphics 530 empty-pool driver workaround is documented in the
 vendored HAL's `README.flutter` and the progress log.

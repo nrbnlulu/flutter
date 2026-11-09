@@ -203,6 +203,6 @@ tasks:
       - '{{.RUST_TASK}} test'
 
   test-rust-shell-gpu:
-    desc: Run the three hardware upload/readback and shutdown tests under Vulkan validation.
+    desc: Run hardware upload/readback, presentation-pass and shutdown tests under Vulkan validation.
     cmds:
       - '{{.RUST_TASK}} gpu-tests'

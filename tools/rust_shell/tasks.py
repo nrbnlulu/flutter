@@ -351,7 +351,8 @@ def main():
     }
     for name in ('direct_pixel_upload_preserves_padded_rows_and_can_mix_with_staged_writes',
                  'pixel_upload_reuses_aligned_and_unaligned_slots',
-                 'slow_pixel_writer_allows_other_slots_and_shutdown'):
+                 'slow_pixel_writer_allows_other_slots_and_shutdown',
+                 'empty_handoff_pass_preserves_fragment_uniform_colors'):
       command = ['cargo', '+1.93.1', 'test', '--locked', '-p', 'flutter-shell-wgpu', name]
       if host.windows:
         command += ['--target', 'x86_64-pc-windows-msvc']

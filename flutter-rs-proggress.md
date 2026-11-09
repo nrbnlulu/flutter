@@ -1771,3 +1771,19 @@ values are correct at descriptor binding; uniform alignment, shader precision,
 single-sample rendering and cached host memory experiments did not repair the
 frame. These experimental renderer changes were not retained. The readable,
 interactive first-frame milestone remains incomplete.
+
+Retained `smoke_fixture/lib/render_probe.dart` with documented coordinates and
+expected colors. The hardware GPU task now also reads back six uniform-driven
+BGRA color bands after the broker-style empty load/store render pass. All four
+hardware upload/readback/shutdown tests pass under Vulkan validation on the
+Intel adapter. This isolated test covers the wgpu pass and buffer offsets; it
+does not prove correctness of the external Impeller rendering or semaphore
+handoff. A dedicated Impeller buffer-allocation experiment also left the
+corruption unchanged and was reverted. The engine and runner were rebuilt with
+all exploratory renderer/HAL edits removed.
+
+The restored counter bundle starts and closes with status zero under Vulkan
+validation, with the same corrupted pixels. The full lifecycle command correctly
+fails its occlusion guard on this desktop; evidence is retained in
+`%TEMP%/flutter-rust-lifecycle-1qyegb7a`. This is not a lifecycle-suite pass.
+Foreground input and live-resize checks still require an unobstructed desktop.
