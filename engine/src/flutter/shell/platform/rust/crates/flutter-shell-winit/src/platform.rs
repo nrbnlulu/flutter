@@ -6,6 +6,13 @@ use winit::{
 };
 
 use super::{NativeWindowKind, PopupPlacement};
+use std::time::{Duration, Instant};
+
+/// A host wakeup aligned to the native compositor clock.
+pub(crate) struct VsyncTiming {
+    pub deadline: Instant,
+    pub interval: Duration,
+}
 
 #[cfg(any(target_os = "windows", test))]
 #[path = "platform/positioner.rs"]
@@ -83,6 +90,15 @@ pub(crate) trait PlatformBackend {
     }
 
     fn is_wayland(event_loop: &dyn ActiveEventLoop) -> bool;
+
+    fn uses_host_vsync(event_loop: &dyn ActiveEventLoop) -> bool {
+        Self::is_wayland(event_loop)
+    }
+
+    /// None keeps the existing nominal-interval timer fallback.
+    fn next_vsync(_window: &dyn Window) -> Option<VsyncTiming> {
+        None
+    }
 
     fn create_popup(
         event_loop: &dyn ActiveEventLoop,

@@ -390,3 +390,27 @@ This completes the initial single-popup checkpoint on this host. Nested-popup
 interaction and external-application activation are not covered by this fixture.
 DWM pacing is the next planned implementation checkpoint. Native IME composition,
 real DPI transitions, broader GPU/platform coverage and rlutter tooling remain.
+
+## DWM pacing checkpoint (2026-11-09)
+
+Windows now opts into the host vsync callback. A platform timing hook uses DWM's
+QPC vblank and refresh period to schedule the next composition tick; each request
+resamples the native phase. Invalid/unavailable native timing retains the
+monitor-rate timer fallback. The existing one-shot native wake timer covers
+modal move/resize without a helper thread or idle polling. FIFO presentation
+and the private engine ABI are unchanged.
+
+The ordinary suite passes with 55 host tests and 17 C++ tests. Windows stress
+passes 500 resizes, keyboard redraw, minimize/restore, live modal resize and
+clean Vulkan-validation shutdown. Tooltip geometry and the 60-view lifecycle
+also pass. Logs confirm DWM selection at 31.25 ms on this desktop; a native probe
+confirms both DWM's refresh ratio and QPC period report 32 Hz. Evidence:
+`%TEMP%/flutter-rust-stress-2cc1rkyf` and
+`%TEMP%/flutter-rust-windowing-7pmuhmg0`.
+
+This verifies DWM-derived scheduling and runtime liveness on this host, not
+physical scanout timing, latency, VRR or mixed-refresh monitor behavior. DWM's
+null-HWND clock is composition-wide. Invalid timing samples are covered by unit tests; native API failure and an
+unavailable-compositor runtime were not exercised here.
+Linux/Android runtime coverage remains unavailable. Next: rlutter Windows
+create/run/build support and hot reload, followed by release/packaging/CI.

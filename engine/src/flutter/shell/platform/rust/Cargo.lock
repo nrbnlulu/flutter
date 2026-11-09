@@ -457,6 +457,7 @@ dependencies = [
  "serde_json",
  "wayland-sys",
  "wgpu",
+ "windows-sys 0.61.2",
  "winit",
  "x11-dl",
 ]

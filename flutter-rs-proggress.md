@@ -2141,3 +2141,49 @@ Nested-popup interaction and external-application activation are not covered by
 this fixture. Real IME composition, display-DPI transitions, other Windows GPUs
 and Linux/Android runtime coverage remain unavailable. DWM pacing is the next
 planned implementation checkpoint; rlutter tooling remains pending.
+
+### Windows DWM-derived vsync scheduling (2026-11-09)
+
+Enabled RustVsyncWaiter callbacks on Windows through PlatformBackend, retaining
+Wayland's existing frame-callback behavior. The Windows timing hook samples
+DwmGetCompositionTimingInfo with its required null HWND and pairs QPC with Rust
+Instant. It computes the strictly next tick from qpcVBlank/qpcRefreshPeriod using
+bounded integer arithmetic. Every request resamples phase instead of carrying
+callback lateness into subsequent deadlines. Invalid/failing samples select the
+nominal monitor timer fallback, and future requests retry DWM. The generated
+windows-sys 0.61.2 binding supplies the SDK's packed native layout; fixture locks
+were updated without changing dependency versions.
+
+The existing event-loop deadline and one-shot HWND wake timer deliver requested
+frames during Win32 modal resizing. Windows does not request an immediate redraw
+as a substitute for vsync. No helper thread, periodic idle timer or private ABI
+change was introduced. The existing C++ callback still timestamps frame start
+at delivery; this is DWM-derived host scheduling, not measured scanout timing.
+
+All 55 host tests pass, including phase preservation after late callbacks,
+fractional/large QPC conversion and invalid-sample fallback. The ordinary suite
+also passes 17 C++ tests, core/queue/ordinary GPU checks, two build-helper tests,
+14 accounting tests and eight native desktop tests. The smoke runner rebuilt
+and passed 500-resize stress under Khronos Vulkan validation, including keyboard
+redraw, minimize/restore, maximization, modal live-resize presentations and clean
+close. Evidence: `%TEMP%/flutter-rust-stress-2cc1rkyf`.
+
+Runtime logs confirm DWM selection at 31,250,000 ns. An independent native API
+probe reports refresh and composition ratios 10000000/312500, QPC frequency
+10000000 and period 312500: this desktop reports 32 Hz. The retained
+`dwm-timing.json` records that sample. Tooltip parent movement, anchored resizing,
+explicit/partial updates, all 60 view presentations/destruction callbacks and
+clean validation shutdown also pass (196 primary presentations). Evidence:
+`%TEMP%/flutter-rust-windowing-7pmuhmg0`.
+
+Mixed-refresh displays, VRR, physical frame latency and an unavailable-compositor
+runtime remain unverified. The native clock is composition-wide, not a per-HWND
+monitor timing API. Linux/Android runtime coverage remains unavailable. The next
+planned workstream is rlutter Windows tooling, then release packaging and CI.
+
+The popup fixture also passes with DWM pacing active: inside-click retention,
+outside-click/Escape/owner-focus-loss dismissal, 60 per-view presentation and
+destruction checks, 305 primary presentations and clean validation shutdown.
+Evidence: `%TEMP%/flutter-rust-windowing-pqi5pq5t`. Rust formatting and diff
+whitespace checks pass. Native API failure/fallback recovery was not forced in
+this runtime; the unit coverage exercises invalid timing samples.

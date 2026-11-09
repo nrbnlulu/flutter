@@ -4073,6 +4073,7 @@ fn run_application_with_fixture(
         vsync_host,
         vsync_armed: false,
         next_vsync: None,
+        native_vsync_interval: None,
         text_input_inbox,
         text_input_session: TextInputSession::default(),
         lifecycle_state: LifecycleState::new(),
@@ -4100,6 +4101,7 @@ struct ShellApplication {
     vsync_host: Box<VsyncHost>,
     vsync_armed: bool,
     next_vsync: Option<Instant>,
+    native_vsync_interval: Option<Duration>,
     text_input_inbox: Box<TextInputInbox>,
     text_input_session: TextInputSession,
     lifecycle_state: LifecycleState,
@@ -4551,9 +4553,14 @@ impl ShellApplication {
             return;
         }
         self.vsync_armed = false;
-        let interval = self.pacing_window().map_or(16_666_667, |window| {
-            window_frame_interval_nanos(window.as_ref())
-        });
+        let interval = self.native_vsync_interval.map_or_else(
+            || {
+                self.pacing_window().map_or(16_666_667, |window| {
+                    window_frame_interval_nanos(window.as_ref())
+                })
+            },
+            |interval| interval.as_nanos() as u64,
+        );
         self.next_vsync = Some(now + Duration::from_nanos(interval));
         let shell = self.windows.borrow().shell;
         if let Some(shell) = shell {
@@ -4775,7 +4782,7 @@ impl ApplicationHandler for ShellApplication {
                 let platform_message_callbacks = self.text_input_inbox.callbacks();
                 let vsync_callbacks = self
                     .vsync_host
-                    .callbacks(CurrentPlatform::is_wayland(event_loop));
+                    .callbacks(CurrentPlatform::uses_host_vsync(event_loop));
                 let task_runner_handle = self.task_runner_host.task_runner_handle();
                 let shell = gpu_broker
                     .with_vulkan_context(|context_data| {
@@ -5354,13 +5361,25 @@ impl ApplicationHandler for ShellApplication {
                 HostEvent::TaskScheduled => {}
                 HostEvent::VsyncRequested => {
                     if self.vsync_host.take_request() && !self.windows.borrow().views.is_empty() {
+                        if !self.vsync_armed {
+                            let timing = self
+                                .pacing_window()
+                                .and_then(|window| CurrentPlatform::next_vsync(window.as_ref()));
+                            self.native_vsync_interval =
+                                timing.as_ref().map(|timing| timing.interval);
+                            if let Some(timing) = timing {
+                                self.next_vsync = Some(timing.deadline);
+                            }
+                        }
                         self.vsync_armed = true;
                         // Vsync is engine-wide. Idle views have no pending
                         // Wayland frame callback and redraw immediately, so
                         // requesting every view can continuously wake the UI
                         // thread while raster is still presenting a frame.
-                        if let Some(window) = self.pacing_window() {
-                            window.request_redraw();
+                        if CurrentPlatform::is_wayland(event_loop) {
+                            if let Some(window) = self.pacing_window() {
+                                window.request_redraw();
+                            }
                         }
                     }
                 }

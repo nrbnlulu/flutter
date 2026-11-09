@@ -131,3 +131,16 @@ require all 60 views to present and report destruction, including owner-driven
 popup removal, with Vulkan validation and clean exit. Evidence remains in the
 reported temporary directory. Nested popups and switching to an external
 application are not covered by this fixture.
+
+Windows host vsync now samples `DwmGetCompositionTimingInfo` and QPC to schedule
+the next composition tick through the event loop. Each request resamples the
+native phase so delayed callbacks do not accumulate drift. Invalid or unavailable
+DWM timing uses the monitor-rate timer fallback, and subsequent requests retry
+DWM. Startup logs identify DWM selection and its interval or fallback selection.
+The existing one-shot HWND wake timer also services these deadlines during modal
+move/resize; idle windows do not gain a periodic timer or helper thread.
+
+The DWM API requires a null HWND on supported Windows versions, so this clock
+is composition-wide. Mixed-refresh monitors, VRR and physical presentation
+latency require separate measurements; a passing resize/lifecycle test verifies
+liveness and teardown rather than precise display scanout timing.

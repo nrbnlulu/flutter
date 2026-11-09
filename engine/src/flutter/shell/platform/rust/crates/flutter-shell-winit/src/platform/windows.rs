@@ -1,7 +1,10 @@
-//! Windows host: owned top-level windows, timer pacing, and Windows key JSON.
+//! Windows host: owned top-level windows, DWM pacing, and Windows key JSON.
 
 use super::super::{NativeWindowKind, PopupPlacement};
-use super::PlatformBackend;
+use super::{PlatformBackend, VsyncTiming};
+
+#[path = "windows_vsync.rs"]
+mod vsync;
 use flutter_shell_core::{FlutterRustKeyEvent, FlutterRustKeyEventType};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
@@ -323,6 +326,14 @@ impl PlatformBackend for WindowsPlatform {
             }
         }
         Ok(())
+    }
+
+    fn uses_host_vsync(_event_loop: &dyn ActiveEventLoop) -> bool {
+        true
+    }
+
+    fn next_vsync(_window: &dyn Window) -> Option<VsyncTiming> {
+        vsync::next_vsync()
     }
 
     fn is_wayland(_event_loop: &dyn ActiveEventLoop) -> bool {
