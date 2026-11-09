@@ -40,13 +40,21 @@ class BuildRustTest(unittest.TestCase):
         artifact.parent.mkdir(parents=True)
         artifact.write_bytes(b"target archive")
         argv = [
-            "build_rust.py", "--manifest-path", str(root / "Cargo.toml"),
-            "--package", "shell-core", "--output", str(output),
-            "--target", target, "--cargo-target-dir", str(target_dir),
+            "build_rust.py",
+            "--manifest-path",
+            str(root / "Cargo.toml"),
+            "--package",
+            "shell-core",
+            "--output",
+            str(output),
+            "--target",
+            target,
+            "--cargo-target-dir",
+            str(target_dir),
         ]
         with mock.patch("sys.argv", argv), mock.patch.dict(
-            os.environ, {"FLUTTER_RUNTIME_MODE": mode}
-        ), mock.patch("build_rust.subprocess.run") as run:
+            os.environ,
+            {"FLUTTER_RUNTIME_MODE": mode}), mock.patch("build_rust.subprocess.run") as run:
           build_rust.main()
         self.assertEqual(output.read_bytes(), b"target archive")
         command = run.call_args.args[0]
