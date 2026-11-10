@@ -4,6 +4,7 @@
 
 """Package physical Windows engine/SDK artifacts without checkout symlinks."""
 import argparse
+import importlib.util
 import json
 from pathlib import Path
 import shutil
@@ -50,9 +51,12 @@ def engine(source, destination):
 
 def sources(checkout, destination):
   shell = checkout / 'engine/src/flutter/shell/platform/rust'
-  for entry in ['Cargo.toml', 'Cargo.lock', 'crates', 'third_party/winit-wayland',
-                'third_party/wgpu-hal']:
-    copy(shell / entry, destination / entry)
+  spec = importlib.util.spec_from_file_location(
+      'package_sdk_sources', shell / 'tools/package_sdk_sources.py'
+  )
+  package = importlib.util.module_from_spec(spec)
+  spec.loader.exec_module(package)
+  package.stage(shell.resolve(), destination.resolve())
 
 
 def main():

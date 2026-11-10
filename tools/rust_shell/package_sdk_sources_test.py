@@ -13,9 +13,21 @@ SOURCE=ROOT/'engine/src/flutter/shell/platform/rust'
 spec=importlib.util.spec_from_file_location('package_sdk_sources',SOURCE/'tools/package_sdk_sources.py')
 package=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package)
+windows_spec=importlib.util.spec_from_file_location('package_windows_sdk',ROOT/'tools/rust_shell/package_windows_sdk.py')
+windows_package=importlib.util.module_from_spec(windows_spec)
+windows_spec.loader.exec_module(windows_package)
 
 
 class PackagingTest(unittest.TestCase):
+    def test_windows_package_uses_the_complete_shared_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination=Path(directory)/'sdk'
+            windows_package.sources(ROOT,destination)
+            self.assertTrue((destination/'dart/flutter_rust_agent/lib/flutter_rust_agent.dart').is_file())
+            self.assertTrue((destination/'third_party/wgpu-hal/Cargo.toml').is_file())
+            self.assertTrue((destination/'skills/application/SKILL.md').is_file())
+            self.assertTrue((destination/'rust-toolchain.toml').is_file())
+
     def test_every_headless_source_and_both_patches_are_self_contained(self):
         with tempfile.TemporaryDirectory() as directory:
             destination=Path(directory)/'sdk'
