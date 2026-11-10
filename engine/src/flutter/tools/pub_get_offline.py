@@ -97,7 +97,12 @@ def check_package_config(package):
 EXCLUDED_DIRS = [
     os.path.join(ENGINE_DIR, 'lib'),
     os.path.join(ENGINE_DIR, 'prebuilts'),
+    # These packages require Flutter SDK resolution, rather than the engine's
+    # vendored, Dart-only dependency graph.
+    os.path.join(ENGINE_DIR, 'shell', 'platform', 'rust', 'dart', 'flutter_rust_agent'),
+    os.path.join(ENGINE_DIR, 'shell', 'platform', 'rust', 'tests', 'agent_fixture'),
     os.path.join(ENGINE_DIR, 'shell', 'platform', 'rust', 'tests', 'frb_fixture'),
+    os.path.join(ENGINE_DIR, 'shell', 'platform', 'rust', 'tests', 'headless_fixture'),
     os.path.join(ENGINE_DIR, 'shell', 'platform', 'rust', 'tests', 'smoke_fixture'),
     os.path.join(ENGINE_DIR, 'shell', 'platform', 'rust', 'tests', 'windowing_fixture'),
     os.path.join(ENGINE_DIR, 'shell', 'platform', 'fuchsia'),

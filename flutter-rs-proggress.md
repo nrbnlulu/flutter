@@ -2566,3 +2566,17 @@ Local offline checks pass for authenticated-download argument construction,
 HTTPS fallback, installation into paths with spaces, upgrades, checksum rejection
 preserving the installed binary, and temporary-download cleanup. Live Windows
 rolling-release downloads remain dependent on successful workflow publication.
+
+### Headless package audit CI fix (2026-11-10)
+
+Actions run 42772184735 stopped all seven Linux, Android and Windows engine jobs
+in the offline-pub hook before compilation. The headless agent bridge and
+agent/headless fixtures were absent from the narrow exclusions used for packages
+that require Flutter SDK resolution. Added those three paths while keeping
+unknown packages under both Rust `dart/` and `tests/` subject to the audit.
+
+Both audit regressions pass, including a reconstruction of every tracked engine
+pubspec in a clean temporary tree. Removing the new exclusions makes both tests
+fail. The GPU-free Linux/Windows CI job now runs these checks before engine sync,
+with its YAML dependency installed explicitly. Cloud build and publication
+success remain pending a run of the corrected revision.
