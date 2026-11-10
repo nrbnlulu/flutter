@@ -43,6 +43,7 @@ class RustVulkanPresentation final : public GPUSurfaceVulkanDelegate {
   // |GPUSurfaceVulkanDelegate|
   const vulkan::VulkanProcTable& vk() override;
   void SetActiveViewId(int64_t view_id) override;
+  void SetUIFrameNumber(uint64_t frame_number) override;
   void RecordFrameResources(bool recreated_transients) override;
   FlutterVulkanImage AcquireImage(const DlISize& size) override;
   bool PresentImage(VkImage image, VkFormat format) override;
@@ -61,6 +62,7 @@ class RustVulkanPresentation final : public GPUSurfaceVulkanDelegate {
   mutable std::mutex views_mutex_;
   std::unordered_map<FlutterRustViewId, std::shared_ptr<ViewPresentation>>
       views_;
+  uint64_t active_ui_frame_number_ = 0;
   FlutterRustViewId active_view_id_ = FLUTTER_RUST_IMPLICIT_VIEW_ID;
   std::shared_ptr<ViewPresentation> active_frame_;
 };

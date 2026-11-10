@@ -6,6 +6,17 @@ use winit::{
 };
 
 use super::{NativeWindowKind, PopupPlacement};
+use std::time::{Duration, Instant};
+
+/// A host wakeup aligned to the native compositor clock.
+pub(crate) struct VsyncTiming {
+    pub deadline: Instant,
+    pub interval: Duration,
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+#[path = "platform/positioner.rs"]
+pub(crate) mod positioner;
 
 #[cfg(target_os = "linux")]
 #[path = "platform/linux.rs"]
@@ -21,7 +32,14 @@ mod android;
 #[cfg(target_os = "android")]
 pub(crate) use android::AndroidPlatform as CurrentPlatform;
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(target_os = "windows")]
+#[path = "platform/windows.rs"]
+mod windows;
+
+#[cfg(target_os = "windows")]
+pub(crate) use windows::WindowsPlatform as CurrentPlatform;
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "android")))]
 compile_error!(
     "flutter-shell-winit needs a platform adapter for this target; the shared host is platform-neutral"
 );
@@ -36,12 +54,51 @@ pub(crate) trait PlatformBackend {
     /// keys (see `KeyboardState::inferred_num_lock`).
     const INFERS_NUM_LOCK: bool;
 
+    fn text_modifiers(
+        modifiers: winit::keyboard::ModifiersState,
+        _right_alt: bool,
+    ) -> winit::keyboard::ModifiersState {
+        modifiers
+    }
+
+    /// CapsLock, NumLock, ScrollLock as observed on the native event thread.
+    fn lock_state() -> Option<[bool; 3]> {
+        None
+    }
+
+    fn supports_window_kind(_kind: NativeWindowKind) -> bool {
+        true
+    }
+
+    fn legacy_key_message(
+        _physical: winit::keyboard::PhysicalKey,
+        _event: &flutter_shell_core::FlutterRustKeyEvent,
+    ) -> Option<Vec<u8>> {
+        None
+    }
+
     fn prepare_window_attributes(
         attributes: WindowAttributes,
         kind: NativeWindowKind,
     ) -> WindowAttributes;
 
+    fn configure_native_window(
+        _window: &dyn Window,
+        _kind: NativeWindowKind,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     fn is_wayland(event_loop: &dyn ActiveEventLoop) -> bool;
+
+    fn uses_host_vsync(event_loop: &dyn ActiveEventLoop) -> bool {
+        Self::is_wayland(event_loop)
+    }
+
+    /// None keeps the existing nominal-interval timer fallback.
+    fn next_vsync(_window: &dyn Window) -> Option<VsyncTiming> {
+        None
+    }
 
     fn create_popup(
         event_loop: &dyn ActiveEventLoop,
@@ -49,6 +106,15 @@ pub(crate) trait PlatformBackend {
         placement: PopupPlacement,
         grab: bool,
     ) -> Result<Box<dyn Window>, String>;
+
+    #[cfg(target_os = "windows")]
+    fn reposition_popup(
+        _window: &dyn Window,
+        _parent: &dyn Window,
+        _placement: PopupPlacement,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 
     fn set_dialog_parent(child: &dyn Window, parent: &dyn Window) -> Result<(), String>;
 }

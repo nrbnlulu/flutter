@@ -1,0 +1,25 @@
+[package]
+name = "flutter-rust-shell-smoke"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+publish = false
+
+[workspace]
+
+[dependencies]
+flutter-plugin-sdk = { path = "../../crates/flutter-plugin-sdk" }
+flutter-shell-winit = { path = "../../crates/flutter-shell-winit" }
+
+[patch.crates-io]
+winit-wayland = { path = "../../third_party/winit-wayland" }
+android-activity = { git = "https://github.com/nrbnlulu/android-activity", rev = "10cf552eba323e5c9cd26f6e2619d62050f2395c" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[patch."https://github.com/gfx-rs/wgpu.git"]
+wgpu-hal = { path = "../../third_party/wgpu-hal" }

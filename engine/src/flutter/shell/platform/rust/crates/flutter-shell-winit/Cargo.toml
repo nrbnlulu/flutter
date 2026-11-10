@@ -11,6 +11,7 @@ crate-type = ["rlib", "staticlib"]
 path = "src/lib.rs"
 
 [dependencies]
+flutter-shell-agent = { path = "../flutter-shell-agent", version = "0.1.0" }
 async-trait = "=0.1.89"
 flutter-gpu-queue = { path = "../flutter-gpu-queue", version = "0.1.0" }
 flutter-plugin-sdk = { path = "../flutter-plugin-sdk", version = "0.1.0" }
@@ -42,3 +43,10 @@ wgpu = { git = "https://github.com/gfx-rs/wgpu.git", rev = "014d9e84813a2946febf
 winit = { version = "=0.31.0-beta.2", default-features = false, features = [
   "android-game-activity",
 ] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+raw-window-handle = "=0.6.2"
+arboard = { version = "=3.7.0", default-features = false }
+wgpu = { git = "https://github.com/gfx-rs/wgpu.git", rev = "014d9e84813a2946febfa4888694c0b70565b2f5", default-features = false, features = ["std", "vulkan", "wgsl"] }
+winit = { version = "=0.31.0-beta.2", default-features = false }
+windows-sys = { version = "=0.61.2", features = ["Win32_Graphics_Dwm", "Win32_System_Performance"] }

@@ -10,6 +10,19 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+
+
+def artifact_name(package: str, crate_type: str, target: str) -> str:
+  """Use the target's naming convention, including for cross-compilation."""
+  name = package.replace("-", "_")
+  if "windows" in target:
+    if crate_type == "cdylib":
+      return name + ".dll"
+    return name + ".lib" if "msvc" in target else "lib" + name + ".a"
+  if crate_type == "cdylib":
+    return "lib" + name + (".dylib" if "apple" in target or target == "darwin" else ".so")
+  return "lib" + name + ".a"
 
 
 def main() -> None:
@@ -19,7 +32,7 @@ def main() -> None:
   parser.add_argument("--package", required=True)
   parser.add_argument("--output", required=True)
   # Rust target triple, e.g. "aarch64-linux-android". Host compilation is
-  # used when omitted, matching every non-Android caller of this script.
+  # used when omitted. Windows GN callers explicitly select the MSVC target.
   parser.add_argument("--target")
   # "staticlib" (default) yields a "lib<pkg>.a" the C++/GN link step
   # consumes; "cdylib" yields a "lib<pkg>.so", which is what Android needs
@@ -55,9 +68,10 @@ def main() -> None:
   profile_dir = os.environ.get("FLUTTER_RUNTIME_MODE", "debug")
   cargo_profile_dir = "release" if profile_dir in ("profile", "release") else "debug"
   artifact_dir = cargo_target_dir / (args.target or "") / cargo_profile_dir
-  extension = "so" if args.crate_type == "cdylib" else "a"
-  prefix = "" if extension == "so" and os.name == "nt" else "lib"
-  artifact = artifact_dir / (prefix + args.package.replace("-", "_") + "." + extension)
+  # GN supplies an explicit MSVC target on Windows. Preserve host builds for
+  # existing callers, and never use the host OS to name a cross-built library.
+  target = args.target or ("windows-msvc" if os.name == "nt" else sys.platform)
+  artifact = artifact_dir / artifact_name(args.package, args.crate_type, target)
 
   environment = os.environ.copy()
   environment["CARGO_TARGET_DIR"] = str(cargo_target_dir)

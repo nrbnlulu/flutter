@@ -1,0 +1,10 @@
+name: flutter_rust_shell_smoke
+description: Ordinary-window counter and text-input smoke fixture.
+publish_to: none
+environment:
+  sdk: ^3.11.0
+dependencies:
+  flutter:
+    sdk: flutter
+flutter:
+  uses-material-design: true

@@ -884,6 +884,18 @@ platform is added:
 - Add pixel-buffer, wgpu-texture, video, GIS, and 3D example plugins.
 - Add `flutter create --shell=rust` and corresponding run/build/test support.
 
+## Headless agent verification
+
+The proposed [headless agent verification plan](flutter-rs-agent-plan.md) adds
+a display-free Rust host for application scenarios, structured UI assertions,
+multi-window input, screenshots and recordings. It retains Impeller and the
+private engine integration, with one engine/root isolate and multiple virtual
+views. Linux is the first delivery target; native shell tests remain necessary
+for OS and compositor behavior. The plan includes a source review, protocol and
+frame-completion contracts, implementation phases and acceptance gates. Linux rendering feasibility and the display-free virtual host (Phases 0 and 1)
+are implemented; agent observation/control, assertions and recordings remain
+pending. See the progress log for validation and current limitations.
+
 ## Delivery phases
 
 Platform enablement is intentionally ordered as Linux, Windows, Android, web,
@@ -1012,3 +1024,14 @@ attach DevTools in profile mode. The optimized Rust runner retains debug
 information and is staged in `runner-rs/target/flutter-profile/`. Profile
 requires a matching local engine build or a BETA SDK containing profile
 artifacts. See `flutter-rs-proggress.md` for build setup and verification.
+
+The Linux headless host also supports a local agent protocol (`rlutter agent
+--headless --stdio --artifacts DIR`), revisioned semantics, physical input and
+UI-frame-correlated PNG captures. See the
+[protocol contract](engine/src/flutter/shell/platform/rust/docs/agent-protocol.md).
+
+`rlutter verify SCENARIO --headless --report RESULT` provides fresh-process
+assertions, provenance and evidence; per-view FFmpeg recording is optional. The
+Linux SDK passes extracted-archive debug/profile/release checks. Windows headless
+runtime support remains gated independently. See the
+[distribution contract](engine/src/flutter/shell/platform/rust/docs/distribution.md).

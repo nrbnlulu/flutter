@@ -41,6 +41,9 @@ class Surface {
   // surfaces render a single implicit view and intentionally ignore this.
   virtual void SetActiveViewId(int64_t view_id);
 
+  // Optional observation metadata; cached redraws retain the original UI build.
+  virtual void SetUIFrameNumber(uint64_t frame_number) {}
+
   // Releases any per-view resources cached for a removed Flutter view. Called
   // on the raster thread from Rasterizer::CollectView.
   virtual void CollectView(int64_t view_id);

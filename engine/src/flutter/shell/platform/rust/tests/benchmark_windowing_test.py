@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import benchmark_linux
 import benchmark_windowing as benchmark
 import compare_benchmarks as comparator
 
@@ -23,7 +24,7 @@ class AccountingTest(unittest.TestCase):
   def test_process_name_with_spaces_and_parentheses(self):
     fields = ["S"] + ["0"] * 10 + ["150", "50"] + ["0"] * 10
     stat = "123 (name with ) parentheses) " + " ".join(fields)
-    self.assertEqual(benchmark.cpu_seconds(stat), 200 / os.sysconf("SC_CLK_TCK"))
+    self.assertEqual(benchmark.cpu_seconds(stat, ticks=100), 2)
 
   def test_partial_presentation_write_is_ignored(self):
     with tempfile.TemporaryDirectory() as directory:
@@ -113,12 +114,14 @@ class AccountingTest(unittest.TestCase):
 
   def test_locked_session_is_rejected(self):
     outputs = [
-        {"stdout": json.dumps([{"uid": os.getuid(), "session": "1"}])},
+        {"stdout": json.dumps([{"uid": 1000, "session": "1"}])},
         {"stdout": "Type=wayland\nActive=yes\nLockedHint=yes\n"},
     ]
-    with patch.object(benchmark, "command_output", side_effect=outputs):
+    with patch.object(benchmark_linux.os, "getuid", return_value=1000,
+                      create=True), patch.object(benchmark_linux, "command_output",
+                                                 side_effect=outputs):
       with self.assertRaisesRegex(RuntimeError, "locked"):
-        benchmark.unlocked_session()
+        benchmark_linux.unlocked_session()
 
   def test_comparator_rejects_missing_guard_even_with_primary_win(self):
     with tempfile.TemporaryDirectory() as directory:

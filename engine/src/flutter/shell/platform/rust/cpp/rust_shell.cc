@@ -5,6 +5,8 @@
 #include "flutter/shell/platform/rust/cpp/rust_shell.h"
 
 #include <cstdio>
+#include <cstdlib>
+#include <mutex>
 #include <vector>
 
 #include "flutter/common/constants.h"
@@ -36,6 +38,31 @@ struct FlutterRustPlatformMessageResponseHandle {
 };
 
 namespace flutter {
+
+struct RustAgentDiagnostics {
+  std::mutex mutex;
+  FlutterRustDiagnosticCallbacks callbacks = {};
+  std::vector<std::pair<std::string, std::string>> pending_errors;
+  void Report(int kind, const std::string& message, const std::string& stack) {
+    FlutterRustDiagnosticCallbacks copy;
+    {
+      std::scoped_lock lock(mutex);
+      copy = callbacks;
+      if (!copy.report && kind == 1 && pending_errors.size() < 16) {
+        pending_errors.emplace_back(message, stack);
+      }
+    }
+    std::fprintf(stderr, "[flutter-agent-%s] %s\n%s",
+                 kind == 1 ? "exception" : "log", message.c_str(),
+                 stack.c_str());
+    if (copy.report) {
+      copy.report(copy.user_data, kind,
+                  reinterpret_cast<const uint8_t*>(message.data()),
+                  message.size(),
+                  reinterpret_cast<const uint8_t*>(stack.data()), stack.size());
+    }
+  }
+};
 
 namespace {
 
@@ -110,6 +137,25 @@ std::unique_ptr<RustShell> RustShell::Create(
                "font fallback (emoji, CJK, ...) is unavailable. Configure "
                "with flutter/tools/gn --enable-fontconfig.\n");
 #endif
+  auto diagnostics = std::make_shared<RustAgentDiagnostics>();
+  if (std::getenv("FLUTTER_RUST_AGENT_SOCKET")) {
+    auto previous_log = settings.log_message_callback;
+    settings.log_message_callback = [diagnostics, previous_log](
+                                        const std::string& tag,
+                                        const std::string& message) {
+      if (previous_log) {
+        previous_log(tag, message);
+      }
+      diagnostics->Report(0, message, "");
+    };
+    auto previous_error = settings.unhandled_exception_callback;
+    settings.unhandled_exception_callback = [diagnostics, previous_error](
+                                                const std::string& error,
+                                                const std::string& stack) {
+      diagnostics->Report(1, error, stack);
+      return previous_error ? previous_error(error, stack) : false;
+    };
+  }
   // The winit-owned UI thread never installs an fml::MessageLoop, so
   // UIDartState's task-observer registration (used to flush the root
   // isolate's microtask queue after each task) has nowhere to go by default.
@@ -193,16 +239,18 @@ std::unique_ptr<RustShell> RustShell::Create(
     return nullptr;
   }
   return std::unique_ptr<RustShell>(new RustShell(
-      std::move(thread_host), std::move(presentation), std::move(shell),
-      windowing_callbacks, std::move(settings)));
+      std::move(diagnostics), std::move(thread_host), std::move(presentation),
+      std::move(shell), windowing_callbacks, std::move(settings)));
 }
 
-RustShell::RustShell(std::unique_ptr<ThreadHost> thread_host,
+RustShell::RustShell(std::shared_ptr<RustAgentDiagnostics> diagnostics,
+                     std::unique_ptr<ThreadHost> thread_host,
                      std::shared_ptr<RustVulkanPresentation> presentation,
                      std::unique_ptr<Shell> shell,
                      FlutterRustWindowingCallbacks windowing_callbacks,
                      Settings settings)
-    : thread_host_(std::move(thread_host)),
+    : diagnostics_(std::move(diagnostics)),
+      thread_host_(std::move(thread_host)),
       presentation_(std::move(presentation)),
       shell_(std::move(shell)),
       windowing_callbacks_(windowing_callbacks),
@@ -230,6 +278,19 @@ RustShell::~RustShell() {
     shell_->GetTaskRunners().GetRasterTaskRunner()->PostTask(
         [presentation = presentation_]() { presentation->ReleaseSurfaces(); });
     // Shell destruction drains raster work before ThreadHost joins it.
+  }
+}
+
+void RustShell::SetDiagnosticCallbacks(
+    FlutterRustDiagnosticCallbacks callbacks) {
+  std::vector<std::pair<std::string, std::string>> pending;
+  {
+    std::scoped_lock lock(diagnostics_->mutex);
+    diagnostics_->callbacks = callbacks;
+    pending.swap(diagnostics_->pending_errors);
+  }
+  for (const auto& [message, stack] : pending) {
+    diagnostics_->Report(1, message, stack);
   }
 }
 
@@ -593,6 +654,17 @@ bool RustShell::GetWindowState(FlutterRustViewId view_id,
                                                view_id, state) != 0;
 }
 
+bool RustShell::UpdatePopupPosition(
+    FlutterRustViewId view_id,
+    const FlutterRustPopupWindowRequest* request) {
+  if (view_id <= kFlutterImplicitViewId || !request ||
+      !windowing_callbacks_.update_popup_position) {
+    return false;
+  }
+  return windowing_callbacks_.update_popup_position(
+             windowing_callbacks_.user_data, view_id, request) != 0;
+}
+
 void RustShell::SetWindowSize(FlutterRustViewId view_id,
                               double width,
                               double height) {
@@ -756,6 +828,10 @@ flutter::Settings ToSettings(const FlutterRustShellSettings& settings) {
 }
 
 }  // namespace
+
+extern "C" uint32_t FlutterRustShellGetEngineAbiVersion(void) {
+  return FLUTTER_RUST_SHELL_ABI_VERSION;
+}
 
 extern "C" void* FlutterRustShellCreateShell(
     void* task_runner,
@@ -1020,6 +1096,15 @@ extern "C" int FlutterRustShellWindowGetState(int64_t engine_id,
              : 0;
 }
 
+extern "C" int FlutterRustShellWindowUpdatePopupPosition(
+    int64_t engine_id,
+    FlutterRustViewId view_id,
+    const FlutterRustPopupWindowRequest* request) {
+  return engine_id != 0 &&
+         reinterpret_cast<flutter::RustShell*>(engine_id)->UpdatePopupPosition(
+             view_id, request);
+}
+
 extern "C" void FlutterRustShellWindowSetSize(int64_t engine_id,
                                               FlutterRustViewId view_id,
                                               double width,
@@ -1125,4 +1210,21 @@ extern "C" void FlutterRustShellUnlockQueue(void* shell) {
 
 extern "C" void FlutterRustShellDestroyShell(void* shell) {
   delete static_cast<flutter::RustShell*>(shell);
+}
+
+extern "C" void FlutterRustShellSetDiagnosticCallbacks(
+    void* shell,
+    FlutterRustDiagnosticCallbacks callbacks) {
+  if (shell) {
+    static_cast<flutter::RustShell*>(shell)->SetDiagnosticCallbacks(callbacks);
+  }
+}
+extern "C" const char* FlutterRustShellGetBuildMode(void) {
+#if FLUTTER_RUNTIME_MODE == FLUTTER_RUNTIME_MODE_RELEASE
+  return "release";
+#elif FLUTTER_RUNTIME_MODE == FLUTTER_RUNTIME_MODE_PROFILE
+  return "profile";
+#else
+  return "debug";
+#endif
 }

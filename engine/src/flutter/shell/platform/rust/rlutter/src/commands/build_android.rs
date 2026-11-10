@@ -352,7 +352,9 @@ mod tests {
         stage_android(&p, &stage, std::slice::from_ref(&output)).unwrap();
         let staged = stage.join("jniLibs/arm64-v8a/libdemo.so");
         let sentinel = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
-        fs::File::open(&staged)
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&staged)
             .unwrap()
             .set_modified(sentinel)
             .unwrap();

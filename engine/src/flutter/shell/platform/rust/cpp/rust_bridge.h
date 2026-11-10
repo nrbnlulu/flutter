@@ -19,7 +19,7 @@ extern "C" {
 
 // This private ABI is lockstep-versioned with the Flutter fork. It is not the
 // Flutter Embedder API and is never exposed to application plugins.
-#define FLUTTER_RUST_SHELL_ABI_VERSION 13u
+#define FLUTTER_RUST_SHELL_ABI_VERSION 16u
 #define FLUTTER_RUST_PLUGIN_SDK_API_VERSION 1u
 
 typedef struct FlutterRustShellAbi {
@@ -190,6 +190,9 @@ typedef struct FlutterRustWindowingCallbacks {
   FlutterRustSetWindowFlagCallback set_window_fullscreen;
   FlutterRustSetWindowEventCallback set_window_event_callback;
   FlutterRustSetWindowParentCallback set_window_parent;
+  int (*update_popup_position)(void* user_data,
+                               FlutterRustViewId view_id,
+                               const FlutterRustPopupWindowRequest* request);
 } FlutterRustWindowingCallbacks;
 
 typedef enum FlutterRustViewFocusState {
@@ -225,6 +228,7 @@ typedef struct FlutterRustTaskRunnerCallbacks {
 // the image and all synchronization associated with it. C++ borrows it only
 // for the duration of a Flutter frame.
 typedef struct FlutterRustVulkanImage {
+  uint64_t ui_frame_number;
   uint64_t image;
   uint32_t format;
   // Binary semaphore signalled by wgpu once acquisition is complete. Impeller
@@ -248,7 +252,13 @@ typedef int (*FlutterRustPresentVulkanImageCallback)(
     void* user_data,
     FlutterRustVulkanImage image);
 
+// Native images return in PRESENT_SRC_KHR; offscreen images return in
+// COLOR_ATTACHMENT_OPTIMAL, matching the wgpu COLOR_TARGET state.
+#define FLUTTER_RUST_PRESENTATION_NATIVE 0u
+#define FLUTTER_RUST_PRESENTATION_OFFSCREEN 1u
+
 typedef struct FlutterRustVulkanPresentationCallbacks {
+  uint32_t presentation_mode;
   void* user_data;
   FlutterRustAcquireVulkanImageCallback acquire_image;
   FlutterRustPresentVulkanImageCallback present_image;
@@ -294,6 +304,50 @@ typedef struct FlutterRustExternalTextureCallbacks {
 } FlutterRustExternalTextureCallbacks;
 
 FlutterRustShellAbi FlutterRustShellGetAbi(void);
+
+// Compiled engine version, queried before passing versioned callback tables.
+FLUTTER_RUST_SHELL_EXPORT uint32_t FlutterRustShellGetEngineAbiVersion(void);
+FLUTTER_RUST_SHELL_EXPORT const char* FlutterRustShellGetEngineRevision(void);
+
+typedef struct FlutterRustDiagnosticCallbacks {
+  void* user_data;
+  void (*report)(void* user_data,
+                 int32_t kind,
+                 const uint8_t* message,
+                 uint64_t message_length,
+                 const uint8_t* stack,
+                 uint64_t stack_length);
+} FlutterRustDiagnosticCallbacks;
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSetDiagnosticCallbacks(
+    void* shell,
+    FlutterRustDiagnosticCallbacks callbacks);
+FLUTTER_RUST_SHELL_EXPORT const char* FlutterRustShellGetBuildMode(void);
+
+// Semantics bytes are borrowed only during this callback. Hosts copy them.
+typedef struct FlutterRustSemanticsCallbacks {
+  void* user_data;
+  void (*update)(void* user_data,
+                 int64_t view_id,
+                 const uint8_t* json,
+                 uint64_t length);
+} FlutterRustSemanticsCallbacks;
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSetSemanticsCallbacks(
+    void* shell,
+    FlutterRustSemanticsCallbacks callbacks);
+FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellSetSemanticsEnabled(
+    void* shell,
+    int32_t enabled);
+FLUTTER_RUST_SHELL_EXPORT int FlutterRustShellPerformSemanticsAction(
+    void* shell,
+    int64_t view_id,
+    int32_t node_id,
+    int32_t action,
+    const uint8_t* args,
+    uint64_t args_length);
+// Called on merged UI/platform. Forces a new UI build even for unchanged views;
+// the returned boundary must be exceeded by a capture's ui_frame_number.
+FLUTTER_RUST_SHELL_EXPORT uint64_t
+FlutterRustShellRequestObservationFrame(void* shell);
 
 // Creates and destroys the C++ half of a Rust-owned task runner. The returned
 // handle is opaque to Rust; only the callback table's owner may destroy it.
@@ -473,6 +527,11 @@ FLUTTER_RUST_SHELL_EXPORT int FlutterRustShellWindowGetState(
     int64_t engine_id,
     FlutterRustViewId view_id,
     FlutterRustWindowState* state);
+FLUTTER_RUST_SHELL_EXPORT int FlutterRustShellWindowUpdatePopupPosition(
+    int64_t engine_id,
+    FlutterRustViewId view_id,
+    const FlutterRustPopupWindowRequest* request);
+
 FLUTTER_RUST_SHELL_EXPORT void FlutterRustShellWindowSetSize(
     int64_t engine_id,
     FlutterRustViewId view_id,

@@ -67,9 +67,16 @@ pub fn build_all(project: &Project, mode: BuildMode, cross: CrossTarget) -> Resu
     fs::create_dir_all(&staging)?;
     let mut staged = Vec::new();
     for library in &libraries {
+        let file_name = library.file_name_for(if cross.is_some() {
+            "android"
+        } else if cfg!(windows) {
+            "windows"
+        } else {
+            "linux"
+        });
         eprintln!(
             "Building native library {} ({})...",
-            library.file_name(),
+            file_name.clone(),
             library.dart_package
         );
         run(&mut cargo_command(library, mode, &target_dir, cross))?;
@@ -79,7 +86,7 @@ pub fn build_all(project: &Project, mode: BuildMode, cross: CrossTarget) -> Resu
         }
         let built = built_dir
             .join(mode.cargo_profile_dir())
-            .join(library.file_name());
+            .join(file_name.clone());
         if !built.is_file() {
             bail!(
                 "Cargo did not produce {} for {}",
@@ -87,7 +94,7 @@ pub fn build_all(project: &Project, mode: BuildMode, cross: CrossTarget) -> Resu
                 library.dart_package
             );
         }
-        let destination = staging.join(library.file_name());
+        let destination = staging.join(file_name.clone());
         copy_if_changed(&built, &destination)?;
         staged.push(destination);
     }

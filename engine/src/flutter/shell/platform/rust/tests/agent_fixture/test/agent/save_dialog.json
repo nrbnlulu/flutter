@@ -1,0 +1,153 @@
+{
+  "version": 1,
+  "name": "Unicode value saved through a second window",
+  "steps": [
+    {
+      "name": "Main form is ready",
+      "method": "verify.wait",
+      "params": {
+        "viewId": 1,
+        "selector": {
+          "identifier": "name"
+        },
+        "count": 1,
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "name": "Focus name field using pointer input",
+      "method": "input.tap",
+      "params": {
+        "viewId": 1,
+        "selector": {
+          "identifier": "name"
+        }
+      }
+    },
+    {
+      "name": "Enter Unicode value",
+      "method": "input.replaceText",
+      "params": {
+        "viewId": 1,
+        "text": "שלום 🌍 café"
+      }
+    },
+    {
+      "name": "Observe text editing",
+      "method": "verify.wait",
+      "params": {
+        "viewId": 1,
+        "selector": {
+          "identifier": "name"
+        },
+        "value": "שלום 🌍 café"
+      }
+    },
+    {
+      "name": "Open save dialog using pointer input",
+      "method": "input.tap",
+      "params": {
+        "viewId": 1,
+        "selector": {
+          "identifier": "open_dialog"
+        }
+      }
+    },
+    {
+      "name": "Observe focused dialog window",
+      "method": "verify.wait",
+      "params": {
+        "kind": "windows",
+        "where": {
+          "title": "Save dialog",
+          "focused": true,
+          "ready": true
+        },
+        "count": 1
+      }
+    },
+    {
+      "name": "Observe dialog text",
+      "method": "verify.wait",
+      "params": {
+        "viewId": 2,
+        "selector": {
+          "identifier": "dialog_value"
+        },
+        "value": "שלום 🌍 café"
+      }
+    },
+    {
+      "name": "Capture dialog after observation",
+      "method": "capture.screenshot",
+      "params": {
+        "viewId": 2
+      }
+    },
+    {
+      "name": "Confirm using pointer input",
+      "method": "input.tap",
+      "params": {
+        "viewId": 2,
+        "selector": {
+          "identifier": "confirm"
+        }
+      }
+    },
+    {
+      "name": "Observe dialog removal",
+      "method": "verify.wait",
+      "params": {
+        "kind": "windows",
+        "where": {
+          "title": "Save dialog"
+        },
+        "count": 0
+      }
+    },
+    {
+      "name": "Observe persisted value",
+      "method": "verify.wait",
+      "params": {
+        "viewId": 1,
+        "selector": {
+          "identifier": "saved_value"
+        },
+        "value": "שלום 🌍 café",
+        "stableMs": 60,
+        "timeoutMs": 1500
+      }
+    },
+    {
+      "name": "Inspect keyed public Text property",
+      "method": "verify.assert",
+      "params": {
+        "kind": "widget",
+        "viewId": 1,
+        "query": {
+          "key": "saved_text",
+          "property": "text"
+        },
+        "equals": "Saved: שלום 🌍 café"
+      }
+    },
+    {
+      "name": "Inspect app registered predicate",
+      "method": "verify.assert",
+      "params": {
+        "kind": "app",
+        "query": {
+          "name": "savedValue"
+        },
+        "equals": "שלום 🌍 café"
+      }
+    },
+    {
+      "name": "Capture persisted result after assertion",
+      "method": "capture.screenshot",
+      "params": {
+        "viewId": 1
+      }
+    }
+  ]
+}

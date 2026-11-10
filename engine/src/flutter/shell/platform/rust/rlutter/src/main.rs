@@ -18,6 +18,7 @@ mod util;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
 use crate::{
@@ -36,6 +37,10 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    util::set_protocol_output(matches!(
+        &cli.command,
+        Command::Agent(_) | Command::Verify(_)
+    ));
     let ctx = Ctx {
         flutter: Flutter::discover(cli.flutter_root.as_deref())?,
         sources: EngineSources {
@@ -53,12 +58,32 @@ fn run() -> Result<()> {
                 command.args(["language-server", "--protocol=lsp"]);
             }
             command.args(args.args);
-            Err(command.exec()).context("failed to start bundled Dart")
+            #[cfg(unix)]
+            {
+                Err(command.exec()).context("failed to start bundled Dart")
+            }
+            #[cfg(windows)]
+            {
+                std::process::exit(
+                    command
+                        .status()
+                        .context("failed to start bundled Dart")?
+                        .code()
+                        .unwrap_or(1),
+                );
+            }
         }
         Command::Create(args) => commands::create::run_create(&ctx, &args),
         Command::Clean(args) => commands::clean::run_clean(&ctx, &args),
         Command::Build { target } => match target {
             BuildTarget::Linux(args) => commands::build::build_linux(
+                &ctx,
+                args.mode.resolve()?,
+                &args.target,
+                &args.defines.dart_defines,
+            )
+            .map(drop),
+            BuildTarget::Windows(args) => commands::build::build_windows(
                 &ctx,
                 args.mode.resolve()?,
                 &args.target,
@@ -75,6 +100,8 @@ fn run() -> Result<()> {
             )
             .map(drop),
         },
+        Command::Agent(args) => commands::agent::run_stdio(&ctx, &args),
+        Command::Verify(args) => commands::verify::run(&ctx, &args),
         Command::Run(args) => match commands::run::run_app(&ctx, &args)? {
             0 => Ok(()),
             code => std::process::exit(code),

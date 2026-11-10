@@ -32,12 +32,11 @@ import '_window_win32.dart';
 /// {@macro flutter.widgets.windowing.experimental}
 @internal
 WindowingOwner? createDefaultOwner() {
-  if (Platform.isWindows) {
+  if (isRustShellWindowingAvailable) {
+    return WindowingOwnerRust();
+  } else if (Platform.isWindows) {
     return WindowingOwnerWin32();
   } else if (Platform.isLinux) {
-    if (isRustShellWindowingAvailable) {
-      return WindowingOwnerRust();
-    }
     return WindowingOwnerLinux();
   } else if (Platform.isMacOS) {
     return WindowingOwnerMacOS();

@@ -1,11 +1,7 @@
 //! The generated Gradle project in `android-rs/`, which packages the Rust
 //! runner for Android. Created once and then owned by the user.
 
-use std::{
-    fs,
-    os::unix::fs::{PermissionsExt, symlink},
-    path::Path,
-};
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result};
 
@@ -154,7 +150,11 @@ pub fn ensure(project: &Project, org: &str) -> Result<bool> {
             fs::write(&destination, file.contents)?;
         }
         if file.executable {
-            fs::set_permissions(&destination, fs::Permissions::from_mode(0o755))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&destination, fs::Permissions::from_mode(0o755))?;
+            }
         }
     }
     expose_to_flutter(project)?;
@@ -174,7 +174,7 @@ fn disable_release_shrinking(project: &Project) -> Result<()> {
 fn expose_to_flutter(project: &Project) -> Result<()> {
     let android = project.dir.join("android");
     if fs::symlink_metadata(&android).is_err() {
-        symlink("android-rs", android)?;
+        crate::util::replace_link(&android, Path::new("android-rs"))?;
     }
     Ok(())
 }
@@ -386,11 +386,15 @@ mod tests {
                 .unwrap()
                 .contains("demo_app_android")
         );
-        let mode = fs::metadata(dir.join("gradlew"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o111, 0o111);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir.join("gradlew"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o111, 0o111);
+        }
         assert!(
             fs::metadata(dir.join("gradle/wrapper/gradle-wrapper.jar"))
                 .unwrap()
@@ -398,10 +402,7 @@ mod tests {
                 > 10_000
         );
         assert_eq!(application_id(&p).unwrap(), "dev.example.demo_app.rs");
-        assert_eq!(
-            fs::read_link(p.dir.join("android")).unwrap(),
-            std::path::Path::new("android-rs")
-        );
+        assert!(p.dir.join("android/app/build.gradle").is_file());
     }
 
     #[test]

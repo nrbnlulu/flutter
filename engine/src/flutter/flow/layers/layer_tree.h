@@ -54,12 +54,17 @@ class LayerTree {
   Layer* root_layer() const { return root_layer_.get(); }
   const DlISize& frame_size() const { return frame_size_; }
 
+  // UI build identity retained across raster retries and cached-tree redraws.
+  uint64_t ui_frame_number() const { return ui_frame_number_; }
+  void set_ui_frame_number(uint64_t value) { ui_frame_number_ = value; }
+
   const PaintRegionMap& paint_region_map() const { return paint_region_map_; }
   PaintRegionMap& paint_region_map() { return paint_region_map_; }
 
  private:
   std::shared_ptr<Layer> root_layer_;
   DlISize frame_size_;  // Physical pixels.
+  uint64_t ui_frame_number_ = 0;
 
   PaintRegionMap paint_region_map_;
 

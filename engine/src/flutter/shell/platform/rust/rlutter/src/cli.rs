@@ -34,6 +34,10 @@ pub enum Command {
     },
     /// Build, launch and (in debug mode) hot reload the app on a device.
     Run(RunArgs),
+    /// Build and supervise a display-free verification session over stdio.
+    Agent(AgentArgs),
+    /// Build a fresh app process and execute a versioned verification scenario.
+    Verify(VerifyArgs),
     /// Generate a VS Code workspace with one-button Linux debugging.
     Vscode,
     /// List the devices the app can run on.
@@ -57,6 +61,7 @@ pub struct PassthroughArgs {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum RustPlatform {
     Linux,
+    Windows,
     Android,
 }
 
@@ -66,7 +71,7 @@ pub struct CreateArgs {
     pub dir: PathBuf,
 
     /// Rust shells to generate.
-    #[arg(long, value_enum, value_delimiter = ',', default_value = "linux")]
+    #[arg(long, value_enum, value_delimiter = ',', default_value = if cfg!(windows) { "windows" } else { "linux" })]
     pub rust_platforms: Vec<RustPlatform>,
 
     /// Organization, forwarded to `flutter create`.
@@ -87,6 +92,8 @@ pub struct CreateArgs {
 pub enum BuildTarget {
     /// Build for the Linux host.
     Linux(BuildArgs),
+    /// Build for the Windows x64 host.
+    Windows(BuildArgs),
     /// Build an Android APK.
     Android(AndroidBuildArgs),
 }
@@ -134,6 +141,18 @@ pub struct AndroidBuildArgs {
 
 #[derive(Args, Debug)]
 pub struct RunArgs {
+    /// Run without a display server or native windows (Linux x64).
+    #[arg(long)]
+    pub headless: bool,
+
+    /// Initial physical viewport dimensions.
+    #[arg(long, default_value = "1280x800", value_parser = parse_headless_size, requires = "headless")]
+    pub size: (u32, u32),
+
+    /// Logical-to-physical pixel scale.
+    #[arg(long, default_value = "1", value_parser = parse_pixel_ratio, requires = "headless")]
+    pub pixel_ratio: f64,
+
     #[command(flatten)]
     pub mode: ModeArgs,
 
@@ -144,14 +163,71 @@ pub struct RunArgs {
     #[arg(short = 't', long, default_value = "lib/main.dart")]
     pub target: String,
 
-    /// Write VM service details for an editor debugger (Linux debug mode).
+    /// Write VM service details for a desktop editor debugger.
     #[arg(long, value_name = "FILE")]
     pub vm_service_info_file: Option<PathBuf>,
 
-    /// Device id from `rlutter devices`, or a platform (`android`, `linux`) to
+    /// Device id from `rlutter devices`, or a platform (`android`, `linux`, `windows`) to
     /// choose among its devices. Several candidates open a picker.
     #[arg(short = 'd', long)]
     pub device: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct AgentArgs {
+    #[command(flatten)]
+    pub mode: ModeArgs,
+    #[command(flatten)]
+    pub defines: DartDefineArgs,
+    #[arg(short = 't', long, default_value = "lib/main.dart")]
+    pub target: String,
+    #[arg(long, required = true)]
+    pub headless: bool,
+    #[arg(long, required = true)]
+    pub stdio: bool,
+    /// Fresh directory for build/app logs and captured artifacts.
+    #[arg(long, value_name = "DIR")]
+    pub artifacts: PathBuf,
+    #[arg(long,default_value="1280x800",value_parser=parse_headless_size)]
+    pub size: (u32, u32),
+    #[arg(long,default_value="1",value_parser=parse_pixel_ratio)]
+    pub pixel_ratio: f64,
+}
+
+#[derive(Args, Debug)]
+pub struct VerifyArgs {
+    pub scenario: PathBuf,
+    #[command(flatten)]
+    pub mode: ModeArgs,
+    #[command(flatten)]
+    pub defines: DartDefineArgs,
+    #[arg(short, long, default_value = "lib/main.dart")]
+    pub target: String,
+    #[arg(long, required = true)]
+    pub headless: bool,
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long,default_value="1280x800",value_parser=parse_headless_size)]
+    pub size: (u32, u32),
+    #[arg(long,default_value="1",value_parser=parse_pixel_ratio)]
+    pub pixel_ratio: f64,
+}
+
+fn parse_headless_size(value: &str) -> Result<(u32, u32), String> {
+    let (width, height) = value.split_once('x').ok_or("size must be WIDTHxHEIGHT")?;
+    let width = width.parse::<u32>().map_err(|_| "invalid width")?;
+    let height = height.parse::<u32>().map_err(|_| "invalid height")?;
+    if width == 0 || height == 0 {
+        return Err("dimensions must be positive".into());
+    }
+    Ok((width, height))
+}
+fn parse_pixel_ratio(value: &str) -> Result<f64, String> {
+    let value = value.parse::<f64>().map_err(|_| "invalid pixel ratio")?;
+    if !value.is_finite() || value <= 0. {
+        return Err("pixel ratio must be finite and positive".into());
+    }
+    Ok(value)
 }
 
 #[derive(Args, Debug)]
@@ -167,6 +243,34 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
         Cli::try_parse_from(std::iter::once("rlutter").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn headless_options_validate_dimensions_and_scale() {
+        assert!(parse(&["run"]).is_ok());
+        for value in ["0x800", "800x0", "800", "NaNx800"] {
+            assert!(parse(&["run", "--headless", "--size", value]).is_err());
+        }
+        for value in ["0", "NaN", "inf"] {
+            assert!(parse(&["run", "--headless", "--pixel-ratio", value]).is_err());
+        }
+        assert!(parse(&["run", "--size", "800x600"]).is_err());
+        let Command::Run(args) = parse(&[
+            "run",
+            "--headless",
+            "--size",
+            "801x601",
+            "--pixel-ratio",
+            "1.25",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!()
+        };
+        assert!(args.headless);
+        assert_eq!(args.size, (801, 601));
+        assert_eq!(args.pixel_ratio, 1.25);
     }
 
     #[test]
@@ -221,7 +325,14 @@ mod tests {
         };
         assert_eq!(args.flutter_args, ["--platforms=android", "--empty"]);
         assert_eq!(args.org.as_deref(), Some("com.x"));
-        assert_eq!(args.rust_platforms, [RustPlatform::Linux]);
+        assert_eq!(
+            args.rust_platforms,
+            [if cfg!(windows) {
+                RustPlatform::Windows
+            } else {
+                RustPlatform::Linux
+            }]
+        );
     }
 
     #[test]

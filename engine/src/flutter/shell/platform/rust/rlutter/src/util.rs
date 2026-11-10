@@ -1,11 +1,55 @@
 use std::{
     fs, io,
-    os::unix::fs::symlink,
     path::{Component, Path, PathBuf},
     process::Command,
 };
 
 use anyhow::{Context, Result, bail};
+
+static PROTOCOL_OUTPUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static BUILD_LOG: std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<fs::File>>>> =
+    std::sync::Mutex::new(None);
+pub fn set_protocol_output(enabled: bool) {
+    PROTOCOL_OUTPUT.store(enabled, std::sync::atomic::Ordering::Release);
+}
+pub fn set_build_log(file: fs::File) {
+    *BUILD_LOG.lock().unwrap() = Some(std::sync::Arc::new(std::sync::Mutex::new(file)));
+}
+fn forward_build(
+    mut source: impl io::Read + Send + 'static,
+) -> std::thread::JoinHandle<io::Result<()>> {
+    use io::Write;
+    let log = BUILD_LOG.lock().unwrap().clone();
+    std::thread::spawn(move || {
+        let mut buffer = [0; 8192];
+        let mut failure = None;
+        loop {
+            let count = source.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            if let Some(log) = &log {
+                let mut log = log.lock().unwrap();
+                let written = log.metadata().and_then(|metadata| {
+                    if metadata.len().saturating_add(count as u64) > 64 * 1024 * 1024 {
+                        return Err(io::Error::other(
+                            "build log exceeded 64 MiB retention limit",
+                        ));
+                    }
+                    log.write_all(&buffer[..count])
+                });
+                if let Err(error) = written {
+                    failure = Some(error);
+                }
+            }
+            let _ = io::stderr().lock().write_all(&buffer[..count]);
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    })
+}
 
 pub fn describe(command: &Command) -> String {
     let mut parts = vec![command.get_program().to_string_lossy().into_owned()];
@@ -16,9 +60,28 @@ pub fn describe(command: &Command) -> String {
 /// Runs `command` with inherited stdio and fails if it exits unsuccessfully.
 pub fn run(command: &mut Command) -> Result<()> {
     eprintln!("$ {}", describe(command));
-    let status = command
-        .status()
-        .with_context(|| format!("failed to start `{}`", describe(command)))?;
+    let status = if PROTOCOL_OUTPUT.load(std::sync::atomic::Ordering::Acquire) {
+        use std::process::Stdio;
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("failed to start `{}`", describe(command)))?;
+        let stdout = forward_build(child.stdout.take().unwrap());
+        let stderr = forward_build(child.stderr.take().unwrap());
+        let status = child.wait()?;
+        stdout
+            .join()
+            .map_err(|_| anyhow::anyhow!("build log worker panicked"))??;
+        stderr
+            .join()
+            .map_err(|_| anyhow::anyhow!("build log worker panicked"))??;
+        status
+    } else {
+        command
+            .status()
+            .with_context(|| format!("failed to start `{}`", describe(command)))?
+    };
     if !status.success() {
         bail!("`{}` failed ({status})", describe(command));
     }
@@ -27,6 +90,7 @@ pub fn run(command: &mut Command) -> Result<()> {
 
 /// Points `link` at `target`, replacing whatever is there. A link that already
 /// has the right target is left alone so file times stay stable.
+#[cfg(unix)]
 pub fn replace_link(link: &Path, target: &Path) -> Result<()> {
     match fs::symlink_metadata(link) {
         Ok(meta) => {
@@ -41,8 +105,42 @@ pub fn replace_link(link: &Path, target: &Path) -> Result<()> {
     if let Some(parent) = link.parent() {
         fs::create_dir_all(parent)?;
     }
-    symlink(target, link)
+    std::os::unix::fs::symlink(target, link)
         .with_context(|| format!("link {} -> {}", link.display(), target.display()))
+}
+
+/// Prefer native links; copy when Windows developer-mode symlinks are unavailable.
+#[cfg(windows)]
+pub fn replace_link(link: &Path, target: &Path) -> Result<()> {
+    let target = if target.is_absolute() {
+        target.to_owned()
+    } else {
+        link.parent().context("link has no parent")?.join(target)
+    };
+    if fs::symlink_metadata(link).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        if fs::read_link(link)? == target && link.exists() {
+            return Ok(());
+        }
+        remove_path(link)?;
+    }
+    if !link.exists() {
+        if let Some(parent) = link.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let result = if target.is_dir() {
+            std::os::windows::fs::symlink_dir(&target, link)
+        } else {
+            std::os::windows::fs::symlink_file(&target, link)
+        };
+        if result.is_ok() {
+            return Ok(());
+        }
+    }
+    if target.is_dir() {
+        copy_dir(&target, link)
+    } else {
+        copy_if_changed(&target, link)
+    }
 }
 
 /// Removes a file, symlink or directory tree; missing paths are fine.
@@ -52,6 +150,13 @@ pub fn remove_path(path: &Path) -> Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error).with_context(|| format!("stat {}", path.display())),
     };
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if meta.file_type().is_symlink_dir() {
+            return fs::remove_dir(path).with_context(|| format!("remove {}", path.display()));
+        }
+    }
     if meta.is_dir() {
         fs::remove_dir_all(path)
     } else {
@@ -165,7 +270,9 @@ mod tests {
         fs::write(source.join("change"), "old!").unwrap();
         copy_dir(&source, &destination).unwrap();
         let sentinel = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
-        fs::File::open(destination.join("nested/keep"))
+        fs::OpenOptions::new()
+            .write(true)
+            .open(destination.join("nested/keep"))
             .unwrap()
             .set_modified(sentinel)
             .unwrap();

@@ -11,7 +11,7 @@
 use std::ffi::c_void;
 
 /// Version of the private Rust/C++ ABI.
-pub const SHELL_ABI_VERSION: u32 = 13;
+pub const SHELL_ABI_VERSION: u32 = 16;
 /// Plugin SDK API version expected by this lockstep private runtime.
 pub const PLUGIN_SDK_API_VERSION: u32 = 1;
 
@@ -166,6 +166,9 @@ pub struct FlutterRustWindowingCallbacks {
         Option<extern "C" fn(*mut c_void, Option<FlutterRustWindowEventCallback>)>,
     pub set_window_parent:
         Option<extern "C" fn(*mut c_void, FlutterRustViewId, FlutterRustViewId) -> i32>,
+    pub update_popup_position: Option<
+        extern "C" fn(*mut c_void, FlutterRustViewId, *const FlutterRustPopupWindowRequest) -> i32,
+    >,
 }
 
 #[repr(u32)]
@@ -224,6 +227,7 @@ pub struct FlutterRustVulkanContextData {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FlutterRustVulkanImage {
+    pub ui_frame_number: u64,
     pub image: u64,
     pub format: u32,
     /// Binary semaphore signalled by wgpu after swapchain acquisition.
@@ -236,9 +240,23 @@ pub struct FlutterRustVulkanImage {
     pub transients: u64,
 }
 
+#[repr(C)]
+pub struct FlutterRustDiagnosticCallbacks {
+    pub user_data: *mut c_void,
+    pub report: Option<extern "C" fn(*mut c_void, i32, *const u8, u64, *const u8, u64)>,
+}
+
+#[repr(C)]
+pub struct FlutterRustSemanticsCallbacks {
+    pub user_data: *mut c_void,
+    pub update: Option<extern "C" fn(*mut c_void, i64, *const u8, u64)>,
+}
+
 /// ABI-compatible with `FlutterRustVulkanPresentationCallbacks`.
 #[repr(C)]
 pub struct FlutterRustVulkanPresentationCallbacks {
+    /// 0: native PRESENT_SRC_KHR, 1: owned offscreen COLOR_ATTACHMENT_OPTIMAL.
+    pub presentation_mode: u32,
     pub user_data: *mut c_void,
     pub acquire_image:
         Option<extern "C" fn(*mut c_void, u32, u32, *mut FlutterRustVulkanImage) -> i32>,

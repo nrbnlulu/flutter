@@ -32,6 +32,8 @@ bool RustVulkanPresentation::IsValid() const {
   std::scoped_lock lock(views_mutex_);
   const auto implicit = views_.find(FLUTTER_RUST_IMPLICIT_VIEW_ID);
   return context_ && context_->IsValid() && implicit != views_.end() &&
+         implicit->second->callbacks.presentation_mode <=
+             FLUTTER_RUST_PRESENTATION_OFFSCREEN &&
          implicit->second->callbacks.acquire_image &&
          implicit->second->callbacks.present_image;
 }
@@ -50,8 +52,9 @@ const vulkan::VulkanProcTable& RustVulkanPresentation::vk() {
 bool RustVulkanPresentation::RegisterView(
     FlutterRustViewId view_id,
     FlutterRustVulkanPresentationCallbacks callbacks) {
-  if (view_id <= FLUTTER_RUST_IMPLICIT_VIEW_ID || !callbacks.acquire_image ||
-      !callbacks.present_image) {
+  if (view_id <= FLUTTER_RUST_IMPLICIT_VIEW_ID ||
+      callbacks.presentation_mode > FLUTTER_RUST_PRESENTATION_OFFSCREEN ||
+      !callbacks.acquire_image || !callbacks.present_image) {
     return false;
   }
   std::scoped_lock lock(views_mutex_);
@@ -85,6 +88,11 @@ bool RustVulkanPresentation::UnregisterView(FlutterRustViewId view_id) {
 void RustVulkanPresentation::SetActiveViewId(int64_t view_id) {
   std::scoped_lock lock(views_mutex_);
   active_view_id_ = view_id;
+}
+
+void RustVulkanPresentation::SetUIFrameNumber(uint64_t frame_number) {
+  std::scoped_lock lock(views_mutex_);
+  active_ui_frame_number_ = frame_number;
 }
 
 void RustVulkanPresentation::ReleaseSurfaces() {
@@ -186,35 +194,39 @@ bool RustVulkanPresentation::PresentImage(VkImage image, VkFormat format) {
 
   // GPUSurfaceVulkanImpeller transitions the image to COLOR_ATTACHMENT_OPTIMAL
   // before invoking the presentation delegate.
+  // Only native WSI images transition below. Offscreen targets stay in
+  // COLOR_ATTACHMENT_OPTIMAL, matching wgpu's COLOR_TARGET tracker state.
   // Wgpu's surface tracker expects its borrowed swapchain image back in
   // PRESENT_SRC_KHR before its final handoff pass.
   const auto& context = impeller::ContextVK::Cast(*context_);
-  auto command_buffer = context.CreateCommandBuffer();
-  if (!command_buffer) {
-    return false;
-  }
-  auto vk_command_buffer =
-      impeller::CommandBufferVK::Cast(*command_buffer).GetCommandBuffer();
-  impeller::vk::ImageMemoryBarrier barrier;
-  barrier.srcAccessMask = impeller::vk::AccessFlagBits::eColorAttachmentWrite;
-  barrier.dstAccessMask = {};
-  barrier.oldLayout = impeller::vk::ImageLayout::eColorAttachmentOptimal;
-  barrier.newLayout = impeller::vk::ImageLayout::ePresentSrcKHR;
-  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  barrier.image = image;
-  barrier.subresourceRange.aspectMask =
-      impeller::vk::ImageAspectFlagBits::eColor;
-  barrier.subresourceRange.baseMipLevel = 0u;
-  barrier.subresourceRange.levelCount = 1u;
-  barrier.subresourceRange.baseArrayLayer = 0u;
-  barrier.subresourceRange.layerCount = 1u;
-  vk_command_buffer.pipelineBarrier(
-      impeller::vk::PipelineStageFlagBits::eColorAttachmentOutput,
-      impeller::vk::PipelineStageFlagBits::eBottomOfPipe, {}, nullptr, nullptr,
-      barrier);
-  if (!context.GetCommandQueue()->Submit({command_buffer}).ok()) {
-    return false;
+  if (view->callbacks.presentation_mode == FLUTTER_RUST_PRESENTATION_NATIVE) {
+    auto command_buffer = context.CreateCommandBuffer();
+    if (!command_buffer) {
+      return false;
+    }
+    auto vk_command_buffer =
+        impeller::CommandBufferVK::Cast(*command_buffer).GetCommandBuffer();
+    impeller::vk::ImageMemoryBarrier barrier;
+    barrier.srcAccessMask = impeller::vk::AccessFlagBits::eColorAttachmentWrite;
+    barrier.dstAccessMask = {};
+    barrier.oldLayout = impeller::vk::ImageLayout::eColorAttachmentOptimal;
+    barrier.newLayout = impeller::vk::ImageLayout::ePresentSrcKHR;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask =
+        impeller::vk::ImageAspectFlagBits::eColor;
+    barrier.subresourceRange.baseMipLevel = 0u;
+    barrier.subresourceRange.levelCount = 1u;
+    barrier.subresourceRange.baseArrayLayer = 0u;
+    barrier.subresourceRange.layerCount = 1u;
+    vk_command_buffer.pipelineBarrier(
+        impeller::vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        impeller::vk::PipelineStageFlagBits::eBottomOfPipe, {}, nullptr,
+        nullptr, barrier);
+    if (!context.GetCommandQueue()->Submit({command_buffer}).ok()) {
+      return false;
+    }
   }
 
   // This submission is ordered after the Rust-specific layout transition and
@@ -228,6 +240,7 @@ bool RustVulkanPresentation::PresentImage(VkImage image, VkFormat format) {
   }
 
   FlutterRustVulkanImage rust_image = {
+      .ui_frame_number = active_ui_frame_number_,
       .image = reinterpret_cast<uint64_t>(image),
       .format = static_cast<uint32_t>(format),
       .acquire_semaphore = reinterpret_cast<uintptr_t>(view->acquire_semaphore),

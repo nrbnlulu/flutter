@@ -15,16 +15,34 @@ use crate::{
 /// Debug also supports hot reload and hot restart; release streams output.
 pub fn run_app(ctx: &Ctx, args: &RunArgs) -> Result<i32> {
     let mode = args.mode.resolve()?;
-    let device = device::select(device::discover(), args.device.as_deref())?;
+    let device: Box<dyn device::Device> = if args.headless {
+        if !crate::device::linux::LinuxHost::is_supported()
+            || args.device.as_deref().is_some_and(|d| d != "linux")
+        {
+            bail!("headless rendering currently requires Linux x64 (-d linux)");
+        }
+        Box::new(crate::device::linux::LinuxHost)
+    } else {
+        device::select(device::discover(), args.device.as_deref())?
+    };
     if let Some(path) = &args.vm_service_info_file {
-        if !mode.config().vm_service || device.platform() != "linux" {
-            bail!("--vm-service-info-file requires a Linux debug or profile run");
+        if !mode.config().vm_service || !matches!(device.platform(), "linux" | "windows") {
+            bail!("--vm-service-info-file requires a desktop debug or profile run");
         }
         crate::util::remove_path(path)?;
     }
     eprintln!("Running on {}", device.description());
 
-    let mut app = device.launch(ctx, mode, &args.target, &args.defines.dart_defines)?;
+    let mut app = if args.headless {
+        crate::device::linux::launch_headless(
+            super::build::build_linux(ctx, mode, &args.target, &args.defines.dart_defines)?,
+            mode,
+            args.size,
+            args.pixel_ratio,
+        )?
+    } else {
+        device.launch(ctx, mode, &args.target, &args.defines.dart_defines)?
+    };
     let stop = std::sync::Arc::clone(&app.stop);
     ctrlc::set_handler(move || stop())
         .map_err(|e| anyhow::anyhow!("cannot install Ctrl-C handler: {e}"))?;

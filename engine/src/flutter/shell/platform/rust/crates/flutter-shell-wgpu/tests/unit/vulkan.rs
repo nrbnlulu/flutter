@@ -382,3 +382,232 @@ fn benchmark_pixel_upload() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires a Vulkan device; verifies fragment uniforms by GPU readback"]
+fn empty_handoff_pass_preserves_fragment_uniform_colors() {
+    let context = GpuContext::create(Headless).unwrap();
+    let device = &context.device;
+    let queue = &context.queue;
+    let colors: [[f32; 4]; 6] = [
+        [1., 0., 0., 1.],
+        [0., 1., 0., 1.],
+        [0., 0., 1., 1.],
+        [1., 1., 1., 1.],
+        [0., 1., 1., 1.],
+        [1., 0., 1., 1.],
+    ];
+    let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
+    let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("uniform offset regression"),
+        size: alignment * 7,
+        usage: wgpu::BufferUsages::UNIFORM,
+        mapped_at_creation: true,
+    });
+    {
+        let mut mapped = uniforms.get_mapped_range_mut(..).unwrap();
+        for diagonal in 0..4 {
+            let offset = diagonal * 20;
+            mapped
+                .slice(offset..offset + 4)
+                .copy_from_slice(&1f32.to_ne_bytes());
+        }
+        for (index, color) in colors.iter().enumerate() {
+            for (component, value) in color.iter().enumerate() {
+                let offset = alignment as usize * (index + 1) + component * 4;
+                mapped
+                    .slice(offset..offset + 4)
+                    .copy_from_slice(&value.to_ne_bytes());
+            }
+        }
+    }
+    uniforms.unmap();
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("uniform color probe"),
+        source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(
+            r#"
+            @group(0) @binding(64) var<uniform> color: vec4f;
+            @group(0) @binding(0) var<uniform> matrix: mat4x4f;
+            @vertex fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
+                let positions = array(vec2f(-1., -1.), vec2f(3., -1.), vec2f(-1., 3.));
+                return matrix * vec4f(positions[index], 0., 1.);
+            }
+            @fragment fn fs_main() -> @location(0) vec4f { return color; }
+        "#,
+        )),
+    });
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: std::num::NonZeroU64::new(64),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 64,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: std::num::NonZeroU64::new(16),
+                },
+                count: None,
+            },
+        ],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("uniform color probe"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::TextureFormat::Bgra8Unorm.into())],
+        }),
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    let groups: Vec<_> = (0..6)
+        .map(|index| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &uniforms,
+                            offset: 0,
+                            size: std::num::NonZeroU64::new(64),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 64,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &uniforms,
+                            offset: alignment * (index + 1),
+                            size: std::num::NonZeroU64::new(16),
+                        }),
+                    },
+                ],
+            })
+        })
+        .collect();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: 256,
+            height: 384,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&Default::default());
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 256 * 384 * 4,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&pipeline);
+        for (index, group) in groups.iter().enumerate() {
+            pass.set_bind_group(0, group, &[]);
+            pass.set_scissor_rect(0, index as u32 * 64, 256, 64);
+            pass.draw(0..3, 0..1);
+        }
+    }
+    // The broker submits an empty load/store pass to include external Impeller
+    // work in wgpu's presentation dependency. It must preserve existing pixels.
+    {
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+    }
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(1024),
+                rows_per_image: Some(384),
+            },
+        },
+        texture.size(),
+    );
+    queue.submit([encoder.finish()]);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    readback.map_async(wgpu::MapMode::Read, .., move |result| {
+        sender.send(result).unwrap();
+    });
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .unwrap();
+    receiver.recv().unwrap().unwrap();
+    {
+        let pixels = readback.get_mapped_range(..).unwrap();
+        for (index, color) in colors.iter().enumerate() {
+            let offset = ((index * 64 + 32) * 256 + 128) * 4;
+            let mut expected = color.map(|value| (value * 255.) as u8);
+            expected.swap(0, 2);
+            assert_eq!(
+                &pixels[offset..offset + 4],
+                expected,
+                "uniform slot {}",
+                index + 1
+            );
+        }
+    }
+    readback.unmap();
+}

@@ -1,8 +1,11 @@
+pub mod agent;
 pub mod build;
 pub mod build_android;
 pub mod clean;
 pub mod create;
+mod provenance;
 pub mod run;
+pub mod verify;
 pub mod vscode;
 
 use anyhow::Result;
@@ -33,12 +36,13 @@ pub fn prepare_sources(
 ) -> Result<()> {
     run(&mut ctx.flutter.pub_get(&project.dir))?;
     sdk::ensure_sources(project, &ctx.flutter, &ctx.sources)?;
+    crate::android_runner::ensure_desktop(project)?;
     adapt_runner(project)?;
     plugins::refresh(project, mode)?;
     Ok(())
 }
 
-/// Everything a Linux build needs before compiling: [`prepare_sources`] and the
+/// Everything a desktop build needs before compiling: [`prepare_sources`] and the
 /// host engine layout.
 pub fn prepare(ctx: &Ctx, project: &Project, mode: BuildMode) -> Result<Engine> {
     prepare_sources(ctx, project, mode, |_| Ok(()))?;

@@ -43,6 +43,7 @@ class GPUSurfaceVulkanImpeller final : public Surface {
 
   // |Surface|
   void SetActiveViewId(int64_t view_id) override;
+  void SetUIFrameNumber(uint64_t frame_number) override;
 
   // |Surface|
   void CollectView(int64_t view_id) override;
@@ -59,6 +60,7 @@ class GPUSurfaceVulkanImpeller final : public Surface {
   struct ViewTransients {
     std::shared_ptr<impeller::SwapchainTransientsVK> transients;
     impeller::ISize size;
+    std::shared_ptr<impeller::Texture> copy_target;
   };
   /// Per-view MSAA and depth/stencil buffers, keyed by view ID.
   /// Avoids recreating these allocations every frame when the active view

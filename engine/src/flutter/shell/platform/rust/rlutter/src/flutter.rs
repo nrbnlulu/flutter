@@ -21,6 +21,9 @@ impl Flutter {
         if let Some(root) = explicit {
             return Self::at(root);
         }
+        if cfg!(windows) {
+            bail!("the managed Windows SDK is not published yet; pass --flutter-root");
+        }
         let cache = env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
             .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
@@ -76,7 +79,11 @@ impl Flutter {
     }
 
     fn at(root: &Path) -> Result<Self> {
-        let binary = root.join("bin").join("flutter");
+        let binary = root.join("bin").join(if cfg!(windows) {
+            "flutter.bat"
+        } else {
+            "flutter"
+        });
         if !binary.is_file() {
             bail!(
                 "{} is not a Flutter SDK (missing bin/flutter)",
@@ -96,7 +103,11 @@ impl Flutter {
     /// flags make the tool compile with the Dart SDK matching the Rust shell's
     /// engine (anything else fails at launch with "Invalid SDK hash").
     pub fn command(&self, engine: Option<&Engine>) -> Command {
-        let mut command = Command::new(self.root.join("bin").join("flutter"));
+        let mut command = Command::new(self.root.join("bin").join(if cfg!(windows) {
+            "flutter.bat"
+        } else {
+            "flutter"
+        }));
         command.env_remove("FLUTTER_ROOT");
         if self.root.join(".rlutter-complete").is_file() {
             // Flutter otherwise treats a fork's cached release version as
@@ -112,7 +123,11 @@ impl Flutter {
     }
 
     pub fn dart_command(&self) -> Command {
-        let mut command = Command::new(self.root.join("bin/cache/dart-sdk/bin/dart"));
+        let mut command = Command::new(self.root.join(if cfg!(windows) {
+            "bin/cache/dart-sdk/bin/dart.exe"
+        } else {
+            "bin/cache/dart-sdk/bin/dart"
+        }));
         command.env("FLUTTER_ROOT", &self.root);
         command
     }
@@ -137,11 +152,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn completed_managed_sdk_is_reused_without_discovery_or_network() {
         let cache = tempdir("flutter_managed");
         let root = cache.join("flutter-BETA");
         fs::create_dir_all(root.join("bin")).unwrap();
-        fs::write(root.join("bin/flutter"), "").unwrap();
+        fs::write(
+            root.join(if cfg!(windows) {
+                "bin/flutter.bat"
+            } else {
+                "bin/flutter"
+            }),
+            "",
+        )
+        .unwrap();
         fs::write(root.join(".rlutter-complete"), "BETA\n").unwrap();
         let flutter = Flutter::managed(&cache).unwrap();
         assert_eq!(flutter.root(), root);
@@ -159,7 +183,15 @@ mod tests {
     fn local_engine_flags_come_before_the_subcommand() {
         let dir = tempdir("flutter_flags");
         fs::create_dir_all(dir.join("bin")).unwrap();
-        fs::write(dir.join("bin/flutter"), "").unwrap();
+        fs::write(
+            dir.join(if cfg!(windows) {
+                "bin/flutter.bat"
+            } else {
+                "bin/flutter"
+            }),
+            "",
+        )
+        .unwrap();
         let flutter = Flutter::at(&dir).unwrap();
         let engine = Engine {
             target: "/e/host_debug".into(),

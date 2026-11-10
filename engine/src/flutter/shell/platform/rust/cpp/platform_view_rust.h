@@ -80,6 +80,9 @@ class PlatformViewRust final : public PlatformView {
 
   // Delivers a compositor pulse requested by this platform view.
   void OnVsync(uint64_t frame_interval_nanos);
+  void SetSemanticsUpdateCallback(UpdateSemanticsCallback callback) {
+    configuration_.update_semantics = std::move(callback);
+  }
 
  private:
   // |PlatformView|
