@@ -24,6 +24,10 @@ SOURCE = """import 'package:flutter/widgets.dart';
 int probeState = 0;
 String lastRenderedLabel = '';
 String get probeLabel => 'rlutter-before';
+void incrementProbe() {
+  final next = probeState + 1;
+  probeState = next; // Native debugger breakpoint.
+}
 void main() => runApp(const Probe());
 class Probe extends StatefulWidget {
   const Probe({super.key});
@@ -36,7 +40,7 @@ class _ProbeState extends State<Probe> {
     lastRenderedLabel = probeLabel;
     return Directionality(textDirection: TextDirection.ltr,
       child: GestureDetector(behavior: HitTestBehavior.opaque,
-        onTap: () => setState(() => probeState++),
+        onTap: () => setState(incrementProbe),
         child: ColoredBox(color: const Color(0xff204060),
           child: Center(child: Text('$probeLabel state=$probeState',
             style: const TextStyle(fontSize: 28, color: Color(0xffffffff)))))));
@@ -70,6 +74,7 @@ def main():
   }
   log_path = evidence / 'run.log'
   app_pid = None
+  debugger = None
   with log_path.open('w', encoding='utf-8') as log:
     process = subprocess.Popen([
         cli, 'run', '-d', 'windows' if sys.platform == 'win32' else 'linux', '-t',
@@ -117,7 +122,7 @@ def main():
       address = client['address']
       if sys.platform != 'win32':
         api.action('float', address)
-      api.action('resize', address, width=800, height=600)
+      api.resize_client(address, 800, 600)
       api.action('focus', address)
       client = wait_until(
           lambda: (c if (c := find_window()) and c['size'] == [800, 600] else None), process
@@ -146,10 +151,43 @@ def main():
       width, height = client['size']
       content_region = (width // 4, height // 3, width // 2, height // 3)
       api.capture_window(address, evidence / 'before-content.png', content_region)
-      api.click(
-          address, client['at'][0] + client['size'][0] // 2,
-          client['at'][1] + client['size'][1] // 2
+      debugger_status = evidence / 'debugger-status.json'
+      debugger_log = evidence / 'debugger.log'
+      dart = project / '.dart_tool/flutter_rs/sdk/engine/src/out/host_debug/dart-sdk/bin' / (
+          'dart.exe' if sys.platform == 'win32' else 'dart'
       )
+      packages = args.flutter_root.resolve(
+      ) / 'packages/flutter_tools/.dart_tool/package_config.json'
+      line = next(
+          i for i, text in enumerate(SOURCE.splitlines(), 1)
+          if 'Native debugger breakpoint.' in text
+      )
+      with debugger_log.open('w', encoding='utf-8') as debugger_output:
+        debugger = subprocess.Popen([
+            str(dart), f'--packages={packages}',
+            str(Path(__file__).with_name('rlutter_debugger_probe.dart').resolve()), uri,
+            str(debugger_status),
+            str(line)
+        ],
+                                    stdout=debugger_output,
+                                    stderr=subprocess.STDOUT)
+
+        def debugger_phase():
+          try:
+            return json.loads(debugger_status.read_text())['phase']
+          except (OSError, ValueError):
+            return None
+
+        if not wait_until(lambda: debugger_phase() == 'breakpoint-ready', debugger, 60):
+          raise RuntimeError('Debugger expression/breakpoint setup failed; see debugger.log')
+        api.click(
+            address, client['at'][0] + client['size'][0] // 2,
+            client['at'][1] + client['size'][1] // 2
+        )
+        if not wait_until(lambda: debugger_phase() == 'complete', debugger, 40):
+          raise RuntimeError('Breakpoint/local-scope evaluation failed; see debugger.log')
+        if debugger.wait(timeout=10) != 0:
+          raise RuntimeError('Debugger probe failed; see debugger.log')
       if not wait_until(lambda: read_field('probeState') == '1', process):
         raise RuntimeError('Native click did not change application state')
       source.write_text(SOURCE.replace('rlutter-before', 'rlutter-after'), encoding='utf-8')
@@ -183,6 +221,9 @@ def main():
       if any(c['pid'] == app_pid for c in api.clients()):
         raise RuntimeError('rlutter left its native application running')
     finally:
+      if debugger is not None and debugger.poll() is None:
+        debugger.kill()
+        debugger.wait()
       if process.poll() is None:
         if app_pid is not None:
           for client in api.clients():
@@ -230,7 +271,7 @@ def main():
       address = client['address']
       if sys.platform != 'win32':
         api.action('float', address)
-      api.action('resize', address, width=800, height=600)
+      api.resize_client(address, 800, 600)
       api.action('focus', address)
 
       def same_frame():
@@ -251,7 +292,9 @@ def main():
         app.wait()
   if DIAGNOSTIC.search(standalone_log.read_text(encoding='utf-8', errors='replace')):
     raise RuntimeError('GPU/runtime diagnostics in the relocated bundle')
-  print('rlutter reload/state preservation, restart, detach and relocated-bundle close passed.')
+  print(
+      'rlutter debugger/breakpoints, reload/state preservation, restart and relocated close passed.'
+  )
 
 
 if __name__ == '__main__':

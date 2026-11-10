@@ -30,8 +30,6 @@ use crate::{
 };
 
 const BETA_RELEASE_URL: &str = "https://github.com/nrbnlulu/flutter/releases/download/BETA";
-const BETA_BUNDLE_URL: &str =
-    "https://github.com/nrbnlulu/flutter/releases/download/BETA/flutter-rust-linux-x64.tar.gz";
 
 /// What `flutter --local-engine` needs from an engine build, relative to its
 /// output directory. Missing entries are skipped (a host engine has no
@@ -82,7 +80,7 @@ pub fn host_engine_library() -> &'static str {
         "libflutter_rust_engine.so"
     }
 }
-fn host_platform() -> &'static str {
+pub(crate) fn host_platform() -> &'static str {
     if cfg!(windows) {
         "windows-x64"
     } else {
@@ -91,6 +89,24 @@ fn host_platform() -> &'static str {
 }
 
 const ENGINE_REQUIRED: &[&str] = &["libflutter_rust_engine.so", "icudtl.dat"];
+fn host_bundle_modes() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &["debug", "release"]
+    } else {
+        &["debug", "profile", "release"]
+    }
+}
+fn host_required() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &[
+            "flutter_rust_engine.dll",
+            "flutter_rust_engine.dll.lib",
+            "icudtl.dat",
+        ]
+    } else {
+        ENGINE_REQUIRED
+    }
+}
 
 /// Where the user's engine builds come from.
 #[derive(Debug, Clone, Default)]
@@ -333,26 +349,30 @@ fn release_bundle_complete(sdk: &Path) -> bool {
             .is_file()
         && !sdk.join("crates").is_symlink()
         && !sdk.join("third_party").is_symlink()
-        && ["debug", "profile", "release"].iter().all(|mode| {
+        && host_bundle_modes().iter().all(|mode| {
             let engine = sdk.join("lib").join(mode);
-            ENGINE_REQUIRED
+            host_required()
                 .iter()
                 .all(|entry| engine.join(entry).is_file())
-                && engine.join("dart-sdk/bin/dart").is_file()
+                && engine
+                    .join(if cfg!(windows) {
+                        "dart-sdk/bin/dart.exe"
+                    } else {
+                        "dart-sdk/bin/dart"
+                    })
+                    .is_file()
                 && engine.join("flutter_patched_sdk").is_dir()
                 && engine.join("gen/dart-pkg/sky_engine").is_dir()
         })
 }
 
 fn download_bundle(sdk: &Path) -> Result<()> {
-    if cfg!(windows) {
-        bail!(
-            "Windows release SDK bundles are not published yet; use --flutter-root with a local engine checkout"
-        );
-    }
     eprintln!("Downloading the Flutter Rust shell BETA SDK...");
     remove_path(sdk)?;
-    download_and_unpack(BETA_BUNDLE_URL, sdk)?;
+    download_and_unpack(
+        &format!("{BETA_RELEASE_URL}/flutter-rust-{}.tar.gz", host_platform()),
+        sdk,
+    )?;
     if !release_bundle_complete(sdk) {
         bail!("the Flutter Rust shell BETA SDK archive is incomplete");
     }
@@ -546,9 +566,28 @@ mod tests {
             let engine = sdk.join("lib").join(mode);
             fake_engine(&engine);
             fs::create_dir_all(engine.join("dart-sdk/bin")).unwrap();
-            fs::write(engine.join("dart-sdk/bin/dart"), "").unwrap();
+            fs::write(
+                engine.join(if cfg!(windows) {
+                    "dart-sdk/bin/dart.exe"
+                } else {
+                    "dart-sdk/bin/dart"
+                }),
+                "",
+            )
+            .unwrap();
             fs::create_dir_all(engine.join("gen/dart-pkg/sky_engine")).unwrap();
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_distribution_requires_debug_and_release_import_libraries() {
+        let root = tempdir("windows_release_bundle");
+        fake_release_bundle(&root);
+        remove_path(&root.join("lib/profile")).unwrap();
+        assert!(release_bundle_complete(&root));
+        remove_path(&root.join("lib/release/flutter_rust_engine.dll.lib")).unwrap();
+        assert!(!release_bundle_complete(&root));
     }
 
     #[test]

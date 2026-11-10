@@ -67,8 +67,9 @@ def main():
       native = api.metrics(address)
       size_key = 'physicalSize' if native['coordinate_space'] == 'physical' else 'logicalSize'
       value = require(
-          lambda s: s.get(size_key) == native['size'],
-          'Flutter size differs from native client size'
+          lambda s: s.get(size_key) == native['size'] and
+          (native['scale'] is None or abs(s.get('dpr', 0) - native['scale']) <= .001),
+          'Flutter dimensions/scale differ from native client metrics'
       )
       if native['scale'] is not None and abs(value['dpr'] - native['scale']) > .001:
         raise RuntimeError(f"Flutter/native DPI mismatch: {value['dpr']} vs {native['scale']}")
@@ -85,6 +86,10 @@ def main():
           lambda s: s.get('ready') and len(s.get('controls', {})) == 4,
           'Input fixture did not become ready'
       )
+      if os.name == 'nt':
+        # Default Win32 cascade placement can extend beyond a small RDP desktop.
+        api.resize_client(address, 800, 600)
+        api.move(address, 10, 10)
       initial = check_metrics()
       api.capture_window(address, work / 'initial.png')
       click('field')
@@ -129,12 +134,30 @@ def main():
       if resized['native']['size'] == initial['native']['size']:
         raise RuntimeError('Native resize did not change client metrics')
       layouts = api.ime_layouts()
+      monitors = api.monitor_work_areas()
+      transitions = []
+      if len(monitors) > 1:
+        original = next(c for c in api.clients() if str(c['address']) == address)['at']
+        try:
+          for left, top, right, bottom in monitors:
+            api.move(address, left + 20, top + 20)
+            time.sleep(.5)
+            metrics = check_metrics()
+            transitions.append(metrics)
+        finally:
+          api.move(address, *original)
+      changed_scale = len({item['native']['scale'] for item in transitions}) > 1
       report = dict(
           initial=initial,
           resized=resized,
           ime_layouts=layouts,
           ime_composition='not exercised; requires an interactive IME',
-          scale_transition='not exercised; requires a second display/scaling setting'
+          monitor_work_areas=monitors,
+          monitor_metrics=transitions,
+          scale_transition=(
+              'passed across different monitor scales'
+              if changed_scale else 'not exercised; no different-scale transition observed'
+          )
       )
       (work / 'coverage.json').write_text(json.dumps(report, ensure_ascii=True, indent=2))
       succeeded = True
@@ -155,7 +178,8 @@ def main():
     raise RuntimeError('GPU/runtime diagnostics were reported')
   if succeeded:
     print('Native typing, copy/paste, UTF-16 selection, lifecycle and current-scale DPI passed.')
-    print(f'Installed IMM32 IME layouts: {layouts}; composition and DPI transitions not validated.')
+    print(f'Installed IMM32 IME layouts: {layouts}; composition not validated.')
+    print(f"DPI transition: {report['scale_transition']}")
 
 
 if __name__ == '__main__':

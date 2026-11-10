@@ -2391,3 +2391,178 @@ separate pending platform gate; a Windows Vulkan host was not available in this
 Linux workspace. The Windows CPU schema job is not a runtime certification.
 An MCP adapter remains deferred until those distribution/runtime gates stabilize.
 See [distribution](engine/src/flutter/shell/platform/rust/docs/distribution.md).
+
+### Main merge and Windows DDS debugger validation (2026-11-09)
+
+Merged upstream main (acade0f6b53) and pushed merge 559da144d84. Two Vulkan
+synchronization conflicts were resolved using upstream's attachment-read/write
+and fragment-stage handling. Both conflicted source files compile. Dependencies
+were synced to Dart 3b174b7217 and Skia b11315d0a0, then GN regenerated. The first
+native build stopped because Dart's generated package configuration still used
+language 3.13 for the new frontend, which requires 3.15. Running build hooks with
+the existing Visual Studio Build Tools override refreshed it. The matching DLL,
+Dart SDK, frontend server and Cargo smoke runner now build successfully.
+Build logs: `engine/src/out/rebuild-windows-main*.log`.
+
+Before committing, fetched and fast-forwarded to the user's Linux fixes in
+6791498d4ef. The local Windows changes reapplied cleanly with a three-way patch;
+no conflict markers remain. Linux viewport stabilization, Hyprland fixes and
+Wayland parent-mapping changes are retained. The refreshed Dart formatter's
+fixture-only changes are committed separately.
+
+The expression-evaluation gap was an HTTP probe error: DDS proxies HTTP to the
+raw VM, bypassing the external expression compiler registered with DDS. A new
+Dart probe uses vm_service over the DDS WebSocket. It evaluates `probeState + 41`
+and `probeLabel`, adds a source breakpoint, waits for the native click to pause
+in incrementProbe, evaluates local `next == 1`, removes the breakpoint and
+resumes. No native-engine debugger change was required.
+
+The combined runtime task passes debugger checks, state-preserving rendered hot
+reload, state-resetting hot restart, attach quit/owned-app cleanup, and relocated
+bundle pixel comparison/status-zero native close under Vulkan validation.
+Evidence: `%TEMP%/flutter-rust-rlutter-cf6orzam`, including
+`debugger-status.json`, VM state observations, captures and logs. The first run
+stopped before debugger setup because Windows Search held foreground; that run
+was not counted as a pass. Search was dismissed before retrying real input.
+
+Linux's new stable 800x600 viewport check exposed an adapter difference: Win32
+resize takes outer-window dimensions. Added resize_client using measured native
+frame margins, preserving resize's original contract and Linux's implementation.
+The native adapter test checks an exact 420x300 client viewport and passes all
+eight tests without skips. The ordinary suite also passes 55 host tests, 17 C++
+tests, core/queue/ordinary GPU checks, two build-helper tests and 14 accounting
+tests. All 108 rlutter tests and Clippy pass. Dart probe analysis reports no issues.
+
+This verifies one breakpoint and paused local-expression scope on this Windows
+host. The new debugger probe has not run on Linux; the user's existing Linux
+coverage above remains distinct. Full DAP/editor behavior, Windows managed SDK,
+release/profile/AOT and general plugin packaging, CI, real IME composition and
+monitor-scale transitions remain follow-ups.
+
+
+## Windows release/AOT checkpoint (2026-11-09)
+
+The matching Windows host_release engine DLL, Dart SDK, frontend server, AOT
+compiler, shader compiler, font subsetter and sky_engine package build from the
+post-main checkout. The normal Windows build task now requests these compiler
+artifacts; its release Cargo smoke runner also links successfully.
+
+`test-rlutter-aot` creates and builds a disposable release app, requires app.so
+and no debug kernel, relocates executable/DLL/data, launches from an unrelated
+working directory, checks the exact initial and clicked frame colors, and
+requires native close with status zero under Vulkan validation. The Windows
+runtime check passes; retained evidence is `%TEMP%/flutter-rust-release-0f6axvzj`
+(build/runtime logs, full captures, relocated bundle and result.json).
+
+Current upstream Windows x64 AOT emits a PE/COFF DLL named app.so. The original
+plan's ELF note and an initial probe assertion were corrected; the initial
+format-rejected run was not counted as a runtime pass. The native engine already
+loads this library correctly, so no AOT engine change was needed. Profile is not
+covered by this release run. SDK distribution and input follow as separate phases.
+
+
+## Windows SDK distribution checkpoint (2026-11-09)
+
+Windows x64 managed SDK discovery now uses LOCALAPPDATA (or XDG_CACHE_HOME),
+Windows BETA archive names and dart.exe validation. The physical Rust SDK ships
+debug/release engines with their import libraries, ICU, compiler tools, matching
+Dart SDKs, patched SDKs and sky_engine. Both patched Rust source dependencies
+(winit-wayland and wgpu-hal) are packaged; the Linux archive also now includes
+its required wgpu-hal patch. Profile remains a local-engine workflow on Windows.
+
+The standalone Flutter packager imports the resolved numeric Flutter tag with
+its history, checks the common ancestor, warms the Windows wrapper and rejects
+unknown version metadata before archiving. A fresh-create test caught the first
+local clone's missing numeric tag (0.0.0-unknown); the corrected archive reports
+3.50.0-1.0.pre-666 and passes creation/dependency resolution without overrides.
+
+Local validation extracts both exact archives into an isolated managed cache
+and a new project, with the packaging-stage directory hidden. No checkout engine
+or external source links are used. Both debug (kernel) and release (PE app.so,
+no kernel) generated-app builds pass. Evidence: engine/src/out/windows-distribution-
+result.json and windows-distribution-builds.log; project:
+%TEMP%/rlutter-windows-distribution-rv0v88gs. All 111 rlutter tests and Clippy pass,
+including managed-cache reuse, required import libraries and forced symlink-
+privilege failure with real copy/refresh/stale-file cleanup.
+
+The BETA workflow now has parallel Windows debug/release engine jobs and a
+Windows packaging job that tests extracted SDKs before publishing Windows SDK
+archives, rlutter.exe and checksums. actionlint and the PowerShell blocks pass
+local syntax checks. Cloud execution and actual BETA download/publication are
+pending the branch merge; local archive validation is distinct from publication.
+
+
+## Windows packaged release input checkpoint (2026-11-09)
+
+The native text-input suite passes against both the current debug smoke runner
+and an AOT release app compiled by the extracted Windows SDK, with the packaging
+stage still hidden. It verifies real keyboard typing, copy/paste, the emoji/RTL
+Unicode clipboard sample, UTF-16 selection, minimize/restore lifecycle, resize,
+Flutter/native physical dimensions and current monitor scale, clipboard text
+restoration and status-zero shutdown under Vulkan validation. Evidence:
+%TEMP%/flutter-rust-input-mp6jhfg0 (debug) and
+%TEMP%/flutter-rust-input-at9z3ktr (packaged release).
+
+The adapter now enumerates native monitor work areas. When multiple displays
+are available, the input probe moves between them and compares Flutter/native
+metrics; it reports a scale transition as passed only if different native scales
+were actually observed. This RDP host exposes one 1024x720 work area at scale 1,
+so real mixed-DPI transitions remain unverified. IMM32 layout enumeration is not
+proof of composition; real IME composition remains unverified too.
+
+The fixture places its 800x600 viewport within a small Windows desktop. Initial
+capture/focus failures were traced by native hit-testing to Start/Search system
+menus; only those verified menus were dismissed before retrying. Occlusion and
+foreground checks remain strict, and blocked runs were not counted as passes.
+All eight native adapter tests pass without skips, including real monitor
+geometry enumeration and exact client resizing. Python compilation/formatting
+and whitespace checks pass. No native input implementation change was needed.
+
+
+### Windows CI bootstrap follow-up (2026-11-09)
+
+The first cloud Windows jobs stopped in gclient's offline-pub audit: the Flutter
+smoke app was missing from the exclusions already used for FRB/windowing app
+fixtures. Added its narrow exclusion and a regression test proving that unknown
+packages under the same Rust test tree remain audited. The actual engine tree
+has no unlisted packages, the regression passes, and the full offline-pub hook
+exits zero locally. Windows CI runs the regression after sync. Artifact publication
+still depends on the restarted cloud builds; no failed run is counted as a pass.
+
+
+The next Windows bootstrap run passed the package audit and exposed the hook
+installer's legacy git.bat assumption. It now resolves installed Git from PATH
+and honors its explicit argv. A Windows regression installs and uninstalls the
+hooks in a real temporary repository whose PATH contains only native git.exe.
+The regression passes; hooks remain enabled in CI. Both bootstrap regression
+checks run after sync before the engine build.
+
+
+The cloud sync itself then completed; the regression exposed the runner's 8.3
+TEMP alias. Hook setup now canonicalizes and case-normalizes Git/common paths
+and hook/repository paths, avoiding false linked-worktree detection and invalid
+relative hook paths. Real native-Git tests cover an available short-path alias
+and a linked worktree, including preservation of worktree-scoped configuration.
+Both tests pass locally; the CI step continues to run them before compilation.
+
+
+Windows CI subsequently passed sync and both bootstrap regressions, then GN
+found the same legacy git.bat assumption in revision discovery. GN and the build
+revision helper now resolve installed Git from PATH. A real temporary-repository
+regression covers both helpers, and full Windows GN generation succeeds with
+all git.bat-containing directories removed from PATH (1901 targets). The CI
+bootstrap step runs this regression too; native runtime code is unchanged.
+
+
+## Windows CLI installer (2026-11-09)
+
+Added a Windows x64 PowerShell installer with GitHub CLI download support,
+HTTPS fallback, SHA-256 verification, configurable release/repository/install
+location, and user PATH setup. The rolling CLI workflow now builds and packages
+Windows alongside Linux, runs offline installer integration checks with Windows
+PowerShell 5.1, and includes both install commands in its release notes.
+
+Local offline checks pass for authenticated-download argument construction,
+HTTPS fallback, installation into paths with spaces, upgrades, checksum rejection
+preserving the installed binary, and temporary-download cleanup. Live Windows
+rolling-release downloads remain dependent on successful workflow publication.

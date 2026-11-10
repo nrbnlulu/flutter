@@ -112,6 +112,21 @@ pub fn replace_link(link: &Path, target: &Path) -> Result<()> {
 /// Prefer native links; copy when Windows developer-mode symlinks are unavailable.
 #[cfg(windows)]
 pub fn replace_link(link: &Path, target: &Path) -> Result<()> {
+    replace_link_with(link, target, |target, link| {
+        if target.is_dir() {
+            std::os::windows::fs::symlink_dir(target, link)
+        } else {
+            std::os::windows::fs::symlink_file(target, link)
+        }
+    })
+}
+
+#[cfg(windows)]
+fn replace_link_with(
+    link: &Path,
+    target: &Path,
+    symlink: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> Result<()> {
     let target = if target.is_absolute() {
         target.to_owned()
     } else {
@@ -127,11 +142,7 @@ pub fn replace_link(link: &Path, target: &Path) -> Result<()> {
         if let Some(parent) = link.parent() {
             fs::create_dir_all(parent)?;
         }
-        let result = if target.is_dir() {
-            std::os::windows::fs::symlink_dir(&target, link)
-        } else {
-            std::os::windows::fs::symlink_file(&target, link)
-        };
+        let result = symlink(&target, link);
         if result.is_ok() {
             return Ok(());
         }
@@ -259,6 +270,30 @@ pub fn normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{testing::tempdir, *};
+
+    #[test]
+    #[cfg(windows)]
+    fn denied_symlinks_copy_and_refresh_without_stale_files() {
+        let root = testing::tempdir("link_denied");
+        let source = root.join("source");
+        let link = root.join("copy");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("old"), "old").unwrap();
+        let denied = |_: &Path, _: &Path| Err(io::Error::from_raw_os_error(1314));
+        replace_link_with(&link, &source, denied).unwrap();
+        assert!(!link.is_symlink());
+        assert_eq!(fs::read_to_string(link.join("old")).unwrap(), "old");
+        fs::remove_file(source.join("old")).unwrap();
+        fs::write(source.join("new"), "updated").unwrap();
+        replace_link_with(&link, &source, denied).unwrap();
+        assert!(!link.join("old").exists());
+        assert_eq!(fs::read_to_string(link.join("new")).unwrap(), "updated");
+        let file = root.join("file-copy");
+        replace_link_with(&file, &source.join("new"), denied).unwrap();
+        fs::write(source.join("new"), "changed").unwrap();
+        replace_link_with(&file, &source.join("new"), denied).unwrap();
+        assert_eq!(fs::read_to_string(file).unwrap(), "changed");
+    }
 
     #[test]
     fn staging_preserves_unchanged_files_and_removes_obsolete_entries() {

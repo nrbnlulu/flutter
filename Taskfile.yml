@@ -237,7 +237,7 @@ tasks:
       - '{{.RUST_TASK}} popup-windowing'
 
   test-rlutter-runtime:
-    desc: Validate generated desktop apps, rendered hot reload, hot restart and shutdown.
+    desc: Validate desktop debugger expressions, breakpoints, hot reload, restart and shutdown.
     deps: [build-rust-shell, build-rlutter]
     cmds:
       - '{{.RUST_TASK}} rlutter-runtime'
@@ -272,3 +272,9 @@ tasks:
     deps: [build-rlutter]
     cmds:
       - '{{.RUST_TASK}} headless-e2e {{.CLI_ARGS}}'
+
+  test-rlutter-aot:
+    desc: Build and relocate a release AOT bundle, then verify native input and clean close.
+    deps: [build-rust-shell-release, build-rlutter]
+    cmds:
+      - '{{.RUST_TASK}} rlutter-aot --engine host_release --mode release'

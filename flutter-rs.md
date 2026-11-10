@@ -1035,3 +1035,27 @@ assertions, provenance and evidence; per-view FFmpeg recording is optional. The
 Linux SDK passes extracted-archive debug/profile/release checks. Windows headless
 runtime support remains gated independently. See the
 [distribution contract](engine/src/flutter/shell/platform/rust/docs/distribution.md).
+
+
+## Windows rlutter CLI installer
+
+Install the rolling Windows x64 CLI from PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/nrbnlulu/flutter/rust/flutter-rs-shell/engine/src/flutter/shell/platform/rust/install.ps1 | iex
+```
+
+The installer tries `gh release download` first (using existing GitHub CLI
+credentials), then HTTPS. It verifies the archive SHA-256, installs `rlutter.exe`
+under `%LOCALAPPDATA%\rlutter\bin`, and adds that directory to the user and
+current process PATH. Open a new terminal after installation. For a downloaded
+script, `./install.ps1 -NoPath` skips PATH changes.
+
+`RLUTTER_VERSION` (default `rlutter`), `RLUTTER_REPO` (default
+`nrbnlulu/flutter`), and `RLUTTER_INSTALL_DIR` override the release, repository
+and installation directory. The first CLI command downloads the matching SDK;
+app builds require Rust/Cargo and Visual Studio C++ build tools.
+
+The rolling CLI workflow builds both Linux x64 and Windows x64. Windows assets
+are `rlutter-windows-x64.zip` and `rlutter-windows-x64.zip.sha256`; publication
+waits for matching Linux and Windows BETA SDK archives.

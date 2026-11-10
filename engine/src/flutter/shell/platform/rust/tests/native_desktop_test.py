@@ -104,6 +104,11 @@ class WindowsTest(unittest.TestCase):
     except ImportError:
       self.skipTest('Python Tk is unavailable')
     api = desktop()
+    areas = api.monitor_work_areas()
+    self.assertTrue(areas)
+    for left, top, right, bottom in areas:
+      self.assertGreater(right, left)
+      self.assertGreater(bottom, top)
     source = 'import tkinter as t; root=t.Tk(); root.title("Rust desktop adapter test"); root.geometry("320x240"); root.mainloop()'
     process = subprocess.Popen([sys.executable, '-c', source])
     try:
@@ -125,6 +130,12 @@ class WindowsTest(unittest.TestCase):
 
       resized = wait_until(changed, process)
       self.assertIsNotNone(resized)
+      api.resize_client(address, 420, 300)
+      resized = wait_until(
+          lambda: (current
+                   if (current := find()) and current['size'] == [420, 300] else None), process
+      )
+      self.assertIsNotNone(resized, 'Client resize must exclude Win32 frame borders')
       api.action('hide', address)
       api.action('restore', address)
       with tempfile.TemporaryDirectory() as work:

@@ -24,6 +24,10 @@ import zlib
 
 class Desktop(ABC):
 
+  def resize_client(self, address, width, height):
+    """Resize the viewport in the native units reported by clients()."""
+    self.action('resize', address, width=width, height=height)
+
   def click(self, address, x, y):
     raise NotImplementedError('Pointer injection is unavailable on this desktop')
 
@@ -42,6 +46,9 @@ class Desktop(ABC):
 
   def ime_layouts(self):
     return None
+
+  def monitor_work_areas(self):
+    return []
 
   def live_resize(self, address, progress):
     # Compositor resize operations are already exercised by the shared burst.
@@ -305,6 +312,20 @@ class Windows(Desktop):
     elif action != 'float':
       raise RuntimeError(f'Unsupported Windows automation action: {action}')
 
+  def resize_client(self, address, width, height):
+    hwnd = int(address)
+    outer, client = W.RECT(), W.RECT()
+    if not self.user.GetWindowRect(hwnd, ctypes.byref(outer)):
+      raise ctypes.WinError(ctypes.get_last_error())
+    if not self.user.GetClientRect(hwnd, ctypes.byref(client)):
+      raise ctypes.WinError(ctypes.get_last_error())
+    self.action(
+        'resize',
+        address,
+        width=width + (outer.right - outer.left) - (client.right - client.left),
+        height=height + (outer.bottom - outer.top) - (client.bottom - client.top)
+    )
+
   def capture_window(self, address, path, region=None):
     hwnd = int(address)
     # Raise only the fixture without stealing foreground keyboard focus.
@@ -373,6 +394,35 @@ class Windows(Desktop):
         client for client in self.clients()
         if self.user.GetWindow(int(client['address']), 4) == int(address)
     ]
+
+  def monitor_work_areas(self):
+
+    class MonitorInfo(ctypes.Structure):
+      _fields_ = [('size', W.DWORD), ('monitor', W.RECT), ('work', W.RECT), ('flags', W.DWORD)]
+
+    callback_type = ctypes.WINFUNCTYPE(W.BOOL, W.HANDLE, W.HDC, ctypes.POINTER(W.RECT), W.LPARAM)
+    self.user.GetMonitorInfoW.argtypes = [W.HANDLE, ctypes.POINTER(MonitorInfo)]
+    self.user.GetMonitorInfoW.restype = W.BOOL
+    areas = []
+    failures = []
+
+    @callback_type
+    def collect(monitor, dc, rect, data):
+      info = MonitorInfo()
+      info.size = ctypes.sizeof(info)
+      if not self.user.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        failures.append(ctypes.get_last_error())
+        return False
+      areas.append([info.work.left, info.work.top, info.work.right, info.work.bottom])
+      return True
+
+    self.user.EnumDisplayMonitors.argtypes = [
+        W.HDC, ctypes.POINTER(W.RECT), callback_type, W.LPARAM
+    ]
+    self.user.EnumDisplayMonitors.restype = W.BOOL
+    if not self.user.EnumDisplayMonitors(None, None, collect, 0):
+      raise ctypes.WinError(failures[0] if failures else ctypes.get_last_error())
+    return areas
 
   def ime_layouts(self):
     self.user.GetKeyboardLayoutList.argtypes = [ctypes.c_int, ctypes.POINTER(W.HANDLE)]
