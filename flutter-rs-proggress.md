@@ -2438,3 +2438,17 @@ revision helper now resolve installed Git from PATH. A real temporary-repository
 regression covers both helpers, and full Windows GN generation succeeds with
 all git.bat-containing directories removed from PATH (1901 targets). The CI
 bootstrap step runs this regression too; native runtime code is unchanged.
+
+
+## Windows CLI installer (2026-11-09)
+
+Added a Windows x64 PowerShell installer with GitHub CLI download support,
+HTTPS fallback, SHA-256 verification, configurable release/repository/install
+location, and user PATH setup. The rolling CLI workflow now builds and packages
+Windows alongside Linux, runs offline installer integration checks with Windows
+PowerShell 5.1, and includes both install commands in its release notes.
+
+Local offline checks pass for authenticated-download argument construction,
+HTTPS fallback, installation into paths with spaces, upgrades, checksum rejection
+preserving the installed binary, and temporary-download cleanup. Live Windows
+rolling-release downloads remain dependent on successful workflow publication.

@@ -6,11 +6,15 @@ on:
     paths:
       - engine/src/flutter/shell/platform/rust/rlutter/**
       - engine/src/flutter/shell/platform/rust/install.sh
+      - engine/src/flutter/shell/platform/rust/install.ps1
+      - engine/src/flutter/shell/platform/rust/tests/test_install.ps1
       - .github/workflows/rlutter-cli.yml
   pull_request:
     paths:
       - engine/src/flutter/shell/platform/rust/rlutter/**
       - engine/src/flutter/shell/platform/rust/install.sh
+      - engine/src/flutter/shell/platform/rust/install.ps1
+      - engine/src/flutter/shell/platform/rust/tests/test_install.ps1
       - .github/workflows/rlutter-cli.yml
   workflow_dispatch:
   workflow_run:
@@ -38,6 +42,9 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: rlutter-linux-x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: rlutter-windows-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -56,13 +63,30 @@ jobs:
         working-directory: ${{ env.RLUTTER_DIR }}
         run: cargo +1.93.1 build --release --locked --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Test Windows installer
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./engine/src/flutter/shell/platform/rust/tests/test_install.ps1
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
         run: |
           mkdir -p dist
           cp "$RLUTTER_DIR/target/${{ matrix.target }}/release/rlutter" "dist/${{ matrix.asset }}"
           tar -C dist -czf "dist/${{ matrix.asset }}.tar.gz" "${{ matrix.asset }}"
           rm "dist/${{ matrix.asset }}"
           (cd dist && sha256sum "${{ matrix.asset }}.tar.gz" > "${{ matrix.asset }}.tar.gz.sha256")
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist | Out-Null
+          $binary = "$env:RLUTTER_DIR/target/${{ matrix.target }}/release/rlutter.exe"
+          $archive = "${{ matrix.asset }}.zip"
+          Compress-Archive -LiteralPath $binary -DestinationPath "dist/$archive"
+          $hash = (Get-FileHash "dist/$archive" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content "dist/$archive.sha256" -Encoding ascii
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
@@ -95,6 +119,9 @@ jobs:
           gh release view BETA --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '.assets[].name' | grep -Fx 'rlutter-flutter-linux-x64.tar.gz'
 
+          gh release view BETA --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' | grep -Fx 'rlutter-flutter-windows-x64.tar.gz'
+
           # Rolling release under its own tag so it doesn't race the BETA
           # SDK release; install.sh downloads from releases/download/rlutter.
           {
@@ -104,6 +131,12 @@ jobs:
             echo
             echo '```bash'
             echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/rust/flutter-rs-shell/engine/src/flutter/shell/platform/rust/install.sh | sh"
+            echo '```'
+            echo
+            echo 'Windows (PowerShell; uses gh when available):'
+            echo
+            echo '```powershell'
+            echo "irm https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/rust/flutter-rs-shell/engine/src/flutter/shell/platform/rust/install.ps1 | iex"
             echo '```'
           } > notes.md
           if gh release view rlutter --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
