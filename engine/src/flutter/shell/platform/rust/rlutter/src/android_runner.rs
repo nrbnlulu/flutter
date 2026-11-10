@@ -60,7 +60,8 @@ fn with_desktop_winit(manifest: &str) -> String {
 }
 
 /// Upgrade the tool-owned desktop dependency table on existing runners.
-pub fn ensure_desktop(project: &Project) -> Result<()> {
+/// Returns whether the HAL lockfile update must run after plugin setup.
+pub fn ensure_desktop(project: &Project) -> Result<bool> {
     let path = project.runner_dir().join("Cargo.toml");
     let original = fs::read_to_string(&path)?;
     let mut updated = with_shared_plugins(&with_desktop_winit(&original));
@@ -78,15 +79,7 @@ pub fn ensure_desktop(project: &Project) -> Result<()> {
         }
     }
     write_if_changed(&path, &updated)?;
-    if needs_hal && project.runner_dir().join("Cargo.lock").is_file() {
-        // Retain existing dependency pins while switching only the required HAL.
-        crate::util::run(
-            std::process::Command::new("cargo")
-                .args(["update", "--offline", "-p", "wgpu-hal"])
-                .current_dir(project.runner_dir()),
-        )?;
-    }
-    Ok(())
+    Ok(needs_hal && project.runner_dir().join("Cargo.lock").is_file())
 }
 
 /// Fix runners generated while the plugin block followed the Linux table.
@@ -265,6 +258,26 @@ mod tests {
         assert_eq!(first.matches("wgpu-hal =").count(), 1);
         ensure_desktop(&project).unwrap();
         assert_eq!(fs::read_to_string(manifest).unwrap(), first);
+    }
+
+    #[test]
+    fn desktop_migration_defers_cargo_until_plugin_paths_exist() {
+        let project = Project {
+            dir: crate::util::testing::tempdir("desktop_deferred_update"),
+            name: "demo".into(),
+            rust_shell: true,
+        };
+        fs::create_dir_all(project.runner_dir()).unwrap();
+        let manifest = project.runner_dir().join("Cargo.toml");
+        fs::write(&manifest, "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n[dependencies]\nplugin = { path = \"missing-plugin\" }\n").unwrap();
+        fs::write(project.runner_dir().join("Cargo.lock"), "version = 4\n").unwrap();
+        // A Cargo invocation here would fail on the intentionally missing path.
+        assert!(ensure_desktop(&project).unwrap());
+        assert!(
+            fs::read_to_string(manifest)
+                .unwrap()
+                .contains("sdk/third_party/wgpu-hal")
+        );
     }
 
     #[test]

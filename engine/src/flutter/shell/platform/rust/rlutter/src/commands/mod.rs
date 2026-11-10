@@ -37,9 +37,16 @@ pub fn prepare_sources(
 ) -> Result<()> {
     run(&mut ctx.flutter.pub_get(&project.dir))?;
     sdk::ensure_sources(project, &ctx.flutter, &ctx.sources)?;
-    crate::android_runner::ensure_desktop(project)?;
+    let update_hal = crate::android_runner::ensure_desktop(project)?;
     adapt_runner(project)?;
     plugins::refresh(project, mode)?;
+    if update_hal {
+        // Cargo resolves plugin paths even for a targeted HAL update. Refresh
+        // plugin dependencies and symlinks before asking it to read the graph.
+        run(std::process::Command::new("cargo")
+            .args(["update", "--offline", "-p", "wgpu-hal"])
+            .current_dir(project.runner_dir()))?;
+    }
     Ok(())
 }
 
