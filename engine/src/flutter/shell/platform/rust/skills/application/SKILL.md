@@ -169,6 +169,20 @@ rlutter agent --headless --stdio --artifacts build/agent/session-001
 rlutter verify test/agent/save_dialog.json --headless --report build/agent/run-001/result.json
 ```
 
+For an MCP client, use the official Rust SDK based stdio adapter:
+
+```sh
+rlutter mcp --headless --stdio --artifacts build/agent/mcp-001
+```
+
+Launch from the application directory. Discovery is immediate; the first tool
+call builds and starts the app. Tools include `rlutter_windows_list`,
+`rlutter_input_tap`, `rlutter_verify_wait`, and `rlutter_capture_screenshot`
+(which returns an MCP image plus metadata). Finish with
+`rlutter_session_shutdown`; closing stdin also cleans up the owned app.
+Cancellation does not undo dispatched input; never retry an uncertain mutation.
+See [MCP configuration and lifecycle](../../docs/mcp.md).
+
 `run` does not expose the agent protocol. For `agent`, keep stdin open while
 reading responses, send one JSON request per line, and handshake first:
 

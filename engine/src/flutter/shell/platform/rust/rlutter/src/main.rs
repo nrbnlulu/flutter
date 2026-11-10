@@ -39,8 +39,15 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     util::set_protocol_output(matches!(
         &cli.command,
-        Command::Agent(_) | Command::Verify(_)
+        Command::Agent(_) | Command::Mcp(_) | Command::Verify(_)
     ));
+    if let Command::Mcp(args) = &cli.command {
+        return commands::mcp::run(
+            args,
+            cli.flutter_root.as_deref(),
+            cli.local_engine_src.as_deref(),
+        );
+    }
     let ctx = Ctx {
         flutter: Flutter::discover(cli.flutter_root.as_deref())?,
         sources: EngineSources {
@@ -100,6 +107,7 @@ fn run() -> Result<()> {
             )
             .map(drop),
         },
+        Command::Mcp(_) => unreachable!(),
         Command::Agent(args) => commands::agent::run_stdio(&ctx, &args),
         Command::Verify(args) => commands::verify::run(&ctx, &args),
         Command::Run(args) => match commands::run::run_app(&ctx, &args)? {

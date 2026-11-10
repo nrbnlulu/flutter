@@ -3,6 +3,7 @@ pub mod build;
 pub mod build_android;
 pub mod clean;
 pub mod create;
+pub mod mcp;
 mod provenance;
 pub mod run;
 pub mod verify;

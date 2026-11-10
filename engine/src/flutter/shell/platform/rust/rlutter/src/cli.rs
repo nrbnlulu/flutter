@@ -9,7 +9,7 @@ use crate::{abi::Abi, mode::ModeArgs};
     name = "rlutter",
     version,
     about = "Build, run, and verify Flutter apps on the Rust shell",
-    after_help = "Headless workflows (Linux x64, Vulkan required):\n  run --headless        Launch an app for development\n  agent --headless      Control an app through NDJSON over stdio\n  verify --headless     Execute a JSON scenario and write a report\n\nRun rlutter <COMMAND> --help for examples and required options."
+    after_help = "Headless workflows (Linux x64, Vulkan required):\n  run --headless        Launch an app for development\n  agent --headless      Control an app through NDJSON over stdio\n  mcp --headless        Expose app control as MCP tools over stdio\n  verify --headless     Execute a JSON scenario and write a report\n\nRun rlutter <COMMAND> --help for examples and required options."
 )]
 pub struct Cli {
     /// Override the release-managed Flutter SDK.
@@ -37,6 +37,11 @@ pub enum Command {
     Run(RunArgs),
     /// Build and supervise a display-free verification session over stdio.
     Agent(AgentArgs),
+    /// Expose headless app control as MCP tools over stdio (lazy build/launch).
+    #[command(
+        after_help = "Example (from the application directory; DIR must be fresh):\n  rlutter mcp --headless --stdio --artifacts build/agent/mcp-001\n\nConfigure your MCP client to launch this command in the app directory.\nDiscovery does not build; the first tool call starts the owned headless app.\nUse rlutter_windows_list, rlutter_input_tap, rlutter_verify_wait and\nrlutter_capture_screenshot. Finish with rlutter_session_shutdown.\nRequires Linux x64 and Vulkan. See docs/mcp.md in the Rust-shell source SDK."
+    )]
+    Mcp(AgentArgs),
     /// Build a fresh app process and execute a versioned verification scenario.
     Verify(VerifyArgs),
     /// Generate a VS Code workspace with one-button Linux debugging.
@@ -177,7 +182,7 @@ pub struct RunArgs {
     pub device: Option<String>,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 #[command(
     after_help = "Example (from the application directory; DIR must be fresh):\n  rlutter agent --headless --stdio --artifacts build/agent/session-001\n\nRequires Linux x64 and Vulkan. Keep stdin open and send one JSON request per line.\nFirst request:\n  {\"id\":1,\"method\":\"session.handshake\",\"params\":{\"protocolVersion\":1}}\nThen use windows.list to discover view IDs, semantics.snapshot, input.tap,\nverify.wait, and capture.screenshot. Request session.shutdown when finished.\nStdout contains only protocol messages; build/app logs go to stderr and artifacts.\nStructured framework error checks require FlutterRustAgent.install() in the app.\nSee docs/agent-protocol.md and docs/verification.md in the Rust-shell source SDK."
 )]

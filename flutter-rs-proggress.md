@@ -2580,3 +2580,32 @@ pubspec in a clean temporary tree. Removing the new exclusions makes both tests
 fail. The GPU-free Linux/Windows CI job now runs these checks before engine sync,
 with its YAML dependency installed explicitly. Cloud build and publication
 success remain pending a run of the corrected revision.
+
+## rlutter MCP control (2026-11-10)
+
+Added `rlutter mcp --headless --stdio --artifacts DIR`, using the official Rust
+MCP SDK (`rmcp` 3.9.0) for stdio framing, lifecycle, negotiation, dispatch and
+cancellation. No custom MCP wire implementation remains. Named tools adapt the
+existing owned native agent session for window discovery, semantics, input,
+assertions, screenshots, diagnostics and recording. Screenshot calls return both
+native frame metadata and MCP PNG image content. SDK/app discovery and building
+are deferred until the first tool call; initialization/listing needs neither.
+
+Native operations run on a blocking worker with one operation slot. Cancellation
+can stop waiting but cannot undo dispatched input, and the slot remains occupied
+until that operation completes. Native transport failure prevents session reuse;
+shutdown is final. EOF finishes the owned process after in-flight native work.
+Existing private endpoint permissions, build provenance and artifact limits remain
+owned by the agent implementation. Setup and lifecycle details are in
+`engine/src/flutter/shell/platform/rust/docs/mcp.md` and the application skill.
+
+All 115 rlutter unit tests pass, including an in-memory SDK transport check and
+a cancellation/exclusivity regression. Clippy with warnings denied passes.
+`tests/test_mcp.py` passes against the generated agent fixture on Linux x64 / NVIDIA
+RTX 5060 with Vulkan validation: lazy discovery, title-based view discovery,
+click/observed state, deliberately failing assertion, fresh PNG bytes/metadata,
+health, explicit final shutdown and a separate EOF-cleanup session. Evidence:
+`/tmp/rlutter-mcp-check-2`. The first probe selected implicit view 0 and failed;
+the corrected probe discovers the fixture window by title, and that failed run
+is not counted as a pass. HTTP transport and remote control are outside this
+stdio adapter's scope; non-Linux app control remains unsupported.

@@ -1037,6 +1037,13 @@ runtime support remains gated independently. See the
 [distribution contract](engine/src/flutter/shell/platform/rust/docs/distribution.md).
 
 
+The standalone CLI also exposes these controls as MCP tools through the official
+Rust MCP SDK: `rlutter mcp --headless --stdio --artifacts DIR`. MCP discovery is
+immediate; the first tool call builds and launches the owned app. Screenshots
+return PNG image content and native frame metadata. See
+[MCP control](engine/src/flutter/shell/platform/rust/docs/mcp.md) for client setup,
+cancellation behavior and session cleanup.
+
 ## Windows rlutter CLI installer
 
 Install the rolling Windows x64 CLI from PowerShell:
