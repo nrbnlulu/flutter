@@ -2609,3 +2609,22 @@ health, explicit final shutdown and a separate EOF-cleanup session. Evidence:
 the corrected probe discovers the fixture window by title, and that failed run
 is not counted as a pass. HTTP transport and remote control are outside this
 stdio adapter's scope; non-Linux app control remains unsupported.
+
+## MCP sessions across worktrees (2026-11-10)
+
+MCP registration now uses `rlutter mcp --stdio` from any directory.
+`rlutter_session_start(project_dir)` builds an explicitly selected application
+and returns a session_id; every app tool requires that ID. Multiple app sessions
+can stay open, shutdown is final only for its app, and EOF cleans up all owned
+apps. Each session automatically gets fresh artifacts under its project's
+build/agent directory. Builds receive explicit project paths without changing
+the MCP process working directory. The agent/verify CLI workflows retain their
+existing artifact arguments.
+
+All 117 rlutter unit tests and Clippy with warnings denied pass. Real-engine
+MCP checks pass from an unrelated directory with two distinct project roots
+open at once, independent counter state/input, screenshots, negative assertions,
+shutdown/restart and EOF cleanup under Vulkan validation. Evidence:
+`/tmp/rlutter-mcp-two-project-check`. The second root is a copied generated
+fixture; no Git metadata is required for project selection. Docs and the
+application skill describe the new registration and session arguments.

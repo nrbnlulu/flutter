@@ -108,6 +108,28 @@ mod linux {
             size: (u32, u32),
             ratio: f64,
         ) -> Result<Self> {
+            Self::launch_at(
+                ctx,
+                mode,
+                target,
+                defines,
+                artifacts,
+                size,
+                ratio,
+                crate::project::Project::discover()?,
+            )
+        }
+        #[allow(clippy::too_many_arguments)]
+        pub fn launch_at(
+            ctx: &Ctx,
+            mode: crate::mode::BuildMode,
+            target: &str,
+            defines: &[String],
+            artifacts: &Path,
+            size: (u32, u32),
+            ratio: f64,
+            project: crate::project::Project,
+        ) -> Result<Self> {
             if !cfg!(target_arch = "x86_64") {
                 bail!("headless agents currently require Linux x64");
             }
@@ -123,12 +145,18 @@ mod linux {
                     .write(true)
                     .open(artifacts.join("build.log"))?,
             );
-            let project = crate::project::Project::discover()?;
             let source = super::super::provenance::sources(&project.dir, target)?;
             let mut defines = defines.to_vec();
             defines.retain(|v| !v.starts_with("FLUTTER_RUST_AGENT="));
             defines.push("FLUTTER_RUST_AGENT=true".into());
-            let build = super::super::build::build_linux(ctx, mode, target, &defines)?;
+            let build = super::super::build::build_desktop(
+                ctx,
+                mode,
+                target,
+                &defines,
+                "linux",
+                crate::project::Project::load(&project.dir)?,
+            )?;
             if source != super::super::provenance::sources(&project.dir, target)? {
                 bail!("source changed during the verification build; start a new session");
             }

@@ -1,35 +1,29 @@
 # MCP application control
 
-From a generated Rust-shell application, start the stdio MCP server:
-
-```sh
-rlutter mcp --headless --stdio --artifacts build/agent/mcp-001
-```
-
-The application working directory is the server's current directory. Configure
-an MCP client to launch this command there; `artifacts` must be fresh for each
-session. Linux x64 and Vulkan are required for app control. Optional `--target`,
-`--dart-define`, build-mode, `--size`, `--pixel-ratio`, `--flutter-root` and
-`--local-engine-src` options have the same meanings as for `rlutter agent`.
-
-For a client that cannot set its server working directory, use a launcher script:
-
-```sh
-#!/bin/sh
-cd /absolute/path/to/my_app || exit 1
-exec /absolute/path/to/rlutter mcp --headless --stdio \
-  --artifacts "build/agent/mcp-$(date +%s)-$$"
-```
-
-A typical MCP client configuration for that executable script is:
+Register the globally installed CLI once in your IDE:
 
 ```json
-{"mcpServers":{"rlutter":{"command":"/absolute/path/to/launch-rlutter-mcp"}}}
+{"mcpServers":{"rlutter":{"command":"rlutter","args":["mcp","--stdio"]}}}
 ```
+
+The server can start from any directory. Linux x64 and Vulkan are required
+for app control. Discovery requires no SDK download or app build.
+
+Call `rlutter_session_start` with `project_dir`, the absolute path to an
+application in the desired worktree. It builds and launches the app and returns
+`session_id` and its artifact directory. Pass `session_id` to every subsequent
+app tool. Each session gets a fresh directory under that project's
+`build/agent/`; no artifact option or launcher script is needed.
+
+Multiple sessions can remain open across different worktrees. All operations
+are serialized through one worker. Paths are resolved explicitly; the server
+never changes its working directory. CLI build options apply to each session.
+Explicit `--flutter-root` and `--local-engine-src` options select the SDK and
+engine for all sessions; otherwise the managed SDK is used.
 
 The official Rust MCP SDK (`rmcp`) handles stdio transport, initialization,
 version negotiation, request dispatch and MCP cancellation. Discovery does not
-resolve/download an SDK or build an app. The first tool call builds a fresh app
+resolve/download an SDK or build an app. The session.start call builds a fresh app
 and handshakes with the existing native agent session. Build and app logs go to
 stderr and the artifact directory; stdout carries only MCP messages. Ordinary
 app launches still expose no control endpoint.
@@ -40,7 +34,7 @@ Tools use the prefix `rlutter_` and replace native method dots with underscores:
 Native handshake, subscriptions and request cancellation are internal rather
 than separate tools. Use MCP cancellation notifications for MCP requests.
 
-A typical sequence is:
+After starting a session, a typical sequence (passing its session_id each time) is:
 
 1. Call `rlutter_windows_list` and discover actual view IDs.
 2. Read `rlutter_semantics_snapshot` or `rlutter_semantics_find`.
@@ -60,8 +54,8 @@ busy result. Cancellation stops waiting for the MCP result; an already running
 native operation may still complete and holds the operation slot until it does.
 Never retry a mutation after cancellation or timeout. Native transport failure
 closes the session and prevents later calls from restarting or replaying it.
-Explicit shutdown is final; use a new MCP process and fresh artifacts to restart.
-EOF closes the owned app after any in-flight native operation reaches its bounded
+Explicit shutdown is final for that session ID; call session.start for a new
+app session. The MCP server stays available. EOF closes all owned apps after any in-flight native operation reaches its bounded
 deadline. No HTTP listener, arbitrary Dart evaluation or general file tool is
 exposed.
 

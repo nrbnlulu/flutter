@@ -43,7 +43,7 @@ fn run() -> Result<()> {
     ));
     if let Command::Mcp(args) = &cli.command {
         return commands::mcp::run(
-            args,
+            &args.agent_args(),
             cli.flutter_root.as_deref(),
             cli.local_engine_src.as_deref(),
         );

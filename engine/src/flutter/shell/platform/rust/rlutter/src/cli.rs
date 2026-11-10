@@ -38,10 +38,10 @@ pub enum Command {
     /// Build and supervise a display-free verification session over stdio.
     Agent(AgentArgs),
     /// Expose headless app control as MCP tools over stdio (lazy build/launch).
-    #[command(
-        after_help = "Example (from the application directory; DIR must be fresh):\n  rlutter mcp --headless --stdio --artifacts build/agent/mcp-001\n\nConfigure your MCP client to launch this command in the app directory.\nDiscovery does not build; the first tool call starts the owned headless app.\nUse rlutter_windows_list, rlutter_input_tap, rlutter_verify_wait and\nrlutter_capture_screenshot. Finish with rlutter_session_shutdown.\nRequires Linux x64 and Vulkan. See docs/mcp.md in the Rust-shell source SDK."
-    )]
-    Mcp(AgentArgs),
+    #[command(after_help = "Register once with: rlutter mcp --stdio
+Call rlutter_session_start with an absolute project_dir, then pass session_id to app tools.
+Artifacts are created automatically in each project. Linux x64 and Vulkan required.")]
+    Mcp(McpArgs),
     /// Build a fresh app process and execute a versioned verification scenario.
     Verify(VerifyArgs),
     /// Generate a VS Code workspace with one-button Linux debugging.
@@ -180,6 +180,38 @@ pub struct RunArgs {
     /// choose among its devices. Several candidates open a picker.
     #[arg(short = 'd', long)]
     pub device: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct McpArgs {
+    #[command(flatten)]
+    pub mode: ModeArgs,
+    #[command(flatten)]
+    pub defines: DartDefineArgs,
+    #[arg(short = 't', long, default_value = "lib/main.dart")]
+    pub target: String,
+    #[arg(long)]
+    pub headless: bool,
+    #[arg(long)]
+    pub stdio: bool,
+    #[arg(long, default_value="1280x800", value_parser=parse_headless_size)]
+    pub size: (u32, u32),
+    #[arg(long, default_value="1", value_parser=parse_pixel_ratio)]
+    pub pixel_ratio: f64,
+}
+impl McpArgs {
+    pub fn agent_args(&self) -> AgentArgs {
+        AgentArgs {
+            mode: self.mode.clone(),
+            defines: self.defines.clone(),
+            target: self.target.clone(),
+            headless: true,
+            stdio: true,
+            artifacts: PathBuf::new(),
+            size: self.size,
+            pixel_ratio: self.pixel_ratio,
+        }
+    }
 }
 
 #[derive(Args, Debug, Clone)]

@@ -30,7 +30,14 @@ pub fn build_linux(
     target: &str,
     dart_defines: &[String],
 ) -> Result<DesktopBuild> {
-    build_desktop(ctx, mode, target, dart_defines, "linux")
+    build_desktop(
+        ctx,
+        mode,
+        target,
+        dart_defines,
+        "linux",
+        Project::discover()?,
+    )
 }
 
 pub fn build_windows(
@@ -39,20 +46,27 @@ pub fn build_windows(
     target: &str,
     dart_defines: &[String],
 ) -> Result<DesktopBuild> {
-    build_desktop(ctx, mode, target, dart_defines, "windows")
+    build_desktop(
+        ctx,
+        mode,
+        target,
+        dart_defines,
+        "windows",
+        Project::discover()?,
+    )
 }
 
-fn build_desktop(
+pub(super) fn build_desktop(
     ctx: &Ctx,
     mode: BuildMode,
     target: &str,
     dart_defines: &[String],
     platform: &str,
+    project: Project,
 ) -> Result<DesktopBuild> {
     if std::env::consts::OS != platform || !cfg!(target_arch = "x86_64") {
         bail!("{platform} desktop builds require a native {platform} x64 host");
     }
-    let project = Project::discover()?;
     project.require_rust_shell()?;
     let engine = prepare(ctx, &project, mode)?;
 

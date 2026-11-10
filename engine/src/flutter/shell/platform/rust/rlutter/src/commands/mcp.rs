@@ -14,8 +14,14 @@ const MAX_MESSAGE: u64 = 1024 * 1024;
 // their native names so protocol documentation and artifacts remain applicable.
 const TOOLS: &[(&str, &str, &str, &str)] = &[
     (
+        "session.start",
+        "Start an app in an absolute project directory; returns session_id. Use that ID for subsequent tools.",
+        "project_dir",
+        "",
+    ),
+    (
         "session.capabilities",
-        "Build and launch if needed; report actual engine, GPU and bridge capabilities.",
+        "Report actual engine, GPU and bridge capabilities for an existing session.",
         "",
         "",
     ),
@@ -162,11 +168,14 @@ fn property(field: &str) -> Value {
 fn tools() -> Value {
     json!({"tools":TOOLS.iter().map(|(method, description, required, optional)| {
         let mut properties = serde_json::Map::new();
+        if *method != "session.start" {
+            properties.insert("session_id".into(), property("session_id"));
+        }
         for field in required.split_whitespace().chain(optional.split_whitespace()) {
             properties.insert(field.into(), property(field));
         }
         properties.insert("timeoutMs".into(), json!({"type":"integer","minimum":1,"maximum":120000,"default":5000}));
-        json!({"name":name(method),"description":description,"inputSchema":{"type":"object","properties":properties,"required":required.split_whitespace().collect::<Vec<_>>(),"additionalProperties":false}})
+        json!({"name":name(method),"description":description,"inputSchema":{"type":"object","properties":properties,"required":required.split_whitespace().chain(if *method == "session.start" { None } else { Some("session_id") }).collect::<Vec<_>>(),"additionalProperties":false}})
     }).collect::<Vec<_>>()})
 }
 fn tool_result(response: Value) -> Value {
@@ -201,7 +210,7 @@ impl rmcp::ServerHandler for McpServer {
     fn get_info(&self) -> rmcp::model::ServerConfig {
         rmcp::model::ServerConfig::new(rmcp::model::ServerCapabilities::builder().enable_tools().build())
             .with_server_info(rmcp::model::Implementation::new("rlutter", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Use rlutter_windows_list to discover view IDs. Prefer identifier selectors. Observe actions with rlutter_verify_wait; dispatch is not success. Never retry mutations after timeout or cancellation. The app builds lazily on the first tool call. Only one app operation may run at a time. Finish with rlutter_session_shutdown.")
+            .with_instructions("Use rlutter_windows_list to discover view IDs. Prefer identifier selectors. Observe actions with rlutter_verify_wait; dispatch is not success. Never retry mutations after timeout or cancellation. Call rlutter_session_start with an absolute project_dir to build and launch an app. Pass its session_id to every app tool. Multiple worktrees can have separate sessions. Only one app operation may run at a time. Finish with rlutter_session_shutdown.")
     }
     fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
         tools()["tools"]
@@ -233,6 +242,7 @@ impl rmcp::ServerHandler for McpServer {
         if required.split_whitespace().any(|k| !args.contains_key(k))
             || args.keys().any(|k| {
                 k != "timeoutMs"
+                    && !(k == "session_id" && *method != "session.start")
                     && !required
                         .split_whitespace()
                         .chain(optional.split_whitespace())
@@ -280,7 +290,7 @@ impl rmcp::ServerHandler for McpServer {
 }
 
 pub fn run(args: &AgentArgs, flutter_root: Option<&Path>, engine_src: Option<&Path>) -> Result<()> {
-    let server = McpServer::new(Native::new(
+    let server = McpServer::new(Sessions::new(
         args.clone(),
         flutter_root.map(Path::to_path_buf),
         engine_src.map(Path::to_path_buf),
@@ -321,6 +331,91 @@ async fn serve_io(
     cleanup
 }
 
+// One serialized worker owns all sessions; no process-wide cwd changes.
+struct Sessions {
+    args: AgentArgs,
+    flutter_root: Option<std::path::PathBuf>,
+    engine_src: Option<std::path::PathBuf>,
+    sessions: std::collections::HashMap<String, Native>,
+    next_id: u64,
+}
+impl Sessions {
+    fn new(
+        args: AgentArgs,
+        flutter_root: Option<std::path::PathBuf>,
+        engine_src: Option<std::path::PathBuf>,
+    ) -> Self {
+        Self {
+            args,
+            flutter_root,
+            engine_src,
+            sessions: Default::default(),
+            next_id: 0,
+        }
+    }
+}
+impl Backend for Sessions {
+    fn call(&mut self, method: &str, mut params: Value) -> Result<Value> {
+        if method == "session.start" {
+            let path = Path::new(
+                params["project_dir"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("project_dir must be a string"))?,
+            );
+            if !path.is_absolute() {
+                bail!("project_dir must be absolute");
+            }
+            let path = path.canonicalize()?;
+            let project = crate::project::Project::load(&path)?;
+            project.require_rust_shell()?;
+            self.next_id += 1;
+            let id = format!("session-{}", self.next_id);
+            let mut args = self.args.clone();
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos();
+            args.artifacts = path.join("build/agent").join(format!(
+                "mcp-{}-{nonce}-{}",
+                std::process::id(),
+                self.next_id
+            ));
+            let mut native = Native::new(args, self.flutter_root.clone(), self.engine_src.clone());
+            native.set_project(path);
+            let result = native.call("session.capabilities", json!({}))?;
+            if result["isError"] == true {
+                native.finish()?;
+                return Ok(result);
+            }
+            let artifacts = native.artifact_path().to_path_buf();
+            self.sessions.insert(id.clone(), native);
+            return Ok(tool_result(
+                json!({"result":{"session_id":id,"artifacts":artifacts}}),
+            ));
+        }
+        let id = params
+            .as_object_mut()
+            .and_then(|p| p.remove("session_id"))
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .ok_or_else(|| {
+                anyhow::anyhow!("session_id is required; call rlutter_session_start first")
+            })?;
+        self.sessions
+            .get_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("unknown session_id"))?
+            .call(method, params)
+    }
+    fn finish(&mut self) -> Result<()> {
+        let mut failure = None;
+        for native in self.sessions.values_mut() {
+            if let Err(error) = native.finish() {
+                failure = Some(error);
+            }
+        }
+        self.sessions.clear();
+        failure.map_or(Ok(()), Err)
+    }
+}
+
 #[cfg(target_os = "linux")]
 struct Native {
     args: AgentArgs,
@@ -329,6 +424,7 @@ struct Native {
     session: Option<super::agent::Session>,
     reader: Option<std::io::BufReader<std::os::unix::net::UnixStream>>,
     sequence: u64,
+    project_dir: Option<std::path::PathBuf>,
     closed: bool,
 }
 #[cfg(target_os = "linux")]
@@ -345,8 +441,15 @@ impl Native {
             session: None,
             reader: None,
             sequence: 0,
+            project_dir: None,
             closed: false,
         }
+    }
+    fn set_project(&mut self, path: std::path::PathBuf) {
+        self.project_dir = Some(path);
+    }
+    fn artifact_path(&self) -> &Path {
+        &self.args.artifacts
     }
     fn call_inner(&mut self, method: &str, params: Value) -> Result<Value> {
         use super::{Ctx, agent::Session};
@@ -358,10 +461,11 @@ impl Native {
             session,
             reader,
             sequence,
+            project_dir,
             closed,
         } = self;
         if *closed {
-            bail!("session closed or failed; start a new MCP process with fresh artifacts");
+            bail!("session closed or failed; start a new app with rlutter_session_start");
         }
         // Latch failure before building: a failed/mutating call is never replayed.
         *closed = true;
@@ -372,7 +476,7 @@ impl Native {
                     local_engine_src: engine_src.clone(),
                 },
             };
-            let owned = Session::launch(
+            let owned = Session::launch_at(
                 &ctx,
                 args.mode.resolve()?,
                 &args.target,
@@ -380,6 +484,11 @@ impl Native {
                 &args.artifacts,
                 args.size,
                 args.pixel_ratio,
+                crate::project::Project::load(
+                    project_dir
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("missing project directory"))?,
+                )?,
             )?;
             owned
                 .stream
@@ -469,6 +578,10 @@ impl Backend for Native {
 struct Native;
 #[cfg(not(target_os = "linux"))]
 impl Native {
+    fn set_project(&mut self, _: std::path::PathBuf) {}
+    fn artifact_path(&self) -> &Path {
+        Path::new("")
+    }
     fn new(_: AgentArgs, _: Option<std::path::PathBuf>, _: Option<std::path::PathBuf>) -> Self {
         Self
     }
@@ -569,6 +682,49 @@ mod tests {
         .unwrap();
         serde_json::from_str(&line).unwrap()
     }
+    #[test]
+    fn sessions_require_explicit_project_and_identity() {
+        use clap::Parser;
+        let cli = crate::cli::Cli::try_parse_from(["rlutter", "mcp", "--stdio"]).unwrap();
+        let crate::cli::Command::Mcp(args) = cli.command else {
+            panic!("expected MCP")
+        };
+        let mut sessions = Sessions::new(args.agent_args(), None, None);
+        assert!(
+            sessions
+                .call("session.start", json!({"project_dir":"relative/app"}))
+                .unwrap_err()
+                .to_string()
+                .contains("absolute")
+        );
+        assert!(
+            sessions
+                .call("windows.list", json!({}))
+                .unwrap_err()
+                .to_string()
+                .contains("session_id")
+        );
+        assert!(
+            sessions
+                .call("windows.list", json!({"session_id":"missing"}))
+                .unwrap_err()
+                .to_string()
+                .contains("unknown")
+        );
+        assert!(sessions.sessions.is_empty());
+        sessions.finish().unwrap();
+        let catalogue = tools();
+        for tool in catalogue["tools"].as_array().unwrap() {
+            if tool["name"] != "rlutter_session_start" {
+                assert!(
+                    tool["inputSchema"]["required"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!("session_id"))
+                );
+            }
+        }
+    }
     #[tokio::test]
     async fn sdk_discovery_calls_errors_and_eof_cleanup() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -606,9 +762,9 @@ mod tests {
             (
                 2,
                 "rlutter_input_replaceText",
-                json!({"viewId":9,"text":"שלום 🌍 café"}),
+                json!({"session_id":"test","viewId":9,"text":"שלום 🌍 café"}),
             ),
-            (3, "rlutter_session_health", json!({})),
+            (3, "rlutter_session_health", json!({"session_id":"test"})),
             (4, "rlutter_windows_list", json!({"typo":1})),
         ] {
             send(&mut output,json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":tool,"arguments":args}})).await;
@@ -672,12 +828,12 @@ mod tests {
             json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
         )
         .await;
-        send(&mut output,json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"rlutter_input_tap","arguments":{"viewId":1,"x":1,"y":1}}})).await;
+        send(&mut output,json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"rlutter_input_tap","arguments":{"session_id":"test","viewId":1,"x":1,"y":1}}})).await;
         tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
             .await
             .unwrap();
         send(&mut output,json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2,"reason":"test"}})).await;
-        send(&mut output,json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"rlutter_windows_list"}})).await;
+        send(&mut output,json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"rlutter_windows_list","arguments":{"session_id":"test"}}})).await;
         let busy = receive(&mut input).await;
         assert_eq!(busy["id"], 3);
         assert_eq!(busy["result"]["isError"], true);

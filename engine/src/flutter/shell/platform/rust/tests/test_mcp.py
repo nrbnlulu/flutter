@@ -22,18 +22,13 @@ def exercise(args, output, shutdown):
   command = [str(args.rlutter.resolve()), '--flutter-root', str(args.flutter_root.resolve())]
   if args.local_engine_src:
     command += ['--local-engine-src', str(args.local_engine_src.resolve())]
-  command += ['mcp', '--headless', '--stdio', '--artifacts', str(artifacts)]
+  command += ['mcp', '--stdio']
   env = dict(
       os.environ, RUSTUP_TOOLCHAIN='1.93.1', VK_INSTANCE_LAYERS='VK_LAYER_KHRONOS_validation'
   )
   with (output / f'{artifacts.name}.log').open('w') as log:
     process = subprocess.Popen(
-        command,
-        cwd=args.project.resolve(),
-        env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=log
+        command, cwd=output, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log
     )
     sequence = 0
     transcript = []
@@ -53,7 +48,11 @@ def exercise(args, output, shutdown):
       assert 'error' not in response, response
       return response['result']
 
+    session_id = None
+
     def tool(name, expected_error=False, **params):
+      if name != "session_start":
+        params["session_id"] = session_id
       result = rpc('tools/call', {'name': 'rlutter_' + name, 'arguments': params})
       assert bool(result.get('isError')) == expected_error, result
       return result
@@ -70,6 +69,11 @@ def exercise(args, output, shutdown):
       tools = rpc('tools/list', {})['tools']
       assert any(t['name'] == 'rlutter_capture_screenshot' for t in tools)
       assert not artifacts.exists(), 'discovery must not build or launch'
+      started = json.loads(
+          tool('session_start', project_dir=str(args.project.resolve()))['content'][0]['text']
+      )
+      session_id = started['session_id']
+      assert Path(started['artifacts']).is_relative_to(args.project.resolve())
       tool('verify_wait', kind='windows', where={'title': 'Agent form', 'ready': True}, count=1)
       windows = json.loads(tool('windows_list')['content'][0]['text'])['views']
       view = next(window['viewId'] for window in windows if window['title'] == 'Agent form')
@@ -90,9 +94,37 @@ def exercise(args, output, shutdown):
       metadata = json.loads(capture['content'][0]['text'])
       assert metadata['uiFrameNumber'] > metadata['uiFrameBoundary']
       tool('session_health')
+      if args.second_project:
+        first_id = session_id
+        second = json.loads(
+            tool('session_start',
+                 project_dir=str(args.second_project.resolve()))['content'][0]['text']
+        )
+        assert second['session_id'] != first_id
+        assert Path(second['artifacts']).is_relative_to(args.second_project.resolve())
+        session_id = second['session_id']
+        tool('verify_wait', kind='windows', where={'title': 'Agent form', 'ready': True}, count=1)
+        second_windows = json.loads(tool('windows_list')['content'][0]['text'])['views']
+        second_view = next(w['viewId'] for w in second_windows if w['title'] == 'Agent form')
+        tool('verify_wait', viewId=second_view, selector={'identifier': 'click_count'}, value='0')
+        tool('input_tap', viewId=second_view, selector={'identifier': 'increment'})
+        tool('verify_wait', viewId=second_view, selector={'identifier': 'click_count'}, value='1')
+        tool('input_tap', viewId=second_view, selector={'identifier': 'increment'})
+        tool('verify_wait', viewId=second_view, selector={'identifier': 'click_count'}, value='2')
+        tool('session_shutdown')
+        session_id = first_id
+        tool('verify_wait', viewId=view, selector={'identifier': 'click_count'}, value='1')
+
       if shutdown:
         tool('session_shutdown')
         tool('windows_list', expected_error=True)
+        restarted = json.loads(
+            tool('session_start', project_dir=str(args.project.resolve()))['content'][0]['text']
+        )
+        assert restarted['session_id'] != session_id
+        session_id = restarted['session_id']
+        tool('windows_list')
+        tool('session_shutdown')
       process.stdin.close()
       assert process.wait(timeout=30) == 0
       assert not process.stdout.read(), 'unexpected protocol output after EOF'
@@ -111,6 +143,7 @@ def main():
   for flag in ('rlutter', 'flutter-root', 'project', 'artifacts'):
     parser.add_argument('--' + flag, type=Path, required=True)
   parser.add_argument('--local-engine-src', type=Path)
+  parser.add_argument('--second-project', type=Path)
   args = parser.parse_args()
   output = args.artifacts.resolve()
   output.mkdir(parents=True, exist_ok=False)
