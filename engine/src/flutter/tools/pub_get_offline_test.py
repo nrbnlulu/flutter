@@ -21,10 +21,8 @@ class PackageAuditTest(unittest.TestCase):
       excluded = [
           str(engine / Path(path).relative_to(original)) for path in pub_get_offline.EXCLUDED_DIRS
       ]
-      for name in [
-          'agent_fixture', 'frb_fixture', 'headless_fixture', 'smoke_fixture',
-          'windowing_fixture', 'unlisted_package'
-      ]:
+      for name in ['agent_fixture', 'frb_fixture', 'headless_fixture', 'smoke_fixture',
+                   'windowing_fixture', 'unlisted_package']:
         package = engine / 'shell/platform/rust/tests' / name
         package.mkdir(parents=True)
         (package / 'pubspec.yaml').write_text('name: test_package\n', encoding='utf-8')
@@ -37,8 +35,7 @@ class PackageAuditTest(unittest.TestCase):
            patch.object(pub_get_offline, 'ALL_PACKAGES', [str(engine)]), \
            patch.object(pub_get_offline, 'EXCLUDED_DIRS', excluded):
         self.assertEqual(
-            set(pub_get_offline.find_unlisted_packages()),
-            {
+            set(pub_get_offline.find_unlisted_packages()), {
                 str(engine / 'shell/platform/rust/tests/unlisted_package'),
                 str(engine / 'shell/platform/rust/dart/unlisted_package'),
             }
@@ -59,10 +56,12 @@ class PackageAuditTest(unittest.TestCase):
         destination = engine / manifest
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.touch()
-      packages = [str(engine / Path(path).relative_to(original))
-                  for path in pub_get_offline.ALL_PACKAGES]
-      excluded = [str(engine / Path(path).relative_to(original))
-                  for path in pub_get_offline.EXCLUDED_DIRS]
+      packages = [
+          str(engine / Path(path).relative_to(original)) for path in pub_get_offline.ALL_PACKAGES
+      ]
+      excluded = [
+          str(engine / Path(path).relative_to(original)) for path in pub_get_offline.EXCLUDED_DIRS
+      ]
       with patch.object(pub_get_offline, 'ENGINE_DIR', str(engine)), \
            patch.object(pub_get_offline, 'ALL_PACKAGES', packages), \
            patch.object(pub_get_offline, 'EXCLUDED_DIRS', excluded):
