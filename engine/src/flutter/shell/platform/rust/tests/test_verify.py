@@ -48,11 +48,12 @@ def main():
   env = {k: v for k, v in os.environ.items() if k not in ('DISPLAY', 'WAYLAND_DISPLAY')}
   env['RUSTUP_TOOLCHAIN'] = '1.93.1'
   results = {}
-  for name, defines, selected in [('positive', [], scenario),
-                                  ('regression', ['--dart-define=AGENT_REGRESSION=true'], scenario),
-                                  ('startup-error', ['--dart-define=AGENT_STARTUP_ERROR=true'],
-                                   scenario), ('caught-error', [], error_scenario),
-                                     ('replaced-hook', ['--dart-define=AGENT_REPLACE_ERROR_HOOK=true'], scenario)]:
+  for name, defines, selected in [
+      ('positive', [], scenario), ('regression', ['--dart-define=AGENT_REGRESSION=true'], scenario),
+      ('startup-error', ['--dart-define=AGENT_STARTUP_ERROR=true'], scenario),
+      ('caught-error', [], error_scenario),
+      ('replaced-hook', ['--dart-define=AGENT_REPLACE_ERROR_HOOK=true'], scenario)
+  ]:
     report_path = output / name / 'result.json'
     with (output / f'{name}.log').open('w') as log:
       process = subprocess.run(
@@ -86,10 +87,14 @@ def main():
   with (output / 'adapter-unavailable.log').open('w') as log:
     bad_driver = str(output / 'missing-vulkan-driver.json')
     process = subprocess.run(
-        base + ['verify', str(scenario), '--headless', '--report', str(unavailable)],
+        base + ['verify', str(scenario), '--headless', '--report',
+                str(unavailable)],
         cwd=args.project.resolve(),
         env=env | {'VK_DRIVER_FILES': bad_driver, 'VK_ICD_FILENAMES': bad_driver},
-        stdout=log, stderr=log, timeout=300)
+        stdout=log,
+        stderr=log,
+        timeout=300
+    )
   report = json.loads(unavailable.read_text())
   assert process.returncode != 0 and report['status'] == 'infrastructure_failed', report
   assert 'Vulkan' in (output / 'adapter-unavailable.log').read_text()

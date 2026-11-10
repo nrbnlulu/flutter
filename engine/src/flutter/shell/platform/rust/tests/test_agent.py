@@ -87,7 +87,14 @@ def exercise(client, output):
   c.error('invalid_request', 'windows.list', typo=True)
   c.error('unsupported_capability', 'made.up')
   c.error('invalid_request', 'verify.assert', kind='windows', where={'focused': 'true'}, count=0)
-  c.error('invalid_request', 'verify.assert', kind=123, viewId=1, selector={'identifier': 'name'}, count=0)
+  c.error(
+      'invalid_request',
+      'verify.assert',
+      kind=123,
+      viewId=1,
+      selector={'identifier': 'name'},
+      count=0
+  )
   c.until(
       lambda: c.node(1, 'name')
       if any(v['viewId'] == 1 and v['ready'] for v in c.rpc('windows.list')['views']) else None
