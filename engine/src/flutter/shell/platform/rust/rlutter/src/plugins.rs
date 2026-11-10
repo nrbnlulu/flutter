@@ -376,11 +376,16 @@ pub fn dependency_line(plugin: &RustPlugin, runner: &Path) -> String {
         path.push("..");
     }
     path.extend(plugin.rust_dir.components().skip(common));
+    let path = path.to_string_lossy();
+    // Cargo accepts forward slashes on Windows. Keep generated manifests
+    // consistent across hosts without changing Unix filenames containing '\\'.
+    #[cfg(windows)]
+    let path = path.replace('\\', "/");
     format!(
         "{} = {{ package = {:?}, path = {:?} }}",
         plugin.dependency_alias(),
         plugin.cargo_package,
-        path.to_string_lossy()
+        path
     )
 }
 
