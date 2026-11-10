@@ -8,7 +8,8 @@ use crate::{abi::Abi, mode::ModeArgs};
 #[command(
     name = "rlutter",
     version,
-    about = "Build and run Flutter apps on the Rust shell"
+    about = "Build, run, and verify Flutter apps on the Rust shell",
+    after_help = "Headless workflows (Linux x64, Vulkan required):\n  run --headless        Launch an app for development\n  agent --headless      Control an app through NDJSON over stdio\n  verify --headless     Execute a JSON scenario and write a report\n\nRun rlutter <COMMAND> --help for examples and required options."
 )]
 pub struct Cli {
     /// Override the release-managed Flutter SDK.
@@ -140,17 +141,20 @@ pub struct AndroidBuildArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(
+    after_help = "Example (from the application directory):\n  rlutter run -d linux --headless --size 1280x800 --pixel-ratio 1.25\n\nHeadless rendering requires Linux x64 and Vulkan; no display server is needed.\nFor agent control use `rlutter agent`; for assertions and reports use `rlutter verify`."
+)]
 pub struct RunArgs {
     /// Run without a display server or native windows (Linux x64).
     #[arg(long)]
     pub headless: bool,
 
     /// Initial physical viewport dimensions.
-    #[arg(long, default_value = "1280x800", value_parser = parse_headless_size, requires = "headless")]
+    #[arg(long, default_value = "1280x800", value_name = "WIDTHxHEIGHT", value_parser = parse_headless_size, requires = "headless")]
     pub size: (u32, u32),
 
     /// Logical-to-physical pixel scale.
-    #[arg(long, default_value = "1", value_parser = parse_pixel_ratio, requires = "headless")]
+    #[arg(long, default_value = "1", value_name = "RATIO", value_parser = parse_pixel_ratio, requires = "headless")]
     pub pixel_ratio: f64,
 
     #[command(flatten)]
@@ -174,42 +178,60 @@ pub struct RunArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(
+    after_help = "Example (from the application directory; DIR must be fresh):\n  rlutter agent --headless --stdio --artifacts build/agent/session-001\n\nRequires Linux x64 and Vulkan. Keep stdin open and send one JSON request per line.\nFirst request:\n  {\"id\":1,\"method\":\"session.handshake\",\"params\":{\"protocolVersion\":1}}\nThen use windows.list to discover view IDs, semantics.snapshot, input.tap,\nverify.wait, and capture.screenshot. Request session.shutdown when finished.\nStdout contains only protocol messages; build/app logs go to stderr and artifacts.\nStructured framework error checks require FlutterRustAgent.install() in the app.\nSee docs/agent-protocol.md and docs/verification.md in the Rust-shell source SDK."
+)]
 pub struct AgentArgs {
     #[command(flatten)]
     pub mode: ModeArgs,
     #[command(flatten)]
     pub defines: DartDefineArgs,
+    /// Dart entrypoint.
     #[arg(short = 't', long, default_value = "lib/main.dart")]
     pub target: String,
+    /// Run without a display server or native windows (Linux x64).
     #[arg(long, required = true)]
     pub headless: bool,
+    /// Exchange newline-delimited JSON requests and responses over stdin/stdout.
     #[arg(long, required = true)]
     pub stdio: bool,
     /// Fresh directory for build/app logs and captured artifacts.
     #[arg(long, value_name = "DIR")]
     pub artifacts: PathBuf,
-    #[arg(long,default_value="1280x800",value_parser=parse_headless_size)]
+    /// Initial physical viewport dimensions.
+    #[arg(long,default_value="1280x800",value_name="WIDTHxHEIGHT",value_parser=parse_headless_size)]
     pub size: (u32, u32),
-    #[arg(long,default_value="1",value_parser=parse_pixel_ratio)]
+    /// Logical-to-physical pixel scale.
+    #[arg(long,default_value="1",value_name="RATIO",value_parser=parse_pixel_ratio)]
     pub pixel_ratio: f64,
 }
 
 #[derive(Args, Debug)]
+#[command(
+    after_help = "Example (from the application directory; output paths must be fresh):\n  rlutter verify test/agent/save_dialog.json --headless --report build/agent/run-001/result.json\n\nRequires Linux x64 and Vulkan. Builds and launches a fresh app, runs ordered JSON\nsteps, and writes a report plus result.artifacts beside it. Failures exit nonzero.\nScenarios use version 1, a name, and steps with name/method/params. By default,\ninstall the flutter_rust_agent Dart bridge before runApp to capture framework errors.\nSee docs/verification.md in the Rust-shell source SDK for the schema and examples."
+)]
 pub struct VerifyArgs {
+    /// Versioned JSON verification scenario to execute.
+    #[arg(value_name = "SCENARIO")]
     pub scenario: PathBuf,
     #[command(flatten)]
     pub mode: ModeArgs,
     #[command(flatten)]
     pub defines: DartDefineArgs,
+    /// Dart entrypoint.
     #[arg(short, long, default_value = "lib/main.dart")]
     pub target: String,
+    /// Run without a display server or native windows (Linux x64).
     #[arg(long, required = true)]
     pub headless: bool,
-    #[arg(long)]
+    /// Fresh JSON report path; evidence goes in a sibling <stem>.artifacts directory.
+    #[arg(long, value_name = "FILE")]
     pub report: PathBuf,
-    #[arg(long,default_value="1280x800",value_parser=parse_headless_size)]
+    /// Initial physical viewport dimensions.
+    #[arg(long,default_value="1280x800",value_name="WIDTHxHEIGHT",value_parser=parse_headless_size)]
     pub size: (u32, u32),
-    #[arg(long,default_value="1",value_parser=parse_pixel_ratio)]
+    /// Logical-to-physical pixel scale.
+    #[arg(long,default_value="1",value_name="RATIO",value_parser=parse_pixel_ratio)]
     pub pixel_ratio: f64,
 }
 

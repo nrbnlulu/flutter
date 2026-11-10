@@ -23,6 +23,8 @@ class PackagingTest(unittest.TestCase):
             self.assertEqual(result['shellAbi'],16)
             self.assertTrue((destination/'rust-toolchain.toml').is_file())
             self.assertTrue((destination/'tests/agent_fixture/test/agent/save_dialog.json').is_file())
+            self.assertTrue((destination/'skills/application/SKILL.md').is_file())
+            self.assertTrue((destination/'skills/application/../../docs/agent-protocol.md').is_file())
             self.assertFalse(any(p.is_symlink() or p.name in ('target','.dart_tool') for p in destination.rglob('*')))
             obsolete=destination/'crates/obsolete.rs';obsolete.write_text('stale')
             package.stage(SOURCE,destination)

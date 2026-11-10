@@ -222,7 +222,8 @@ checks all three Linux build modes and verifies ordinary release has no endpoint
 The BETA workflow includes GPU-free Linux/Windows schema tests, a Linux llvmpipe
 render/host/agent/video lane, and extracted-SDK positive/negative scenarios before
 publication. Package sources with `tools/package_sdk_sources.py`; it includes both
-patched dependencies and the optional Dart bridge and rejects mixed engine ABI or
+patched dependencies, the optional Dart bridge, protocol documentation, and
+agent skills under `skills/`, and rejects mixed engine ABI or
 build-mode metadata. Engine packaging reads metadata from the compiled library.
 The Windows CPU lane does not certify Windows headless execution. Windows agent
 transport, Vulkan evidence and release packaging require an independent Windows

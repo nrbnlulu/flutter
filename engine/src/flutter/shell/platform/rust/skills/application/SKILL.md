@@ -1,11 +1,12 @@
 ---
 name: application
-description: Create, convert, build, and run a Flutter application with the nrbnlulu Flutter Rust shell. Use when an application needs the generated runner-rs Cargo runner, Rust plugins, or the rust-shell pubspec setting. Includes bundled Dart CLI and editor LSP shortcuts through rlutter.
+description: Create, convert, build, and run a Flutter application with the nrbnlulu Flutter Rust shell. Use when an application needs the generated runner-rs Cargo runner, Rust plugins, or the rust-shell pubspec setting. Includes headless agent control, reproducible verification, and bundled Dart CLI and editor LSP shortcuts through rlutter.
 ---
 
 # Create a Flutter Rust-shell application
 
-Install the fork with FVM before creating the application. If it is not yet
+For standalone `rlutter`, use the workflows below; FVM is not required. For
+the Flutter-tool workflow, install the fork with FVM first. If FVM is not yet
 configured, use the sibling `fvm` skill.
 
 ## Create a new application
@@ -148,3 +149,57 @@ cargo check --locked --manifest-path runner-rs/Cargo.toml
 
 The downloadable Rust-shell SDK currently supports Linux x64. Do not configure
 another target unless a corresponding fork release is available.
+
+## Headless agent verification (standalone rlutter)
+
+Run from a generated Rust-shell application root (`rust-shell: true` and
+`runner-rs/`). Use `rlutter create .` to add the shell to an existing app, or
+`rlutter create my_app` for a new app. Headless execution currently requires
+Linux x64 and a working Vulkan driver, including qualified Mesa llvmpipe on
+CPU-only hosts. No display server or Xvfb is needed.
+
+Choose the command that matches the task:
+
+```sh
+# Development launch with debug hot reload.
+rlutter run -d linux --headless --size 1280x800 --pixel-ratio 1
+# Interactive agent control; use a new artifact directory per session.
+rlutter agent --headless --stdio --artifacts build/agent/session-001
+# Reproducible assertions; use a new report/artifact destination per run.
+rlutter verify test/agent/save_dialog.json --headless --report build/agent/run-001/result.json
+```
+
+`run` does not expose the agent protocol. For `agent`, keep stdin open while
+reading responses, send one JSON request per line, and handshake first:
+
+```json
+{"id":1,"method":"session.handshake","params":{"protocolVersion":1}}
+{"id":2,"method":"windows.list","params":{}}
+```
+
+Discover actual view IDs before querying semantics or sending input. Prefer
+stable `Semantics(identifier: ...)` selectors. Observe the result with
+`verify.wait` after an action; an input acknowledgement proves dispatch only.
+Do not retry mutations automatically after a timeout. Capture PNG evidence with
+`capture.screenshot` and finish with `session.shutdown`. Stdout is NDJSON only;
+build/app logs go to stderr and artifacts. Closing stdin ends the owned app.
+
+For default verification, add the `flutter_rust_agent` Dart package as a path
+dependency at `.dart_tool/flutter_rs/sdk/dart/flutter_rust_agent` (or
+`dart/flutter_rust_agent` under the source SDK). Call
+`FlutterRustAgent.install()` after app error handlers and before `runApp`.
+Agent/verify builds enable the bridge automatically. A deliberately native-only
+scenario can set `require_framework_errors: false`; report that reduced scope.
+
+Read [the protocol](../../docs/agent-protocol.md) before writing a controller,
+and [verification](../../docs/verification.md) before writing a version-1 JSON
+scenario. Scenarios and selectors must match the app; `save_dialog.json` is a
+fixture example, not a file generated in every project. A failed assertion or
+infrastructure failure exits nonzero and retains a report plus artifacts.
+Use a negative control to show that the changed behavior can fail verification.
+See [recording](../../docs/recording.md) only when video evidence is needed.
+
+For a local checkout, pass `--flutter-root /path/to/flutter` and
+`--local-engine-src /path/to/flutter/engine/src` before the subcommand; the latter
+is the engine `src` directory, not an `out/host_debug` directory. CLI discovery:
+`rlutter --help`, `rlutter agent --help`, and `rlutter verify --help`.

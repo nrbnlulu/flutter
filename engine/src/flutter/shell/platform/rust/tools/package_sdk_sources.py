@@ -18,7 +18,7 @@ def stage(source, destination, validate_engines=False):
   for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'):
     shutil.copy2(source / name, destination / name)
   ignore = shutil.ignore_patterns('target', '.dart_tool', 'build', '__pycache__', '.git')
-  for name in ('crates', 'third_party', 'dart', 'docs'):
+  for name in ('crates', 'third_party', 'dart', 'docs', 'skills'):
     if (destination / name).exists():
       shutil.rmtree(destination / name)
     shutil.copytree(source / name, destination / name, ignore=ignore, dirs_exist_ok=True)
@@ -34,7 +34,7 @@ def stage(source, destination, validate_engines=False):
       'crates/flutter-shell-agent/src/lib.rs', 'crates/flutter-shell-winit/src/headless/agent.rs',
       'crates/flutter-shell-winit/src/headless/recording.rs', 'third_party/wgpu-hal/Cargo.toml',
       'third_party/winit-wayland/Cargo.toml', 'dart/flutter_rust_agent/lib/flutter_rust_agent.dart',
-      'tests/agent_fixture/test/agent/save_dialog.json'
+      'tests/agent_fixture/test/agent/save_dialog.json', 'skills/application/SKILL.md'
   )
   for name in required:
     if not (destination / name).is_file():
