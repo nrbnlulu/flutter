@@ -681,15 +681,33 @@ jobs:
           gh auth setup-git
           git push --no-verify origin \
             "refs/tags/${FLUTTER_VERSION_TAG}:refs/tags/${FLUTTER_VERSION_TAG}"
+          {
+            echo 'Rolling Flutter Rust shell SDK artifacts.'
+            echo
+            echo 'Install rlutter (downloads this SDK when needed):'
+            echo
+            echo 'Linux:'
+            echo
+            echo '```bash'
+            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/rust/flutter-rs-shell/engine/src/flutter/shell/platform/rust/install.sh | sh"
+            echo '```'
+            echo
+            echo 'Windows (PowerShell; uses gh when available):'
+            echo
+            echo '```powershell'
+            echo "irm https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/rust/flutter-rs-shell/engine/src/flutter/shell/platform/rust/install.ps1 | iex"
+            echo '```'
+          } > notes.md
           if gh release view BETA >/dev/null 2>&1; then
             gh api --method PATCH \
               "repos/${GITHUB_REPOSITORY}/git/refs/tags/BETA" \
               -f sha="${GITHUB_SHA}" \
               -F force=true
+            gh release edit BETA --notes-file notes.md
           else
             gh release create BETA --prerelease --title "Flutter Rust BETA" \
               --target "${GITHUB_SHA}" \
-              --notes "Rolling artifacts built from the latest merged revision on master."
+              --notes-file notes.md
           fi
           gh release upload BETA \
             build/flutter-rust-*.tar.gz \
