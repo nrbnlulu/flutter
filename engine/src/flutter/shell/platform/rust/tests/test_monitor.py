@@ -52,7 +52,9 @@ def main():
 
         def start():
           return subprocess.Popen([str(args.rlutter.resolve()), 'mcp', '--stdio'],
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
+                                  stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE,
+                                  stderr=log,
                                   cwd=directory)
 
         sequence = 0
@@ -60,8 +62,10 @@ def main():
         def rpc(method, params):
           nonlocal sequence
           sequence += 1
-          client.stdin.write((json.dumps({'jsonrpc': '2.0', 'id': sequence,
-                                         'method': method, 'params': params}) + '\n').encode())
+          client.stdin.write((
+              json.dumps({'jsonrpc': '2.0', 'id': sequence, 'method': method, 'params': params}) +
+              '\n'
+          ).encode())
           client.stdin.flush()
           with selectors.DefaultSelector() as ready:
             ready.register(client.stdout, selectors.EVENT_READ)
@@ -77,8 +81,12 @@ def main():
           return json.loads(result['content'][0]['text'])
 
         def attach():
-          rpc('initialize', {'protocolVersion': '2025-11-25', 'capabilities': {},
-                             'clientInfo': {'name': 'monitor-proof', 'version': '1'}})
+          rpc(
+              'initialize', {
+                  'protocolVersion': '2025-11-25', 'capabilities': {},
+                  'clientInfo': {'name': 'monitor-proof', 'version': '1'}
+              }
+          )
           client.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
           client.stdin.flush()
           return tool('session_attach', socket_path=str(endpoint))
@@ -117,8 +125,12 @@ def main():
         health = tool('session_health', session_id=sid)
         assert not health['healthy'] and health['errorCount'] > 0, health
         print('PASS: reconnected to same app; known error retained', flush=True)
-        result = rpc('tools/call', {'name': 'rlutter_input_tap',
-                                   'arguments': {'session_id': sid, 'viewId': view, 'x': 1, 'y': 1}})
+        result = rpc(
+            'tools/call', {
+                'name': 'rlutter_input_tap',
+                'arguments': {'session_id': sid, 'viewId': view, 'x': 1, 'y': 1}
+            }
+        )
         assert result.get('isError'), result
         client.stdin.close()
         assert client.wait(timeout=10) == 0
@@ -131,8 +143,10 @@ def main():
         print('PASS: attached shutdown detaches; app still alive', flush=True)
         client.stdin.close()
         assert client.wait(timeout=10) == 0
-        (args.artifacts / 'result.json').write_text(json.dumps(
-            {'passed': True, 'pid': app.pid, 'epoch': epoch, 'transcript': transcript}, indent=2))
+        (args.artifacts / 'result.json').write_text(
+            json.dumps({'passed': True, 'pid': app.pid, 'epoch': epoch, 'transcript': transcript},
+                       indent=2)
+        )
       finally:
         if client and client.poll() is None:
           client.kill()
