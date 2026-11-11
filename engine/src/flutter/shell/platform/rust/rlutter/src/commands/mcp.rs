@@ -14,6 +14,24 @@ const MAX_MESSAGE: u64 = 1024 * 1024;
 // their native names so protocol documentation and artifacts remain applicable.
 const TOOLS: &[(&str, &str, &str, &str)] = &[
     (
+        "session.attach",
+        "Attach to an opted-in Linux app's absolute private monitor socket. Disconnecting leaves the app running.",
+        "socket_path",
+        "",
+    ),
+    (
+        "session.detach",
+        "Disconnect an attached monitor without closing the app.",
+        "",
+        "",
+    ),
+    (
+        "monitor.events",
+        "Read bounded monitor history after a sequence cursor. Check epoch and gap when reconnecting.",
+        "",
+        "after",
+    ),
+    (
         "session.start",
         "Start an app in an absolute project directory; returns session_id. Use that ID for subsequent tools.",
         "project_dir",
@@ -150,7 +168,7 @@ fn name(method: &str) -> String {
 }
 fn property(field: &str) -> Value {
     match field {
-        "viewId" | "physical" | "logical" | "afterFrame" | "sizeGeneration" | "count"
+        "after" | "viewId" | "physical" | "logical" | "afterFrame" | "sizeGeneration" | "count"
         | "stableMs" | "rate" => json!({"type":"integer","minimum":0}),
         "width" | "height" | "x" | "y" | "deltaX" | "deltaY" => json!({"type":"number"}),
         "all" | "down" | "exists" | "enabled" | "focused" => json!({"type":"boolean"}),
@@ -168,14 +186,14 @@ fn property(field: &str) -> Value {
 fn tools() -> Value {
     json!({"tools":TOOLS.iter().map(|(method, description, required, optional)| {
         let mut properties = serde_json::Map::new();
-        if *method != "session.start" {
+        if !matches!(*method, "session.start" | "session.attach") {
             properties.insert("session_id".into(), property("session_id"));
         }
         for field in required.split_whitespace().chain(optional.split_whitespace()) {
             properties.insert(field.into(), property(field));
         }
         properties.insert("timeoutMs".into(), json!({"type":"integer","minimum":1,"maximum":120000,"default":5000}));
-        json!({"name":name(method),"description":description,"inputSchema":{"type":"object","properties":properties,"required":required.split_whitespace().chain(if *method == "session.start" { None } else { Some("session_id") }).collect::<Vec<_>>(),"additionalProperties":false}})
+        json!({"name":name(method),"description":description,"inputSchema":{"type":"object","properties":properties,"required":required.split_whitespace().chain(if matches!(*method, "session.start" | "session.attach") { None } else { Some("session_id") }).collect::<Vec<_>>(),"additionalProperties":false}})
     }).collect::<Vec<_>>()})
 }
 fn tool_result(response: Value) -> Value {
@@ -210,7 +228,7 @@ impl rmcp::ServerHandler for McpServer {
     fn get_info(&self) -> rmcp::model::ServerConfig {
         rmcp::model::ServerConfig::new(rmcp::model::ServerCapabilities::builder().enable_tools().build())
             .with_server_info(rmcp::model::Implementation::new("rlutter", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Use rlutter_windows_list to discover view IDs. Prefer identifier selectors. Observe actions with rlutter_verify_wait; dispatch is not success. Never retry mutations after timeout or cancellation. Call rlutter_session_start with an absolute project_dir to build and launch an app. Pass its session_id to every app tool. Multiple worktrees can have separate sessions. Only one app operation may run at a time. Finish with rlutter_session_shutdown.")
+            .with_instructions("Use rlutter_windows_list to discover view IDs. Prefer identifier selectors. Observe actions with rlutter_verify_wait; dispatch is not success. Never retry mutations after timeout or cancellation. Call rlutter_session_start with an absolute project_dir to build and launch an app. Pass its session_id to every app tool. Multiple worktrees can have separate sessions. Only one app operation may run at a time. For a running Linux monitor, use rlutter_session_attach(socket_path), monitor_events(after), and session_detach. Attached sessions are read-only and EOF leaves their app alive. Finish owned apps with rlutter_session_shutdown.")
     }
     fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
         tools()["tools"]
@@ -242,7 +260,7 @@ impl rmcp::ServerHandler for McpServer {
         if required.split_whitespace().any(|k| !args.contains_key(k))
             || args.keys().any(|k| {
                 k != "timeoutMs"
-                    && !(k == "session_id" && *method != "session.start")
+                    && (k != "session_id" || matches!(*method, "session.start" | "session.attach"))
                     && !required
                         .split_whitespace()
                         .chain(optional.split_whitespace())
@@ -338,6 +356,8 @@ struct Sessions {
     engine_src: Option<std::path::PathBuf>,
     sessions: std::collections::HashMap<String, Native>,
     next_id: u64,
+    #[cfg(target_os = "linux")]
+    attached: std::collections::HashMap<String, Attached>,
 }
 impl Sessions {
     fn new(
@@ -351,11 +371,31 @@ impl Sessions {
             engine_src,
             sessions: Default::default(),
             next_id: 0,
+            #[cfg(target_os = "linux")]
+            attached: Default::default(),
         }
     }
 }
 impl Backend for Sessions {
     fn call(&mut self, method: &str, mut params: Value) -> Result<Value> {
+        if method == "session.attach" {
+            #[cfg(target_os = "linux")]
+            {
+                let path = params["socket_path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("socket_path is required"))?;
+                let mut attached = Attached::connect(Path::new(path))?;
+                let capabilities = attached.call("session.capabilities", json!({}))?;
+                self.next_id += 1;
+                let id = format!("monitor-{}", self.next_id);
+                self.attached.insert(id.clone(), attached);
+                return Ok(tool_result(
+                    json!({"result":{"session_id":id,"capabilities":capabilities["result"]}}),
+                ));
+            }
+            #[cfg(not(target_os = "linux"))]
+            bail!("attached monitoring requires Linux");
+        }
         if method == "session.start" {
             let path = Path::new(
                 params["project_dir"]
@@ -399,6 +439,18 @@ impl Backend for Sessions {
             .ok_or_else(|| {
                 anyhow::anyhow!("session_id is required; call rlutter_session_start first")
             })?;
+        #[cfg(target_os = "linux")]
+        if self.attached.contains_key(&id) {
+            if matches!(method, "session.detach" | "session.shutdown") {
+                self.attached.remove(&id);
+                return Ok(tool_result(json!({"result":{"detached":true}})));
+            }
+            let result = self.attached.get_mut(&id).unwrap().call(method, params);
+            if result.is_err() {
+                self.attached.remove(&id);
+            }
+            return result.map(tool_result);
+        }
         self.sessions
             .get_mut(&id)
             .ok_or_else(|| anyhow::anyhow!("unknown session_id"))?
@@ -412,7 +464,61 @@ impl Backend for Sessions {
             }
         }
         self.sessions.clear();
+        #[cfg(target_os = "linux")]
+        self.attached.clear();
         failure.map_or(Ok(()), Err)
+    }
+}
+
+// Attached streams never own or terminate the application process.
+#[cfg(target_os = "linux")]
+struct Attached {
+    stream: std::os::unix::net::UnixStream,
+    reader: std::io::BufReader<std::os::unix::net::UnixStream>,
+    sequence: u64,
+}
+#[cfg(target_os = "linux")]
+impl Attached {
+    fn connect(path: &Path) -> Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("socket needs private parent"))?;
+        let directory = std::fs::symlink_metadata(parent)?;
+        let socket = std::fs::symlink_metadata(path)?;
+        let uid = std::fs::metadata("/proc/self")?.uid();
+        if !path.is_absolute()
+            || !directory.is_dir()
+            || directory.uid() != uid
+            || directory.mode() & 0o077 != 0
+            || socket.uid() != uid
+            || socket.mode() & 0o077 != 0
+        {
+            bail!("monitor endpoint must be private and owned by the current user");
+        }
+        let stream = std::os::unix::net::UnixStream::connect(path)?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+        stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
+        let reader = std::io::BufReader::new(stream.try_clone()?);
+        let mut attached = Self {
+            stream,
+            reader,
+            sequence: 0,
+        };
+        let handshake = attached.call("session.handshake", json!({"protocolVersion":1}))?;
+        if handshake["result"]["monitor"] != true {
+            bail!("endpoint is not an attachable monitor");
+        }
+        Ok(attached)
+    }
+    fn call(&mut self, method: &str, params: Value) -> Result<Value> {
+        native_rpc(
+            &mut self.reader,
+            &mut self.stream,
+            &mut self.sequence,
+            method,
+            params,
+        )
     }
 }
 
@@ -715,7 +821,7 @@ mod tests {
         sessions.finish().unwrap();
         let catalogue = tools();
         for tool in catalogue["tools"].as_array().unwrap() {
-            if tool["name"] != "rlutter_session_start" {
+            if tool["name"] != "rlutter_session_start" && tool["name"] != "rlutter_session_attach" {
                 assert!(
                     tool["inputSchema"]["required"]
                         .as_array()
@@ -724,6 +830,75 @@ mod tests {
                 );
             }
         }
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn attached_shutdown_and_eof_only_close_the_connection() {
+        use clap::Parser;
+        use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+        let directory = std::env::temp_dir().join(format!(
+            "rlutter-attach-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = directory.join("control.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let worker = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap() == 0 {
+                        break;
+                    }
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    assert!(matches!(
+                        request["method"].as_str().unwrap(),
+                        "session.handshake" | "session.capabilities" | "windows.list"
+                    ));
+                    write_message(
+                        &mut stream,
+                        &json!({"id":request["id"], "result":{"monitor":true}}),
+                    )
+                    .unwrap();
+                }
+            }
+        });
+        let cli = crate::cli::Cli::try_parse_from(["rlutter", "mcp", "--stdio"]).unwrap();
+        let crate::cli::Command::Mcp(args) = cli.command else {
+            panic!()
+        };
+        let mut sessions = Sessions::new(args.agent_args(), None, None);
+        for shutdown in [true, false] {
+            let attached = sessions
+                .call("session.attach", json!({"socket_path":socket}))
+                .unwrap();
+            let value: Value =
+                serde_json::from_str(attached["content"][0]["text"].as_str().unwrap()).unwrap();
+            let id = value["session_id"].clone();
+            sessions
+                .call("windows.list", json!({"session_id":id}))
+                .unwrap();
+            if shutdown {
+                sessions
+                    .call("session.shutdown", json!({"session_id":id}))
+                    .unwrap();
+            } else {
+                sessions.finish().unwrap();
+            }
+        }
+        worker.join().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[tokio::test]
     async fn sdk_discovery_calls_errors_and_eof_cleanup() {

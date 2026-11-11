@@ -64,3 +64,9 @@ assertion, screenshot image bytes, final shutdown and EOF cleanup. It accepts th
 same generated agent-fixture project as `tests/test_verify.py`. Unit tests use
 an in-memory SDK transport to verify lazy discovery, argument forwarding, errors
 and cleanup without a GPU.
+
+Normal Linux windows can explicitly opt into persistent observation in release,
+profile or debug builds. Use `rlutter_session_attach(socket_path)` and
+`rlutter_session_detach`; these sessions never own the application process.
+See [Linux monitoring](monitoring.md) for both opt-in gates, supported tools,
+error coverage, event cursors and reconnect behavior.
