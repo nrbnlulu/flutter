@@ -7,6 +7,8 @@
 mod engine;
 #[path = "host_events.rs"]
 mod host_events;
+#[cfg(all(target_os = "linux", feature = "agent-monitor"))]
+mod monitor;
 #[path = "platform.rs"]
 mod platform;
 
@@ -2040,7 +2042,12 @@ extern "C" fn handle_platform_message(
     };
     if channel == b"flutter.rs.agent/events" {
         let inbox = unsafe { &*user_data.cast::<TextInputInbox>() };
-        if !inbox.headless || std::env::var_os("FLUTTER_RUST_AGENT_SOCKET").is_none() {
+        let headless_agent =
+            inbox.headless && std::env::var_os("FLUTTER_RUST_AGENT_SOCKET").is_some();
+        let native_monitor = cfg!(all(target_os = "linux", feature = "agent-monitor"))
+            && !inbox.headless
+            && std::env::var_os("FLUTTER_RUST_MONITOR_SOCKET").is_some();
+        if !headless_agent && !native_monitor {
             return FlutterRustPlatformMessageDisposition::Unhandled;
         }
         let mut queue = inbox.agent_messages.lock();
@@ -4149,6 +4156,8 @@ fn run_application_with_fixture(
         retained_textures,
         demo_fixture,
         demo_texture: None,
+        #[cfg(all(target_os = "linux", feature = "agent-monitor"))]
+        monitor: None,
         #[cfg(target_os = "android")]
         android_app: None,
     };
@@ -4177,6 +4186,8 @@ struct ShellApplication {
     retained_textures: Arc<Mutex<Vec<Arc<RegisteredWgpuTexture>>>>,
     demo_fixture: Option<DemoTextureFixture>,
     demo_texture: Option<DemoTexture>,
+    #[cfg(all(target_os = "linux", feature = "agent-monitor"))]
+    monitor: Option<monitor::Session>,
     // Android has no `WindowEvent::Ime`: winit's Android backend never emits
     // one (GameActivity's soft keyboard writes committed/composing text into
     // its own JNI-owned buffer instead). Polled once per event-loop turn in
@@ -4747,6 +4758,10 @@ impl Drop for ShellApplication {
         self.main_thread_dispatcher.shutdown_for_shell();
         let mut windows = self.windows.borrow_mut();
         if let Some(shell) = windows.shell.take() {
+            #[cfg(all(target_os = "linux", feature = "agent-monitor"))]
+            if let Some(mut monitor) = self.monitor.take() {
+                monitor.stop(shell);
+            }
             let demo = self.demo_texture.take();
             drop(demo);
             for registration in self.retained_textures.lock().iter() {
@@ -4905,6 +4920,13 @@ impl ApplicationHandler for ShellApplication {
                 // SAFETY: the hooks are cleared in `ShellApplication::drop`
                 // before the shell is destroyed.
                 unsafe { gpu_broker.install_queue_lock(cpp_queue_lock_hooks(shell)) };
+                #[cfg(all(target_os = "linux", feature = "agent-monitor"))]
+                if let Some(path) = std::env::var_os("FLUTTER_RUST_MONITOR_SOCKET") {
+                    self.monitor = Some(
+                        monitor::Session::start(shell, PathBuf::from(path))
+                            .expect("invalid Linux monitor endpoint"),
+                    );
+                }
                 assert!(
                     run_cpp_shell(shell) != 0,
                     "the Flutter Rust shell failed to start running"
@@ -5533,6 +5555,10 @@ impl ApplicationHandler for ShellApplication {
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        #[cfg(all(target_os = "linux", feature = "agent-monitor"))]
+        if let Some(monitor) = &self.monitor {
+            monitor.publish(&self.windows.borrow(), &self.text_input_inbox);
+        }
         self.deliver_vsync();
         with_active_windowing_context(event_loop, &self.windows, || {
             self.task_runner_host.dispatch_due_tasks();
@@ -5779,6 +5805,16 @@ impl ApplicationHandler for ShellApplication {
         if let Some(window) = self.pacing_window() {
             CurrentPlatform::arm_wake(window.as_ref(), next_deadline);
         }
+        #[cfg(all(target_os = "linux", feature = "agent-monitor"))]
+        let next_deadline = if self.monitor.is_some() {
+            Some(
+                next_deadline.map_or(Instant::now() + Duration::from_secs(1), |d| {
+                    d.min(Instant::now() + Duration::from_secs(1))
+                }),
+            )
+        } else {
+            next_deadline
+        };
         match next_deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
             None => event_loop.set_control_flow(ControlFlow::Wait),

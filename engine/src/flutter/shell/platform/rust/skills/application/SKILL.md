@@ -220,3 +220,14 @@ For a local checkout, pass `--flutter-root /path/to/flutter` and
 `--local-engine-src /path/to/flutter/engine/src` before the subcommand; the latter
 is the engine `src` directory, not an `out/host_debug` directory. CLI discovery:
 `rlutter --help`, `rlutter agent --help`, and `rlutter verify --help`.
+
+## Monitor a normal running Linux application
+
+For a visible application that must survive IDE/MCP disconnects, use the opt-in
+`agent-monitor` Cargo feature and `FLUTTER_RUST_MONITOR_SOCKET` launch variable.
+This supports release/AOT as well as debug/profile. Read
+[Linux monitoring](../../docs/monitoring.md) before enabling it. Connect with
+`rlutter_session_attach(socket_path)`, retain the app epoch/event cursor, and
+finish with `rlutter_session_detach`. Attached sessions expose observations only;
+the existing `session_start` workflow still owns its headless app. Long-running
+polling, persistence and alerts belong to an external supervisor.

@@ -2628,3 +2628,33 @@ shutdown/restart and EOF cleanup under Vulkan validation. Evidence:
 `/tmp/rlutter-mcp-two-project-check`. The second root is a copied generated
 fixture; no Git metadata is required for project selection. Docs and the
 application skill describe the new registration and session arguments.
+
+## Persistent Linux MCP monitoring (2026-11-11)
+
+Added opt-in observation of normal Linux windows in debug/profile/release builds.
+The shell's `agent-monitor` Cargo feature and an absolute
+`FLUTTER_RUST_MONITOR_SOCKET` path in a private user-owned directory are both
+required. The optional Dart bridge adds framework error observations. The
+application owns the socket and process; MCP attach/detach, EOF and attached
+shutdown leave it alive. Headless owned-session behavior is retained.
+
+MCP adds `session_attach`, `session_detach` and `monitor_events`. Attached sessions
+expose capabilities, health, windows, semantics, diagnostics and a 256-event /
+1 MiB history with epoch/sequence/gap reporting. Errors remain cumulative without
+terminating the app; heartbeat age exposes stalled UI work. Input, screenshots,
+recording and application predicates remain capabilities of headless sessions,
+not this observation endpoint. Long-running scheduling and durable persistence
+belong to an external supervisor.
+
+All 118 CLI tests pass, including attached shutdown/EOF ownership coverage. Three
+new runtime tests cover history limits/gaps, errors/UI stalls, malformed and
+fragmented requests, and disconnected clients. Clippy with warnings denied passes
+for CLI and feature-enabled runtime on Rust 1.93.1; the default runtime also
+compiles. Two real Wayland release/AOT integration runs pass with Vulkan validation
+enabled, using matching BETA engine ABI 16. They check launch without an endpoint,
+MCP attachment, semantics, framework errors retained across disconnect, and app
+liveness after detach/EOF/shutdown. A stale cached engine first failed linking
+because it lacked agent exports; it was replaced with the matching BETA bundle.
+
+The [video and MCP transcript](engine/src/flutter/shell/platform/rust/docs/evidence/README.md)
+retain the recorded run. This is short-session evidence, not an hours-long soak.
