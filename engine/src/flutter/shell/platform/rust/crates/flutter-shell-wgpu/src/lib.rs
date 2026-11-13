@@ -1895,6 +1895,12 @@ mod vulkan {
             // is guaranteed. Doing this at the earlier vsync pulse can freeze
             // redraw delivery when Flutter requested a secondary vsync that
             // intentionally produced no frame.
+            // On macOS winit's pre_present_notify is a no-op, but AppKit's
+            // backend still forwards it synchronously to the main thread.
+            // Raster holds `surface_state` here while the main thread can be
+            // waiting for that lock in `configure` during a resize, so the
+            // call would deadlock. Skip it there.
+            #[cfg(not(target_os = "macos"))]
             self.presentable.read().window.pre_present_notify();
             let present_started = started.map(|_| Instant::now());
             self.context.queue.present(pending.texture);

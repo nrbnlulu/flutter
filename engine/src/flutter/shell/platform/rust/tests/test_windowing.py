@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from native_desktop import desktop
@@ -40,6 +41,14 @@ def main():
       "RUST_BACKTRACE": "1",
       "FLUTTER_RUST_WINDOWING_STATUS": str(status),
   })
+  if sys.platform == "darwin" and "DYLD_FALLBACK_LIBRARY_PATH" not in environment:
+    # macOS strips DYLD_* from processes started through protected binaries
+    # such as /usr/bin/python3. Homebrew's validation-layer manifest names its
+    # library by leaf name, so pass the search path to the (unprotected)
+    # runner explicitly. FLUTTER_RUST_DYLD_LIBRARY_PATH overrides the default.
+    environment["DYLD_FALLBACK_LIBRARY_PATH"] = os.environ.get(
+        "FLUTTER_RUST_DYLD_LIBRARY_PATH", "/opt/homebrew/lib:/usr/local/lib:/usr/lib"
+    )
   motion = Path(directory) / "motion"
   parent_ready = Path(directory) / 'parent-ready'
   if args.wait_parent_mapped:
