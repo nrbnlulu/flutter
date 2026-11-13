@@ -11,6 +11,44 @@ semantics and optional widget assertions, input, screenshots, video and CI
 evidence. Phases 0 and 1 are complete on Linux x64. The display-free virtual
 host is available; agent observation/control and verification remain pending.
 
+### macOS M0 — engine dylib on a macOS host (2026-11-13)
+
+First milestone step of [`flutter-rs-macos-plan.md`](flutter-rs-macos-plan.md)
+(Apple Silicon, macOS 27.0, Xcode with SDK MacOSX27.2). Branch
+`rust/macos-m0`, uncommitted.
+
+Configured with `flutter/tools/gn --unoptimized --mac-cpu arm64
+--runtime-mode debug --no-rbe --no-goma` (`out/host_debug_unopt_arm64`) and
+built `ninja flutter_rust_engine`. The Rust shell's GN file already loads on
+macOS and its C++ sources (including the Vulkan surface and context) compiled
+without source changes. Host prerequisites found on the way: `xcode-select`
+must point at Xcode.app with the license accepted (the `darwin_sdk.py`
+gclient hook fails otherwise), and Xcode's separately downloaded Metal
+Toolchain (`xcodebuild -downloadComponent MetalToolchain`) is required because
+the macOS build still compiles Impeller's Metal shader libraries.
+
+Changes: `BUILD.gn` gives `flutter_rust_engine` a Mach-O exported-symbols list
+(`cpp/rust_engine_exports_mac.sym`, mirroring `rust_engine_exports.lst`) and an
+`@rpath/libflutter_rust_engine.dylib` install name, under `is_mac` only.
+
+Result: `libflutter_rust_engine.dylib` (arm64, 133 MB debug unopt) exports 50
+symbols: the 48 `FlutterRustShell*` functions defined in C++ plus
+`kDartSnapshotData`/`kDartSnapshotText`. Before the list it exported 161,
+including `InternalFlutterGpu_*` and `kPlatformStrongDill*`. The two declared
+ABI functions not exported (`FlutterRustShellGetAbi`, `FlutterRustShellRun`)
+are defined in Rust and supplied by the runner; the dylib has no unresolved
+Rust or Flutter symbols.
+
+Plan correction: no `runtime/dart_snapshot.cc` change is needed. macOS keeps
+the dynamic lookup path, whose current-process library is `RTLD_DEFAULT`
+(`fml/platform/posix/native_library_posix.cc`), and that searches the loaded
+dylib's exported snapshot symbols. This is unverified at runtime until a
+Cargo-linked runner exists (M4).
+
+Not yet done: Rust crates are not built for `aarch64-apple-darwin` (M1/M2),
+no runner links the dylib, nothing has run, and Linux was not rebuilt (the
+change is gated on `is_mac`).
+
 ### Headless Phase 0 (2026-11-09)
 
 Implemented the offscreen presentation seam (private ABI 15), owned targets,
