@@ -11,11 +11,69 @@ semantics and optional widget assertions, input, screenshots, video and CI
 evidence. Phases 0 and 1 are complete on Linux x64. The display-free virtual
 host is available; agent observation/control and verification remain pending.
 
+### macOS M1 — wgpu and Impeller on MoltenVK, headless (2026-11-13)
+
+Second step of [`flutter-rs-macos-plan.md`](flutter-rs-macos-plan.md), on
+branch `macos/m0-engine-build`. Host: Apple M6, MoltenVK 1.4.2, Homebrew
+`vulkan-loader`/`vulkan-validationlayers`/`vulkan-tools` 1.4.363.
+
+Changes:
+
+- `flutter-gpu-queue` and `flutter-shell-wgpu`: every
+  `any(linux, windows[, android])` cfg now includes `macos` (30 sites). Each
+  crate gets a `macos` dependency block whose wgpu features add
+  `vulkan-portability`; on Apple targets wgpu's plain `vulkan` feature compiles
+  no backend. winit uses `default-features = false`, as on Windows. Both
+  lockfiles gain only `wgpu-core-deps-apple`.
+- No broker code changes were needed. The vendored wgpu-hal already enables
+  `VK_KHR_portability_enumeration` (with the enumerate-portability flag) and
+  `VK_EXT_metal_surface` on macOS, `VK_KHR_portability_subset` on Apple
+  devices, and creates AppKit surfaces from a `CAMetalLayer`. Impeller accepts
+  this extension set (`capabilities_vk.cc` treats metal-surface/portability as
+  WSI and portability-subset as optional).
+- `tests/headless_probe/build.rs`: links `libflutter_rust_engine.dylib` and uses
+  ld64's `-export_dynamic` on macOS.
+- `tests/test_headless_probe.py`: `--strace` is optional (display-socket check
+  reported as `null` when absent); `--driver-library-dir` sets
+  `DYLD_FALLBACK_LIBRARY_PATH` on macOS.
+
+Validation (all with `WGPU_VALIDATION=1` and
+`VK_LOADER_LAYERS_ENABLE=*validation*`; the loader log confirms
+`VK_LAYER_KHRONOS_validation` inserted at instance and device level):
+
+- `cargo test -p flutter-gpu-queue -p flutter-shell-wgpu`: 7 passed. The 4
+  device tests (`--ignored`, benchmark skipped) passed with no validation
+  messages: padded direct upload, slot reuse, slow writer/shutdown and the
+  empty hand-off pass uniform readback.
+- Headless probe (`tests/headless_fixture`, bundled with
+  `flutter build bundle --local-engine=host_debug_unopt_arm64`): **PASS, 12
+  Flutter frames** at 801x601 and 1001x751 rendered by Impeller on the borrowed
+  wgpu device, exit 0, no validation errors. Frames show the colour bars, text
+  and external wgpu texture squares. Evidence: `~/dev/m1-evidence/headless/`.
+- The Dart VM started, so the M0 assumption holds: the engine found
+  `kDartSnapshotData`/`Text` through `RTLD_DEFAULT` in the dylib with no
+  `dart_snapshot.cc` change.
+- `cargo check` of both crates for `x86_64-unknown-linux-gnu` and
+  `x86_64-pc-windows-msvc` still succeeds. Linux/Windows runtime tests were not
+  run.
+
+Development notes: ash loads `libvulkan.dylib` by name, which dyld does not
+find in `/opt/homebrew/lib` by default; set
+`DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` (bundling the loader is M4).
+The Rust targets are built with `cargo +1.93.1` from
+`engine/src/flutter/shell/platform/rust`. Building the bundle also needs
+`ninja dart_sdk frontend_server_aot flutter_patched_sdk
+flutter/sky/packages/sky_engine:sky_engine` for the local engine.
+
+Not covered by M1: window surfaces and the acquire→Impeller→present semaphore
+chain on a `CAMetalLayer` (needs the M2 winit host); performance; bundling
+MoltenVK.
+
 ### macOS M0 — engine dylib on a macOS host (2026-11-13)
 
 First milestone step of [`flutter-rs-macos-plan.md`](flutter-rs-macos-plan.md)
 (Apple Silicon, macOS 27.0, Xcode with SDK MacOSX27.2). Branch
-`rust/macos-m0`, uncommitted.
+`macos/m0-engine-build`, commit `60789a4`.
 
 Configured with `flutter/tools/gn --unoptimized --mac-cpu arm64
 --runtime-mode debug --no-rbe --no-goma` (`out/host_debug_unopt_arm64`) and
