@@ -10,7 +10,12 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "android"
+))]
 mod imp {
     use ash::vk;
     use parking_lot::RwLock;
@@ -176,5 +181,10 @@ mod imp {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "android"
+))]
 pub use imp::*;
