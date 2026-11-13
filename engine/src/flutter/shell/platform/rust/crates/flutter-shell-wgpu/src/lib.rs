@@ -6,7 +6,12 @@
 // This module is Vulkan/wgpu code with no Linux-specific dependencies; it
 // currently builds for every platform that has a working `ash`/`wgpu`
 // Vulkan target dependency block in Cargo.toml (Linux, Windows, and Android).
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "android"
+))]
 mod vulkan {
     use ash::vk::Handle as _;
     use flutter_plugin_sdk::{
@@ -2212,10 +2217,25 @@ mod vulkan {
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use vulkan::GpuBroker;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "android"
+))]
 pub use vulkan::{GpuContext, VulkanContextData, WgpuTextureRing};
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "android"
+))]
 mod offscreen;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "android"
+))]
 pub use offscreen::{OffscreenBroker, OffscreenFrame, OffscreenReadback};

@@ -31,7 +31,11 @@ fn main() {
         // ld64 spells the dynamic-export flag differently from GNU ld.
         println!(
             "cargo:rustc-link-arg={}",
-            if macos { "-Wl,-export_dynamic" } else { "-Wl,--export-dynamic" }
+            if macos {
+                "-Wl,-export_dynamic"
+            } else {
+                "-Wl,--export-dynamic"
+            }
         );
     }
 }
