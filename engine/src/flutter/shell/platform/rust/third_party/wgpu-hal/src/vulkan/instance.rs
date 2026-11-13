@@ -594,7 +594,9 @@ impl super::Instance {
             // a new release can happen.
             #[cfg(target_env = "ohos")]
             let loaded = ash::Entry::load_from("libvulkan.so");
-            #[cfg(not(target_env = "ohos"))]
+            #[cfg(target_os = "macos")]
+            let loaded = load_macos_vulkan();
+            #[cfg(not(any(target_env = "ohos", target_os = "macos")))]
             let loaded = ash::Entry::load();
             loaded
         }
@@ -887,6 +889,63 @@ impl Drop for super::InstanceShared {
             }
         }
     }
+}
+
+/// Flutter local change: locate the Vulkan loader on macOS.
+///
+/// `ash::Entry::load` opens `libvulkan.dylib` by leaf name, which dyld only
+/// finds through `DYLD_*` variables or `/usr/local/lib`. macOS strips `DYLD_*`
+/// from processes launched through protected binaries, and Homebrew installs
+/// to `/opt/homebrew/lib`, so the Rust shell would otherwise start with no
+/// Vulkan backend. Search, in order: `FLUTTER_RUST_VULKAN_LIBRARY` (tried
+/// before anything else so the override wins; if it fails to load, a warning
+/// is logged and the search continues), the default leaf-name lookup, the executable's directory, an app bundle's
+/// `Contents/Frameworks`, then the Homebrew and `/usr/local` prefixes. The
+/// loader (not MoltenVK directly) is preferred so validation layers work.
+#[cfg(target_os = "macos")]
+unsafe fn load_macos_vulkan() -> Result<ash::Entry, ash::LoadingError> {
+    use std::path::PathBuf;
+
+    const NAMES: [&str; 2] = ["libvulkan.1.dylib", "libvulkan.dylib"];
+    if let Some(path) = std::env::var_os("FLUTTER_RUST_VULKAN_LIBRARY") {
+        let path = PathBuf::from(path);
+        match unsafe { ash::Entry::load_from(&path) } {
+            Ok(entry) => {
+                log::info!("Loaded the Vulkan loader from {}", path.display());
+                return Ok(entry);
+            }
+            Err(error) => log::warn!(
+                "FLUTTER_RUST_VULKAN_LIBRARY={} failed to load ({error}); searching the default locations",
+                path.display()
+            ),
+        }
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let first_error = match unsafe { ash::Entry::load() } {
+        Ok(entry) => return Ok(entry),
+        Err(error) => error,
+    };
+    if let Some(directory) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(PathBuf::from))
+    {
+        for name in NAMES {
+            candidates.push(directory.join(name));
+            candidates.push(directory.join("../Frameworks").join(name));
+        }
+    }
+    for prefix in ["/opt/homebrew/lib", "/usr/local/lib"] {
+        for name in NAMES {
+            candidates.push(PathBuf::from(prefix).join(name));
+        }
+    }
+    for candidate in candidates.iter().filter(|path| path.is_file()) {
+        if let Ok(entry) = unsafe { ash::Entry::load_from(candidate) } {
+            log::info!("Loaded the Vulkan loader from {}", candidate.display());
+            return Ok(entry);
+        }
+    }
+    Err(first_error)
 }
 
 impl crate::Instance for super::Instance {

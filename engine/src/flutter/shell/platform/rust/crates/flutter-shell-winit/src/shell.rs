@@ -1939,7 +1939,7 @@ struct TextInputInbox {
     agent_messages: Mutex<VecDeque<Vec<u8>>>,
     wake_proxy: HostEventSender,
     exit: Arc<ApplicationExitCoordinator>,
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     clipboard: Mutex<Option<arboard::Clipboard>>,
 }
 struct ApplicationExitCoordinator {
@@ -1988,7 +1988,7 @@ impl TextInputInbox {
                 pending: AtomicBool::new(false),
                 wake_proxy,
             }),
-            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             clipboard: Mutex::new(None),
         }
     }
@@ -2073,7 +2073,7 @@ extern "C" fn handle_platform_message(
             );
             return FlutterRustPlatformMessageDisposition::Pending;
         }
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         if let Ok(call) = serde_json::from_slice::<RawMethodCall>(message)
             && let Some(envelope) = handle_desktop_clipboard_call(inbox, &call)
         {
@@ -2808,7 +2808,8 @@ const SYNCED_MODIFIERS: [(ModifiersState, NamedKey, &[KeyCode]); 4] = [
         NamedKey::Alt,
         &[
             KeyCode::AltLeft,
-            #[cfg(target_os = "windows")]
+            // Right Alt is AltGr on Linux; on Windows and macOS it is Alt/Option.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             KeyCode::AltRight,
         ],
     ),
@@ -3243,6 +3244,10 @@ fn physical_key_id(key: PhysicalKey) -> Option<u64> {
     let usage = match key {
         PhysicalKey::Code(code) => key_code_usb_usage(code)?,
         PhysicalKey::Unidentified(NativeKeyCode::Xkb(code)) => {
+            return Some(CurrentPlatform::FALLBACK_KEY_PLANE | u64::from(code));
+        }
+        // AppKit virtual key codes with no USB HID mapping.
+        PhysicalKey::Unidentified(NativeKeyCode::MacOS(code)) => {
             return Some(CurrentPlatform::FALLBACK_KEY_PLANE | u64::from(code));
         }
         PhysicalKey::Unidentified(_) => return None,
@@ -3804,7 +3809,7 @@ mod android_app {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn handle_desktop_clipboard_call(inbox: &TextInputInbox, call: &RawMethodCall) -> Option<Vec<u8>> {
     use serde_json::json;
 

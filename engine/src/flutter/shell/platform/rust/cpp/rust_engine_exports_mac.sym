@@ -1,0 +1,11 @@
+# Copyright 2026 The Flutter Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Mach-O exported-symbols list for the application-facing Rust engine library.
+# Mirrors rust_engine_exports.lst: the private shell ABI plus the VM snapshot
+# symbols that Dart discovers in the loaded library. Everything else is hidden.
+
+_FlutterRustShell*
+_kDartSnapshotData
+_kDartSnapshotText

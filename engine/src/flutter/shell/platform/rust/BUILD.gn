@@ -224,8 +224,11 @@ source_set("flutter_rust_shell") {
 shared_library("flutter_rust_engine") {
   output_name = "flutter_rust_engine"
 
-  # Ninja must relink if the Linux export policy changes.
-  inputs = [ "cpp/rust_engine_exports.lst" ]
+  # Ninja must relink if the Linux or macOS export policy changes.
+  inputs = [
+    "cpp/rust_engine_exports.lst",
+    "cpp/rust_engine_exports_mac.sym",
+  ]
 
   # source_set object files only propagate through public_deps.  The shared
   # object is the owner of this implementation, so make the implementation
@@ -246,6 +249,18 @@ shared_library("flutter_rust_engine") {
   if (is_linux || is_android) {
     ldflags = [ "-Wl,--version-script=" +
                 rebase_path("cpp/rust_engine_exports.lst", root_build_dir) ]
+  }
+
+  # macOS applies the same export policy through a Mach-O exported-symbols
+  # list (leading-underscore names). Like Linux, the debug snapshot symbols
+  # stay exported for the VM's process-wide symbol lookup. The @rpath install
+  # name lets a Cargo-linked runner load the dylib from beside its executable.
+  if (is_mac) {
+    ldflags = [
+      "-Wl,-exported_symbols_list," +
+          rebase_path("cpp/rust_engine_exports_mac.sym", root_build_dir),
+      "-Wl,-install_name,@rpath/libflutter_rust_engine.dylib",
+    ]
   }
 
   public_configs = [ "//flutter:config" ]

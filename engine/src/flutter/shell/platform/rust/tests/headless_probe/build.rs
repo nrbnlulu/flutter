@@ -6,9 +6,13 @@ fn main() {
         env::var_os("FLUTTER_RUST_ENGINE_DIR")
             .expect("FLUTTER_RUST_ENGINE_DIR must name the matching GN output directory"),
     );
-    let windows = env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows";
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let windows = target_os == "windows";
+    let macos = target_os == "macos";
     let library = directory.join(if windows {
         "flutter_rust_engine.dll.lib"
+    } else if macos {
+        "libflutter_rust_engine.dylib"
     } else {
         "libflutter_rust_engine.so"
     });
@@ -24,6 +28,14 @@ fn main() {
     } else {
         println!("cargo:rustc-link-lib=dylib=flutter_rust_engine");
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", directory.display());
-        println!("cargo:rustc-link-arg=-Wl,--export-dynamic");
+        // ld64 spells the dynamic-export flag differently from GNU ld.
+        println!(
+            "cargo:rustc-link-arg={}",
+            if macos {
+                "-Wl,-export_dynamic"
+            } else {
+                "-Wl,--export-dynamic"
+            }
+        );
     }
 }
