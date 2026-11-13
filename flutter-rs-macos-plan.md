@@ -3,10 +3,11 @@
 Plan for macOS support in [`flutter-rs.md`](flutter-rs.md), following the
 structure of [`flutter-rs-windows-plan.md`](flutter-rs-windows-plan.md).
 Progress will be recorded in [`flutter-rs-proggress.md`](flutter-rs-proggress.md).
-Status (2026-11-13), branch `macos/m0-engine-build`: M0 done (engine dylib
-builds on macOS arm64). M1 done headless: wgpu and Impeller run on MoltenVK
-and the headless probe renders 12 Flutter frames under validation; window
-presentation moves to M2. M2–M4 not started. See the progress log.
+Status (2026-11-13), branch `macos/m0-engine-build`: M0 and M1 done. M2–M4
+done to the extent verifiable unattended: the AppKit host renders regular
+windows through wgpu/Impeller on MoltenVK, the 60-view windowing test passes
+under validation, and a staged runner relocates. Input, live resize, Retina,
+release AOT and bundling MoltenVK remain open. See the progress log.
 
 Target: macOS 13+ on Apple Silicon (`aarch64-apple-darwin`). Intel (x64) is
 out of scope for now.

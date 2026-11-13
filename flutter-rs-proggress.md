@@ -11,6 +11,78 @@ semantics and optional widget assertions, input, screenshots, video and CI
 evidence. Phases 0 and 1 are complete on Linux x64. The display-free virtual
 host is available; agent observation/control and verification remain pending.
 
+### macOS M2–M4 — AppKit host, windowed rendering, relocatable runner (2026-11-13)
+
+Steps M2–M4 of [`flutter-rs-macos-plan.md`](flutter-rs-macos-plan.md), on
+branch `macos/m0-engine-build`. Host: Apple M6, macOS 27.0, one external 1x
+display (AW3426DWM), MoltenVK 1.4.2.
+
+M2 (`flutter-shell-winit`):
+
+- `src/platform/macos.rs` (`MacPlatform`): keymap `"macos"`, fallback plane
+  `0x01400000000`, no NumLock inference; Option-produced text counts as input
+  (`text_modifiers` drops ALT); CapsLock from `CGEventSourceFlagsState`; legacy
+  key messages in Flutter's macOS schema (`keyCode` from winit's scancode, which
+  is the AppKit virtual key code, `characters`, `modifiers` with the
+  `NSEventModifierFlags` layout including left/right bits;
+  `charactersIgnoringModifiers` repeats `characters` because winit does not
+  expose it). Regular windows only; dialogs, satellites, tooltips and popups are
+  reported unsupported. `is_wayland` is false and `uses_host_vsync`/`next_vsync`
+  keep their defaults (C++ timer pacing); a display-link source plugs into
+  those two methods later, as `windows_vsync.rs` does.
+- `platform.rs` selects `MacPlatform`; `Cargo.toml` adds a macOS block (winit
+  AppKit with no features, wgpu with `vulkan-portability`, arboard,
+  raw-window-handle). `shell.rs`: arboard clipboard enabled on macOS, right
+  Option synced as Alt, and unidentified `NativeKeyCode::MacOS` keys map into
+  the fallback plane instead of being dropped.
+- Deadlock fix in `flutter-shell-wgpu`: `present_image` called
+  `window.pre_present_notify()` while holding `surface_state`. On AppKit that
+  call is a no-op but winit dispatches it synchronously to the main thread,
+  which could be blocked on the same lock in `configure` during a resize. The
+  sampled hang showed exactly that pair of stacks. The call is skipped on macOS.
+- Vulkan loader discovery: vendored `wgpu-hal` gains `load_macos_vulkan` (see
+  its `README.flutter`), trying `FLUTTER_RUST_VULKAN_LIBRARY`, the default
+  lookup, the executable directory, `../Frameworks`, `/opt/homebrew/lib` and
+  `/usr/local/lib`. Without it the shell started with no Vulkan backend whenever
+  `DYLD_*` was absent, which includes anything launched via `/usr/bin/python3`
+  (SIP strips `DYLD_*`).
+
+M3: `_window_rust.dart` accepts `Platform.isMacOS`; the symbol probe finds
+`FlutterRustShellWindowCreateRegular` through the dylib's exports.
+
+M4: `tests/smoke_runner/build.rs` links the `.dylib`, uses ld64's
+`-export_dynamic`, and puts `@executable_path` before the GN directory in the
+rpath. `tests/test_windowing.py` passes `DYLD_FALLBACK_LIBRARY_PATH` to the
+runner on macOS (default `/opt/homebrew/lib:/usr/local/lib:/usr/lib`, override
+`FLUTTER_RUST_DYLD_LIBRARY_PATH`) because Homebrew's validation-layer manifest
+names its library by leaf name.
+
+Validation:
+
+- `cargo test` for winit, wgpu and gpu-queue on macOS: 57 passed (winit 50; the
+  two Linux AltGr/NumLock tests are Linux-only). `cargo check` of all three
+  crates for Linux x64 and Windows x64 succeeds.
+- Smoke counter app: AppKit window on screen (800x632 points including the title
+  bar, confirmed with `CGWindowListCopyWindowInfo`), frames presented at
+  800x600 through the swapchain, no validation errors.
+- `tests/test_windowing.py` (60 regular views created, resized four times and
+  destroyed, Khronos validation via `VK_INSTANCE_LAYERS`): **passed 3/3 after
+  the deadlock fix** (492, 494 and 464 primary presentations), 0/2 before it.
+  This covers the acquire→Impeller→present chain on `CAMetalLayer` surfaces and
+  programmatic resize.
+- Relocation: the runner, engine dylib, `icudtl.dat` and assets staged in one
+  directory, ad-hoc signed (`codesign --sign -`), launched from an unrelated
+  directory with `env -i`: it loaded the bundled engine dylib, found the Vulkan
+  loader through the new fallback and presented frames.
+
+Not verified (needs a person or permissions this session lacked): pointer,
+scroll, trackpad and keyboard input (no Accessibility permission for synthetic
+events); pixel captures of native windows (no Screen Recording permission);
+user-driven live resize in AppKit's modal loop; Retina/scale changes (only a
+1x display was attached); clean exit on native close or Cmd+Q. Release AOT was
+not attempted (needs a release engine build). MoltenVK and the loader still
+come from Homebrew rather than being bundled.
+
 ### macOS M1 — wgpu and Impeller on MoltenVK, headless (2026-11-13)
 
 Second step of [`flutter-rs-macos-plan.md`](flutter-rs-macos-plan.md), on

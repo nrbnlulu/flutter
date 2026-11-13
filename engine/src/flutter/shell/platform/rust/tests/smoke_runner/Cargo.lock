@@ -2016,11 +2016,20 @@ dependencies = [
  "rustc-hash",
  "smallvec",
  "thiserror 2.0.19",
+ "wgpu-core-deps-apple",
  "wgpu-core-deps-linux-android-bsd",
  "wgpu-core-deps-windows",
  "wgpu-hal",
  "wgpu-naga-bridge",
  "wgpu-types",
+]
+
+[[package]]
+name = "wgpu-core-deps-apple"
+version = "30.0.0"
+source = "git+https://github.com/gfx-rs/wgpu.git?rev=014d9e84813a2946febfa4888694c0b70565b2f5#014d9e84813a2946febfa4888694c0b70565b2f5"
+dependencies = [
+ "wgpu-hal",
 ]
 
 [[package]]

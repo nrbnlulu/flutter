@@ -18,4 +18,12 @@ The extra descriptor does not alter any set layout or submitted GPU work.
 
 Revalidate with the existing ignored direct pixel upload/readback test under
 VK_LAYER_KHRONOS_validation, WGPU_VALIDATION=1, WGPU_DEBUG=1. See the Windows
-progress log for commands and results. No other source changes are intended.
+progress log for commands and results. Local change: src/vulkan/instance.rs (`load_macos_vulkan`) locates the Vulkan
+loader on macOS. ash opens `libvulkan.dylib` by leaf name, which dyld cannot
+find in Homebrew's prefix or an app bundle, and macOS strips `DYLD_*` from
+processes started through protected binaries. The helper tries
+`FLUTTER_RUST_VULKAN_LIBRARY`, the default lookup, the executable directory,
+`../Frameworks`, `/opt/homebrew/lib` and `/usr/local/lib`, in that order. It is
+compiled only for `target_os = "macos"`.
+
+No other source changes are intended.
