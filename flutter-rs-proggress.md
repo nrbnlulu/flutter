@@ -75,13 +75,34 @@ Validation:
   directory with `env -i`: it loaded the bundled engine dylib, found the Vulkan
   loader through the new fallback and presented frames.
 
-Not verified (needs a person or permissions this session lacked): pointer,
-scroll, trackpad and keyboard input (no Accessibility permission for synthetic
-events); pixel captures of native windows (no Screen Recording permission);
-user-driven live resize in AppKit's modal loop; Retina/scale changes (only a
-1x display was attached); clean exit on native close or Cmd+Q. Release AOT was
-not attempted (needs a release engine build). MoltenVK and the loader still
-come from Homebrew rather than being bundled.
+Manual check (2026-11-13, by hand on the same host): the smoke app was run
+against a checklist covering pointer clicks and hover, scroll, keyboard
+(including Option dead keys, CapsLock and Cmd shortcuts), user-driven live
+resize, minimize/restore/focus, and close via the window button and Cmd+Q.
+The tester reported it working fine; no individual results or exit codes
+were recorded.
+
+Loader override fix (2026-11-13): `load_macos_vulkan` queued
+`FLUTTER_RUST_VULKAN_LIBRARY` as a candidate but returned from
+`ash::Entry::load()` first, so the override never won when a default loader was
+findable. The override is now tried before anything else; if it fails to load,
+a warning is logged and the documented search continues. The doc comment and
+`README.flutter` match. Rebuilt the smoke runner and ran the counter app three
+ways: default (loaded `/opt/homebrew/lib/libvulkan.1.dylib`), override pointing
+at `/opt/homebrew/opt/vulkan-loader/lib/libvulkan.1.dylib` (loaded that path),
+and a nonexistent override (warning, then fell back to Homebrew). All three
+reached the Dart VM service and rendered.
+
+Linux compile check (2026-11-13): `cargo +1.93.1 check --locked --target
+x86_64-unknown-linux-gnu -p flutter-shell-core -p flutter-plugin-sdk -p
+flutter-gpu-queue -p flutter-shell-wgpu -p flutter-shell-winit` on this Mac
+finished with no errors or warnings. This is a type check only; nothing was
+linked or run on Linux.
+
+Still not verified: Retina/scale changes (only a 1x display was attached);
+automated pixel captures of native windows (no Screen Recording permission).
+Release AOT was not attempted (needs a release engine build). MoltenVK and
+the loader still come from Homebrew rather than being bundled.
 
 ### macOS M1 — wgpu and Impeller on MoltenVK, headless (2026-11-13)
 
