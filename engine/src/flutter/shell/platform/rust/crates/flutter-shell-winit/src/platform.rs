@@ -14,7 +14,7 @@ pub(crate) struct VsyncTiming {
     pub interval: Duration,
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
 #[path = "platform/positioner.rs"]
 pub(crate) mod positioner;
 
@@ -119,7 +119,7 @@ pub(crate) trait PlatformBackend {
         grab: bool,
     ) -> Result<Box<dyn Window>, String>;
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn reposition_popup(
         _window: &dyn Window,
         _parent: &dyn Window,

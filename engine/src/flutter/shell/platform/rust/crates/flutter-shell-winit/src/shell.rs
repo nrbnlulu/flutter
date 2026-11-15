@@ -615,7 +615,7 @@ extern "C" fn set_window_constraints_callback(
         view.window.set_max_surface_size(Some(
             LogicalSize::new(finite_maximum(max_width), finite_maximum(max_height)).into(),
         ));
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         windows.reposition_popups(view_id);
     });
 }
@@ -736,7 +736,7 @@ extern "C" fn update_popup_position_callback(
         placement.gravity = request.gravity;
         placement.offset = request.offset;
         placement.constraint_adjustment = request.constraint_adjustment;
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         windows.reposition_popups(view_id);
         true
     })
@@ -5047,7 +5047,7 @@ impl ApplicationHandler for ShellApplication {
             return;
         };
         match event {
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             WindowEvent::Moved(_) => self.windows.borrow().reposition_popups(view_id),
             WindowEvent::SurfaceResized(size) => {
                 let (metrics, visible) = {
@@ -5067,7 +5067,7 @@ impl ApplicationHandler for ShellApplication {
                     (metrics, windows.aggregate_window_state().0)
                 };
                 self.windows.borrow().update_satellite_visibility(view_id);
-                #[cfg(target_os = "windows")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 self.windows.borrow().reposition_popups(view_id);
                 if let Some(shell) = { self.windows.borrow().shell } {
                     set_cpp_shell_viewport_metrics(shell, view_id, metrics);
@@ -5097,7 +5097,7 @@ impl ApplicationHandler for ShellApplication {
                         .expect("winit Vulkan surface reconfiguration failed");
                     WindowMetrics::from_window(view.window.as_ref(), _scale_factor)
                 };
-                #[cfg(target_os = "windows")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 self.windows.borrow().reposition_popups(view_id);
                 if let Some(shell) = { self.windows.borrow().shell } {
                     set_cpp_shell_viewport_metrics(shell, view_id, metrics);
@@ -6167,7 +6167,7 @@ impl WindowRegistry {
         self.update_satellite_visibility(parent_view_id);
         Ok(())
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn reposition_popups(&self, changed: FlutterRustViewId) {
         let mut pending = vec![changed];
         while let Some(view_id) = pending.pop() {
