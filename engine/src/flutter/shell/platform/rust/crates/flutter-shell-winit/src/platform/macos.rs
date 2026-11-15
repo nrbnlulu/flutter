@@ -130,7 +130,10 @@ impl PlatformBackend for MacPlatform {
     }
 
     fn supports_window_kind(kind: NativeWindowKind) -> bool {
-        matches!(kind, NativeWindowKind::Regular | NativeWindowKind::Dialog)
+        matches!(
+            kind,
+            NativeWindowKind::Regular | NativeWindowKind::Dialog | NativeWindowKind::Satellite
+        )
     }
 
     fn legacy_key_message(physical: PhysicalKey, event: &FlutterRustKeyEvent) -> Option<Vec<u8>> {
@@ -145,6 +148,16 @@ impl PlatformBackend for MacPlatform {
         _kind: NativeWindowKind,
     ) -> WindowAttributes {
         attributes
+    }
+
+    fn configure_native_window(window: &dyn Window, kind: NativeWindowKind) -> Result<(), String> {
+        if kind == NativeWindowKind::Satellite {
+            // Like a Win32 tool window, an owned utility window gets no
+            // independent entry in the app's Window menu.
+            let mtm = main_thread()?;
+            ns_window(window, mtm)?.setExcludedFromWindowsMenu(true);
+        }
+        Ok(())
     }
 
     fn is_wayland(_event_loop: &dyn ActiveEventLoop) -> bool {
