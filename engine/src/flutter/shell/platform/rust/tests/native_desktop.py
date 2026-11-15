@@ -4,7 +4,7 @@
 
 """Native desktop automation used by Rust-shell runtime validation.
 
-Coordinates use the native compositor (physical pixels on Win32). Windows are selected by PID by
+Coordinates use the native compositor (physical pixels on Win32, global points on macOS). Windows are selected by PID by
 callers; adapters never operate on unrelated application windows.
 """
 from __future__ import annotations
@@ -496,9 +496,293 @@ class Windows(Desktop):
       self.user.ReleaseDC(None, screen)
 
 
+class _CGPoint(ctypes.Structure):
+  _fields_ = [('x', ctypes.c_double), ('y', ctypes.c_double)]
+
+
+class _CGSize(ctypes.Structure):
+  _fields_ = [('width', ctypes.c_double), ('height', ctypes.c_double)]
+
+
+class _CGRect(ctypes.Structure):
+  _fields_ = [('origin', _CGPoint), ('size', _CGSize)]
+
+
+class MacOS(Desktop):
+  """Quartz window list plus Accessibility and CGEvent control.
+
+  Coordinates are global points with a top-left origin, as reported by
+  CGWindowList and used by CGEvent and AXPosition, so metrics report a
+  logical coordinate space. `at`/`size` are the window frame, which for
+  titled windows includes the title bar. Reading the window list needs
+  Screen Recording permission for titles; input, focus and movement need
+  Accessibility permission for the app that runs Python.
+  """
+
+  _KEYS = {
+      'ESCAPE': 53, 'TAB': 48, 'ENTER': 36, 'BACKSPACE': 51, 'LEFT': 123, 'RIGHT': 124, 'CTRL': 59,
+      'SHIFT': 56, 'ALT': 58, 'CMD': 55, 'A': 0, 'S': 1, 'D': 2, 'F': 3, 'H': 4, 'G': 5, 'Z': 6,
+      'X': 7, 'C': 8, 'V': 9, 'B': 11, 'Q': 12, 'W': 13, 'E': 14, 'R': 15, 'Y': 16, 'T': 17,
+      'O': 31, 'U': 32, 'I': 34, 'P': 35, 'L': 37, 'J': 38, 'K': 40, 'N': 45, 'M': 46
+  }
+  _FLAGS = {'CTRL': 1 << 18, 'SHIFT': 1 << 17, 'ALT': 1 << 19, 'CMD': 1 << 20}
+
+  def __init__(self):
+    void = ctypes.c_void_p
+    self.cf = ctypes.cdll.LoadLibrary(
+        '/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation'
+    )
+    self.cg = ctypes.cdll.LoadLibrary(
+        '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics'
+    )
+    self.ax = ctypes.cdll.LoadLibrary(
+        '/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices'
+    )
+    for library, name, args, result in [
+        (self.cf, 'CFArrayGetCount', [void], ctypes.c_long),
+        (self.cf, 'CFArrayGetValueAtIndex', [void, ctypes.c_long], void),
+        (self.cf, 'CFDictionaryGetValue', [void, void], void),
+        (self.cf, 'CFNumberGetValue', [void, ctypes.c_int, void], ctypes.c_bool),
+        (self.cf, 'CFStringCreateWithCString', [void, ctypes.c_char_p, ctypes.c_uint32], void),
+        (self.cf, 'CFStringGetCString', [void, ctypes.c_char_p, ctypes.c_long,
+                                         ctypes.c_uint32], ctypes.c_bool),
+        (self.cf, 'CFRelease', [void], None),
+        (self.cf, 'CFRetain', [void], void),
+        (self.cg, 'CGWindowListCopyWindowInfo', [ctypes.c_uint32, ctypes.c_uint32], void),
+        (self.cg, 'CGRectMakeWithDictionaryRepresentation', [void, ctypes.POINTER(_CGRect)],
+         ctypes.c_bool),
+        (self.cg, 'CGEventCreateMouseEvent', [void, ctypes.c_uint32, _CGPoint,
+                                              ctypes.c_uint32], void),
+        (self.cg, 'CGEventCreateKeyboardEvent', [void, ctypes.c_uint16, ctypes.c_bool], void),
+        (self.cg, 'CGEventSetFlags', [void, ctypes.c_uint64], None),
+        (self.cg, 'CGEventPost', [ctypes.c_uint32, void], None),
+        (self.ax, 'AXIsProcessTrusted', [], ctypes.c_bool),
+        (self.ax, 'AXUIElementCreateApplication', [ctypes.c_int], void),
+        (self.ax, 'AXUIElementCopyAttributeValue', [void, void,
+                                                    ctypes.POINTER(void)], ctypes.c_int32),
+        (self.ax, 'AXUIElementSetAttributeValue', [void, void, void], ctypes.c_int32),
+        (self.ax, 'AXUIElementPerformAction', [void, void], ctypes.c_int32),
+        (self.ax, 'AXValueCreate', [ctypes.c_uint32, void], void),
+        (self.ax, '_AXUIElementGetWindow', [void, ctypes.POINTER(ctypes.c_uint32)], ctypes.c_int32),
+    ]:
+      function = getattr(library, name)
+      function.argtypes, function.restype = args, result
+    self.true = void.in_dll(self.cf, 'kCFBooleanTrue')
+    self.false = void.in_dll(self.cf, 'kCFBooleanFalse')
+    self.keys = {
+        name: void.in_dll(self.cg, name) for name in (
+            'kCGWindowNumber', 'kCGWindowOwnerPID', 'kCGWindowName', 'kCGWindowBounds',
+            'kCGWindowLayer'
+        )
+    }
+
+  def _string(self, text):
+    return self.cf.CFStringCreateWithCString(None, text.encode(), 0x08000100)
+
+  def _number(self, value):
+    result = ctypes.c_int64()
+    return result.value if value and self.cf.CFNumberGetValue(
+        value, 4, ctypes.byref(result)
+    ) else None
+
+  def _text(self, value):
+    buffer = ctypes.create_string_buffer(4096)
+    if value and self.cf.CFStringGetCString(value, buffer, len(buffer), 0x08000100):
+      return buffer.value.decode()
+    return ''
+
+  def clients(self):
+    # On-screen windows only, excluding desktop elements.
+    windows = self.cg.CGWindowListCopyWindowInfo(1 | 16, 0)
+    if not windows:
+      raise RuntimeError('CGWindowListCopyWindowInfo failed')
+    result = []
+    try:
+      for index in range(self.cf.CFArrayGetCount(windows)):
+        info = self.cf.CFArrayGetValueAtIndex(windows, index)
+        value = lambda key: self.cf.CFDictionaryGetValue(info, self.keys[key])
+        if self._number(value('kCGWindowLayer')) != 0:
+          continue
+        rect = _CGRect()
+        if not self.cg.CGRectMakeWithDictionaryRepresentation(value('kCGWindowBounds'),
+                                                              ctypes.byref(rect)):
+          continue
+        if rect.size.width <= 0 or rect.size.height <= 0:
+          continue
+        result.append(
+            dict(
+                address=str(self._number(value('kCGWindowNumber'))),
+                pid=self._number(value('kCGWindowOwnerPID')),
+                title=self._text(value('kCGWindowName')),
+                at=[round(rect.origin.x), round(rect.origin.y)],
+                size=[round(rect.size.width), round(rect.size.height)]
+            )
+        )
+    finally:
+      self.cf.CFRelease(windows)
+    return result
+
+  def _client(self, address):
+    return next(c for c in self.clients() if str(c['address']) == str(address))
+
+  def _require_accessibility(self):
+    if not self.ax.AXIsProcessTrusted():
+      raise RuntimeError(
+          'macOS input and window control need Accessibility permission: enable the app that '
+          'runs this script in System Settings > Privacy & Security > Accessibility'
+      )
+
+  def _ax_window(self, address):
+    """Returns (application, window) AX elements for a CGWindowID; caller releases both."""
+    self._require_accessibility()
+    pid = self._client(address)['pid']
+    application = self.ax.AXUIElementCreateApplication(pid)
+    windows = ctypes.c_void_p()
+    attribute = self._string('AXWindows')
+    try:
+      if self.ax.AXUIElementCopyAttributeValue(application, attribute, ctypes.byref(windows)):
+        raise RuntimeError(f'Cannot read Accessibility windows of process {pid}')
+    finally:
+      self.cf.CFRelease(attribute)
+    try:
+      for index in range(self.cf.CFArrayGetCount(windows)):
+        window = self.cf.CFArrayGetValueAtIndex(windows, index)
+        number = ctypes.c_uint32()
+        if not self.ax._AXUIElementGetWindow(window, ctypes.byref(number)) and str(number.value
+                                                                                  ) == str(address):
+          # Retain the element beyond the array's lifetime.
+          return application, self.cf.CFRetain(window)
+    finally:
+      self.cf.CFRelease(windows)
+    self.cf.CFRelease(application)
+    raise RuntimeError(f'Window {address} has no Accessibility element')
+
+  def _set(self, element, name, value):
+    attribute = self._string(name)
+    try:
+      error = self.ax.AXUIElementSetAttributeValue(element, attribute, value)
+    finally:
+      self.cf.CFRelease(attribute)
+    if error:
+      raise RuntimeError(f'Setting {name} failed with AXError {error}')
+
+  def _set_geometry(self, address, name, kind, value):
+    application, window = self._ax_window(address)
+    ax_value = self.ax.AXValueCreate(kind, ctypes.byref(value))
+    try:
+      self._set(window, name, ax_value)
+    finally:
+      self.cf.CFRelease(ax_value)
+      self.cf.CFRelease(window)
+      self.cf.CFRelease(application)
+
+  def action(self, action, address, *, width=0, height=0):
+    if action == 'resize':
+      self._set_geometry(address, 'AXSize', 2, _CGSize(width, height))
+    elif action == 'tab':
+      self.chord(address, 'Tab')
+    elif action == 'float':
+      pass
+    elif action in ('focus', 'close', 'hide', 'restore', 'fullscreen'):
+      application, window = self._ax_window(address)
+      try:
+        if action == 'focus':
+          self._set(application, 'AXFrontmost', self.true)
+          self._set(window, 'AXMain', self.true)
+          raise_action = self._string('AXRaise')
+          try:
+            self.ax.AXUIElementPerformAction(window, raise_action)
+          finally:
+            self.cf.CFRelease(raise_action)
+        elif action == 'close':
+          button = ctypes.c_void_p()
+          attribute, press = self._string('AXCloseButton'), self._string('AXPress')
+          try:
+            if self.ax.AXUIElementCopyAttributeValue(window, attribute, ctypes.byref(button)):
+              raise RuntimeError(f'Window {address} has no close button')
+            self.ax.AXUIElementPerformAction(button, press)
+            self.cf.CFRelease(button)
+          finally:
+            self.cf.CFRelease(attribute)
+            self.cf.CFRelease(press)
+        elif action in ('hide', 'restore'):
+          self._set(window, 'AXMinimized', self.true if action == 'hide' else self.false)
+        else:
+          self.fullscreen = not getattr(self, 'fullscreen', False)
+          self._set(window, 'AXFullScreen', self.true if self.fullscreen else self.false)
+      finally:
+        self.cf.CFRelease(window)
+        self.cf.CFRelease(application)
+    else:
+      raise RuntimeError(f'Unsupported macOS automation action: {action}')
+
+  def metrics(self, address):
+    result = super().metrics(address)
+    result['coordinate_space'] = 'logical'
+    return result
+
+  def move(self, address, x, y):
+    self._set_geometry(address, 'AXPosition', 1, _CGPoint(x, y))
+
+  def owned_windows(self, address):
+    # The window server does not report AppKit child-window ownership to
+    # other processes. Popups and tooltips are the owner's untitled same-PID
+    # windows; callers verify real ownership behavior, for example a tooltip
+    # following its owner's movement.
+    clients = self.clients()
+    owner = next(c for c in clients if str(c['address']) == str(address))
+    return [
+        c for c in clients
+        if c['pid'] == owner['pid'] and c['address'] != owner['address'] and not c['title']
+    ]
+
+  def _post(self, event):
+    if not event:
+      raise RuntimeError('CGEvent creation failed')
+    try:
+      self.cg.CGEventPost(0, event)
+    finally:
+      self.cf.CFRelease(event)
+
+  def click(self, address, x, y):
+    self.action('focus', address)
+    time.sleep(.1)
+    point = _CGPoint(x, y)
+    # Mouse moved, left down, left up.
+    for kind in (5, 1, 2):
+      self._post(self.cg.CGEventCreateMouseEvent(None, kind, point, 0))
+      time.sleep(.05)
+
+  def chord(self, address, *keys):
+    names = [key.upper() for key in keys]
+    if any(name not in self._KEYS for name in names):
+      raise ValueError(f'Unsupported native key chord: {keys}')
+    self.action('focus', address)
+    time.sleep(.1)
+    flags = 0
+    for name in names[:-1]:
+      flags |= self._FLAGS.get(name, 0)
+    for down in (True, False):
+      event = self.cg.CGEventCreateKeyboardEvent(None, self._KEYS[names[-1]], down)
+      if event:
+        self.cg.CGEventSetFlags(event, flags)
+      self._post(event)
+      time.sleep(.05)
+
+  def capture(self, rect, path):
+    x, y, width, height = rect
+    if width <= 0 or height <= 0:
+      raise RuntimeError(f'Invalid capture rectangle: {rect}')
+    subprocess.run(['screencapture', '-x', '-R', f'{x},{y},{width},{height}',
+                    str(path)],
+                   check=True)
+
+
 def desktop() -> Desktop:
   if sys.platform == 'win32':
     return Windows()
   if sys.platform.startswith('linux'):
     return Hyprland()
+  if sys.platform == 'darwin':
+    return MacOS()
   raise RuntimeError(f'Native Rust-shell validation is not implemented on {sys.platform}')

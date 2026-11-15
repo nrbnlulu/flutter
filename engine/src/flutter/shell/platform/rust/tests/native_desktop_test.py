@@ -2,7 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Check compositor command encoding, deterministic captures, and Win32 control."""
+"""Check compositor command encoding, deterministic captures, and Win32/macOS control."""
 from pathlib import Path
 import struct
 import subprocess
@@ -182,6 +182,43 @@ class WindowsTest(unittest.TestCase):
       if process.poll() is None:
         process.kill()
         process.wait()
+
+
+@unittest.skipUnless(sys.platform == 'darwin', 'macOS native automation')
+class MacOSTest(unittest.TestCase):
+
+  def test_lists_real_windows_in_logical_points(self):
+    api = desktop()
+    clients = api.clients()
+    self.assertTrue(all(c['size'][0] > 0 and c['size'][1] > 0 for c in clients))
+    if clients:
+      self.assertEqual(api.metrics(clients[0]['address'])['coordinate_space'], 'logical')
+
+  def test_owned_windows_are_untitled_windows_of_the_owner_process(self):
+    api = desktop()
+    clients = [
+        dict(address='1', pid=10, title='Owner', at=[0, 0], size=[10, 10]),
+        dict(address='2', pid=10, title='', at=[0, 0], size=[5, 5]),
+        dict(address='3', pid=10, title='Other top-level', at=[0, 0], size=[5, 5]),
+        dict(address='4', pid=11, title='', at=[0, 0], size=[5, 5]),
+    ]
+    with patch.object(api, 'clients', return_value=clients):
+      self.assertEqual([c['address'] for c in api.owned_windows('1')], ['2'])
+
+  def test_control_without_accessibility_names_the_setting(self):
+    api = desktop()
+    with patch.object(api.ax, 'AXIsProcessTrusted', return_value=False), \
+        patch.object(api, 'clients', return_value=[
+            dict(address='1', pid=10, title='Owner', at=[0, 0], size=[10, 10])]):
+      with self.assertRaisesRegex(RuntimeError, 'Privacy & Security > Accessibility'):
+        api.move('1', 5, 5)
+
+  def test_unsupported_keys_are_rejected_before_any_input(self):
+    api = desktop()
+    with patch.object(api, 'action') as action:
+      with self.assertRaises(ValueError):
+        api.chord('1', 'F13')
+      action.assert_not_called()
 
 
 if __name__ == '__main__':
