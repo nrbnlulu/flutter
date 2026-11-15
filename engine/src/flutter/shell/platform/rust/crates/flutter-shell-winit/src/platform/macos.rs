@@ -121,6 +121,12 @@ fn popup_frame(parent: &NSWindow, placement: PopupPlacement, mtm: MainThreadMark
     )
 }
 
+impl MacPlatform {
+    /// AppKit has no pointer capture to release; outside presses are routed
+    /// by the shared host instead (see `WindowEvent::PointerButton`).
+    pub(crate) fn release_popup(_window: &dyn Window) {}
+}
+
 fn encode_key(event: &FlutterRustKeyEvent, key_code: u32, modifiers: u64) -> Vec<u8> {
     let characters = std::str::from_utf8(&event.character[..event.character_length as usize])
         .unwrap_or_default();
@@ -175,6 +181,7 @@ impl PlatformBackend for MacPlatform {
                 | NativeWindowKind::Dialog
                 | NativeWindowKind::Satellite
                 | NativeWindowKind::Tooltip
+                | NativeWindowKind::Popup
         )
     }
 

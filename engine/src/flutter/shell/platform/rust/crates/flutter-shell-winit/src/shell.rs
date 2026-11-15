@@ -4540,7 +4540,7 @@ struct ViewWindow {
     kind: NativeWindowKind,
     parent_view_id: Option<FlutterRustViewId>,
     popup_placement: Option<PopupPlacement>,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     popup_dismissed: bool,
     // Stable callback owner. Raster releases its swapchain before the host
     // receives removal completion and drops this view's native window.
@@ -4576,7 +4576,7 @@ enum NativeWindowKind {
 }
 
 impl ShellApplication {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn active_popup(&self) -> Option<(FlutterRustViewId, Arc<dyn Window>)> {
         let windows = self.windows.borrow();
         windows
@@ -4591,7 +4591,7 @@ impl ShellApplication {
             .map(|view| (view.view_id, Arc::clone(&view.window)))
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn dismiss_popup(&mut self, id: FlutterRustViewId) {
         let callback = {
             let mut windows = self.windows.borrow_mut();
@@ -4968,7 +4968,7 @@ impl ApplicationHandler for ShellApplication {
                     kind: NativeWindowKind::Regular,
                     parent_view_id: None,
                     popup_placement: None,
-                    #[cfg(target_os = "windows")]
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
                     popup_dismissed: false,
                     gpu_broker,
                     window,
@@ -5110,7 +5110,7 @@ impl ApplicationHandler for ShellApplication {
                 }
             }
             WindowEvent::Focused(focused) => {
-                #[cfg(target_os = "windows")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 if !focused {
                     // WM_NCACTIVATE can arrive before GetForegroundWindow
                     // changes. Trust winit's focus transition here.
@@ -5189,7 +5189,7 @@ impl ApplicationHandler for ShellApplication {
                 is_synthetic,
                 ..
             } => {
-                #[cfg(target_os = "windows")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 if event.state == ElementState::Pressed
                     && event.logical_key == Key::Named(NamedKey::Escape)
                 {
@@ -5332,6 +5332,24 @@ impl ApplicationHandler for ShellApplication {
                 button,
                 ..
             } => {
+                // AppKit has no pointer capture: a press outside a grabbing
+                // popup is delivered to another of our windows. Dismiss the
+                // popup and consume the press, as Wayland's grab and Win32's
+                // capture do. Presses inside a popup are delivered normally.
+                #[cfg(target_os = "macos")]
+                if state == ElementState::Pressed {
+                    let outside = self
+                        .windows
+                        .borrow()
+                        .view(view_id)
+                        .is_none_or(|view| view.kind != NativeWindowKind::Popup);
+                    if outside {
+                        if let Some((id, _)) = self.active_popup() {
+                            self.dismiss_popup(id);
+                            return;
+                        }
+                    }
+                }
                 #[cfg(target_os = "windows")]
                 {
                     let popup = {
@@ -5940,7 +5958,7 @@ impl WindowRegistry {
                 kind,
                 parent_view_id,
                 popup_placement: None,
-                #[cfg(target_os = "windows")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 popup_dismissed: false,
                 gpu_broker,
                 window,
@@ -6031,7 +6049,7 @@ impl WindowRegistry {
                 kind: request.kind,
                 parent_view_id: Some(request.parent_view_id),
                 popup_placement: Some(placement),
-                #[cfg(target_os = "windows")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 popup_dismissed: false,
                 gpu_broker,
                 window,
