@@ -4141,6 +4141,8 @@ fn run_application_with_fixture(
         shell: None,
         window_event_callback: None,
         presentation_stats_path: config.presentation_stats_path.clone(),
+        #[cfg(target_os = "macos")]
+        mouse_view: None,
     }));
     let application = ShellApplication {
         config,
@@ -4528,6 +4530,9 @@ struct WindowRegistry {
     shell: Option<*mut c_void>,
     window_event_callback: Option<FlutterRustWindowEventCallback>,
     presentation_stats_path: Option<PathBuf>,
+    // The view that currently has Flutter's single mouse device added.
+    #[cfg(target_os = "macos")]
+    mouse_view: Option<FlutterRustViewId>,
 }
 
 fn presentation_stats_path_for_view(
@@ -5905,6 +5910,53 @@ impl ApplicationHandler for ShellApplication {
 }
 
 impl WindowRegistry {
+    /// Flutter tracks one state per pointer device across all views, while
+    /// each view tracks its own enter/leave. AppKit enters a window that
+    /// appears under a resting cursor without leaving the window below it,
+    /// so two views can both believe they have the mouse added. A later
+    /// Remove from the stale view then reaches the engine for a device it
+    /// no longer tracks. Keep exactly one view holding the mouse: an Add
+    /// takes it from the others, a stale Remove is dropped, and an event
+    /// from a view that does not hold the mouse is preceded by an Add.
+    #[cfg(target_os = "macos")]
+    fn single_mouse_device(
+        &mut self,
+        events: impl IntoIterator<Item = FlutterRustPointerEvent>,
+    ) -> Vec<FlutterRustPointerEvent> {
+        let mut result = Vec::new();
+        for event in events {
+            if event.device_kind != FlutterRustPointerDeviceKind::Mouse as u32 {
+                result.push(event);
+                continue;
+            }
+            if event.phase == FlutterRustPointerPhase::Remove as u32 {
+                if self.mouse_view == Some(event.view_id) {
+                    self.mouse_view = None;
+                    result.push(event);
+                }
+                continue;
+            }
+            if self.mouse_view != Some(event.view_id) {
+                for view in self.views.values_mut() {
+                    view.pointer_state.inside = view.view_id == event.view_id;
+                }
+                self.mouse_view = Some(event.view_id);
+                if event.phase != FlutterRustPointerPhase::Add as u32 {
+                    result.push(FlutterRustPointerEvent {
+                        phase: FlutterRustPointerPhase::Add as u32,
+                        signal_kind: FlutterRustPointerSignalKind::None as u32,
+                        scroll_delta_x: 0.0,
+                        scroll_delta_y: 0.0,
+                        buttons: 0,
+                        ..event
+                    });
+                }
+            }
+            result.push(event);
+        }
+        result
+    }
+
     fn view(&self, view_id: FlutterRustViewId) -> Option<&ViewWindow> {
         self.view_windows
             .get(&view_id)
@@ -6437,6 +6489,8 @@ impl ShellApplication {
     }
 
     fn send_pointer_events(&self, events: impl IntoIterator<Item = FlutterRustPointerEvent>) {
+        #[cfg(target_os = "macos")]
+        let events = self.windows.borrow_mut().single_mouse_device(events);
         if let Some(shell) = { self.windows.borrow().shell } {
             for event in events {
                 send_cpp_pointer_event(shell, event);
