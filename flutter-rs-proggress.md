@@ -11,6 +11,92 @@ semantics and optional widget assertions, input, screenshots, video and CI
 evidence. Phases 0 and 1 are complete on Linux x64. The display-free virtual
 host is available; agent observation/control and verification remain pending.
 
+### macOS M5 — multi-window: dialog, satellite, tooltip and popup (2026-11-16)
+
+Milestone 3 of [`flutter-rs-macos-plan.md`](flutter-rs-macos-plan.md), on
+branch `macos-support` (PR #21). Upstream `rust/flutter-rs-shell` was still at
+`7c8b771`, so no rebase. Host: Apple M6, macOS 27.2, one 1x display,
+MoltenVK 1.4.2.
+
+Window kinds (`platform/macos.rs`, `objc2`/`objc2-app-kit` already in the graph
+through winit, lockfiles gain only dependency edges):
+
+- Dialog and satellite: AppKit child windows (`addChildWindow:ordered:Above`),
+  so they stay above the owner and hide with it. Unlike Win32 owned windows
+  they also move with the owner. `set_dialog_parent` removes the window from any
+  previous parent first and keeps its screen position (satellite reparenting).
+  No native modality, as on Linux and Windows. Satellites are excluded from
+  the Window menu.
+- Tooltip and popup: borderless, untitled, non-activating `NSPanel` child
+  windows shown with `orderFront` (winit's `set_visible` makes the window key)
+  and not hidden on app deactivation. Placement uses the shared
+  `positioner::place` in top-left global points against the parent's content
+  rect and its screen's `visibleFrame`, flipping AppKit's bottom-left frames
+  against the primary screen height. `reposition_popup` mirrors Windows and
+  skips unchanged frames.
+- Shared host (`shell.rs`, macOS added to existing Windows `cfg`s): popup
+  repositioning, popup state, Escape and `dismiss_popup`. macOS-only additions:
+  a press in a non-popup view dismisses the active popup and is consumed
+  (AppKit has no pointer capture); owner activation loss is decided after
+  each event batch, dismissing a popup only if no window in its owner's family
+  is focused, because AppKit makes a clicked panel key; and one view holds the
+  mouse at a time (below).
+
+Problems found and fixed on the way:
+
+- Swapping the panel's class at runtime to refuse key focus made AppKit assert
+  in `NSDynamicProperties`; `becomesKeyOnlyIfNeeded` did not stop a clicked
+  panel from becoming key either (the tooltip commit wrongly claimed it did;
+  the popup focus fix removes it). The popup test caught the inside-click
+  dismissal this caused.
+- `pointer_data_packet_converter.cc` DCHECK (Remove for an unknown device):
+  AppKit enters a window that appears under a resting cursor without leaving
+  the window below, so two views both had the mouse added. On macOS an Add
+  now takes the mouse from other views, stale Removes are dropped and events
+  from a view without the mouse get an Add first. The 60-window test hit this
+  3/3 with the cursor parked over the fixture windows and passes after.
+- `tasks.py smoke` overwrote the signed staged runner in place; macOS caches
+  code signatures per file and killed the new binary at launch (exit 137).
+  Staged files are now removed before copying.
+
+Tests (new `native_desktop.MacOS` backend: CGWindowList for clients, CGEvent
+for click/chord, Accessibility for move/resize/focus/close; `owned_windows`
+returns the owner's untitled same-PID windows because the window server does
+not expose child-window ownership; 4 new unit tests, 12 pass with 4
+Windows-only skipped). `tools/rust_shell/tasks.py` gained a macOS host path
+(engine dylib, staged Cargo smoke runner, `--tooltip-motion`). Final code,
+`python3 tools/rust_shell/tasks.py <task> --engine host_debug_unopt_arm64`
+under Khronos validation, 3 runs each:
+
+| Task | Passes | Primary presentations |
+|---|---|---|
+| `windowing` (60 views) | 3/3 | 473, 465, 470 |
+| `owned-windowing` | 3/3 | 538, 532, 532 |
+| `tooltip-windowing` (`--tooltip-motion`) | 3/3 | 472, 475, 471 |
+| `popup-windowing` (`--popup-dismissal`) | 3/3 | 509, 524, 503 |
+
+Every tooltip run reported parent movement, anchored resizing and explicit and
+partial position updates; every popup run reported that an inside click kept
+the popup and that outside click, Escape and owner activation loss dismissed
+it. No run logged a validation error. `cargo test -p flutter-shell-winit` (50)
+passes; `cargo check -p flutter-shell-winit` for `x86_64-unknown-linux-gnu`
+and `x86_64-pc-windows-msvc` is clean after each shared-file change.
+
+Limitations and requirements:
+
+- The tooltip-motion and popup tests need Accessibility permission for the
+  app that runs Python (here Claude and its Claude Code helper; a restart was
+  needed after granting it) and Screen Recording for window titles.
+- They need an idle desktop. Earlier runs failed when another app was
+  activated mid-run: the runner went inactive and its windows left the active
+  Space (confirmed with temporary AppKit state logging), which also starves
+  hidden windows of drawables. The owned-window lifecycle failed once that way.
+- Android `cargo check` could not run on this host (no NDK for a dependency's
+  build script). No Android code changed; every widened `cfg` only adds macOS.
+- Owned windows moving with their owner is an AppKit difference from Win32.
+  Dialog modality, nested popups beyond the fixtures and Retina placement are
+  unverified.
+
 ### macOS M2–M4 — AppKit host, windowed rendering, relocatable runner (2026-11-13)
 
 Steps M2–M4 of [`flutter-rs-macos-plan.md`](flutter-rs-macos-plan.md), on

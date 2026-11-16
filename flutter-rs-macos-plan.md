@@ -3,11 +3,12 @@
 Plan for macOS support in [`flutter-rs.md`](flutter-rs.md), following the
 structure of [`flutter-rs-windows-plan.md`](flutter-rs-windows-plan.md).
 Progress will be recorded in [`flutter-rs-proggress.md`](flutter-rs-proggress.md).
-Status (2026-11-13), branch `macos/m0-engine-build`: M0 and M1 done. M2–M4
-done to the extent verifiable unattended: the AppKit host renders regular
-windows through wgpu/Impeller on MoltenVK, the 60-view windowing test passes
-under validation, and a staged runner relocates. Input, live resize, Retina,
-release AOT and bundling MoltenVK remain open. See the progress log.
+Status (2026-11-16), branch `macos-support` (PR #21): M0–M4 done, including a
+manual check of input, live resize and close. M5 (multi-window) done: dialog,
+satellite, tooltip and popup windows pass the shared windowing, owned-window,
+tooltip-motion and popup-dismissal tests 3/3 under validation. Retina, release
+AOT, bundling MoltenVK, display-link vsync and IME remain open. See the
+progress log.
 
 Target: macOS 13+ on Apple Silicon (`aarch64-apple-darwin`). Intel (x64) is
 out of scope for now.
@@ -152,7 +153,7 @@ macOS follows the Windows pattern instead of driving a refactor:
 
 - Implement the existing `PlatformBackend` trait, using `windows.rs` as the
   template, and select it in `platform.rs`.
-- Main window only for this milestone. Other window kinds are listed below.
+- Main window only for this milestone. Other window kinds follow in M5.
 - Keyboard: `FALLBACK_KEY_PLANE = 0x01400000000` (`macosPlane`), macOS legacy
   key encoder through `legacy_key_message` (`keymap: "macos"`, `keyCode`,
   `characters`, `charactersIgnoringModifiers`, macOS modifier bits),
@@ -177,6 +178,26 @@ macOS follows the Windows pattern instead of driving a refactor:
   macOS as it does on Windows, or fall back to a Mach-O `App` dylib.
 - Ad-hoc code signing for local runs, including a bundled `libMoltenVK.dylib`.
 
+### M5: multi-window (dialog, satellite, tooltip, popup)
+
+- Owned windows are AppKit child windows (`addChildWindow:ordered:`): they stay
+  above their owner, hide with it and, unlike Win32 owned windows, move with
+  it. `set_dialog_parent` detaches from any previous parent first and keeps the
+  screen position, which is also satellite reparenting. No native modality,
+  matching Linux and Windows.
+- Satellites are excluded from the Window menu (the tool-window analogue).
+- Tooltips and popups are borderless non-activating `NSPanel` child windows,
+  untitled, placed by the shared `positioner.rs` in top-left global points
+  against the parent's content rect and its screen's `visibleFrame`.
+- Popup grab: the shared host's Escape and dismissal paths run on macOS. AppKit
+  has no pointer capture, so a press in any non-popup view dismisses the active
+  popup and is consumed. A clicked panel becomes key, so owner activation loss
+  is decided after each event batch: a popup closes only if no window in its
+  owner's family is focused.
+- Test backend: `native_desktop.MacOS` (CGWindowList, CGEvent, Accessibility).
+  The popup and tooltip-motion tests need Accessibility permission for the app
+  that runs Python, and an idle desktop (no Space or app switches).
+
 ## Milestones
 
 1. **First frame**: the engine dylib builds on macOS arm64 with Impeller
@@ -189,14 +210,15 @@ macOS follows the Windows pattern instead of driving a refactor:
    where available, Windows) tests and fixtures still pass; build steps
    documented here and in the progress file; PR against
    `rust/flutter-rs-shell`.
+3. **Multi-window**: dialog, satellite, tooltip and popup windows. Exit: the
+   shared `windowing`, `owned-windowing`, `tooltip-windowing` and
+   `popup-windowing` tasks pass on macOS under validation, as on Linux and
+   Windows.
 
 ## Out of scope for this delivery
 
 - IME and full text-input conformance, plugins, wgpu/pixel-buffer textures and
   FRB dispatch parity.
-- Dialog, satellite, popup and tooltip window kinds. The shared
-  `positioner.rs` now exists for Linux and Windows, so these are cheaper than
-  first estimated; reconsider after Milestone 2.
 - Display-link vsync if the timer fallback is acceptable for the milestones.
 - Native Metal backend (see decisions).
 - `rlutter create/run/build macos`, CI jobs, release tarballs, notarization,
