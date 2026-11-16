@@ -474,6 +474,26 @@ TEST(TypographerTest, RectanglePackerFillsRows) {
   EXPECT_EQ(loc.y(), 16);
 }
 
+TEST(GlyphAtlasContextTest, RebuildsBeforeNonPowerOfTwoTextureLimit) {
+  GlyphAtlasContext context(GlyphAtlas::Type::kAlphaBitmap);
+  context.UpdateGlyphAtlas(context.GetGlyphAtlas(), ISize(4096, 4096), 0);
+  EXPECT_TRUE(context.CanGrowAtlas(16383));
+
+  // An 8192px atlas cannot double on the affected Android GPU. It must be
+  // rebuilt from this frame's glyphs instead of attempting a 16384px atlas.
+  context.UpdateGlyphAtlas(context.GetGlyphAtlas(), ISize(4096, 8192), 0);
+  EXPECT_FALSE(context.CanGrowAtlas(16383));
+}
+
+TEST(GlyphAtlasContextTest, CanGrowToPowerOfTwoTextureLimit) {
+  GlyphAtlasContext context(GlyphAtlas::Type::kAlphaBitmap);
+  EXPECT_TRUE(context.CanGrowAtlas(16384));
+  context.UpdateGlyphAtlas(context.GetGlyphAtlas(), ISize(4096, 8192), 0);
+  EXPECT_TRUE(context.CanGrowAtlas(16384));
+  context.UpdateGlyphAtlas(context.GetGlyphAtlas(), ISize(4096, 16384), 0);
+  EXPECT_FALSE(context.CanGrowAtlas(16384));
+}
+
 TEST_P(TypographerTest, GlyphAtlasTextureWillGrowTilMaxTextureSize) {
   if (GetBackend() == PlaygroundBackend::kOpenGLES ||
       GetBackend() == PlaygroundBackend::kOpenGLESSDF) {
