@@ -5092,6 +5092,300 @@ impl ApplicationHandler for ShellApplication {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        // The engine dispatches pointer and key events to Dart synchronously
+        // when the platform and UI threads are the same, so a tap handler can
+        // create, update or destroy windows from inside this callback.
+        let windows = Rc::clone(&self.windows);
+        with_active_windowing_context(event_loop, &windows, || {
+            self.handle_window_event(event_loop, window_id, event)
+        });
+    }
+
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+        // Host events can also reach Dart synchronously (see `window_event`).
+        let windows = Rc::clone(&self.windows);
+        with_active_windowing_context(event_loop, &windows, || {
+            self.handle_proxy_wake_up(event_loop)
+        });
+    }
+
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        #[cfg(target_os = "macos")]
+        self.dismiss_unfocused_popups();
+        #[cfg(all(target_os = "linux", feature = "agent-monitor"))]
+        if let Some(monitor) = &self.monitor {
+            monitor.publish(&self.windows.borrow(), &self.text_input_inbox);
+        }
+        self.deliver_vsync();
+        with_active_windowing_context(event_loop, &self.windows, || {
+            self.task_runner_host.dispatch_due_tasks();
+        });
+        self.apply_text_input_commands();
+        self.apply_mouse_cursor_commands();
+        self.apply_window_titles();
+        #[cfg(target_os = "android")]
+        self.poll_android_text_input();
+        if let Some(demo) = &mut self.demo_texture {
+            for message in self.text_input_inbox.drain_texture_fixture_messages() {
+                if message == "ready" {
+                    demo.dart_ready = true;
+                } else if let Some(id) = message.strip_prefix("ack ")
+                    && id.parse::<i64>().ok()
+                        == demo
+                            .pending_replacement
+                            .as_ref()
+                            .map(|pending| pending.texture.texture_id())
+                {
+                    demo.pending_replacement
+                        .as_mut()
+                        .expect("checked pending replacement")
+                        .acknowledged = true;
+                }
+            }
+        }
+        if let Some(demo) = &mut self.demo_texture
+            && Instant::now() >= demo.next_frame
+        {
+            let angle = demo.phase as f64 * 0.04;
+            let color = [
+                angle.sin() * 0.5 + 0.5,
+                (angle + 2.094).sin() * 0.5 + 0.5,
+                (angle + 4.189).sin() * 0.5 + 0.5,
+                1.0,
+            ];
+            let presented = match &demo.texture {
+                DemoTextureHandle::Wgpu(texture) => {
+                    if let Ok(mut frame) = texture.try_next_frame() {
+                        frame
+                            .render(move |_, encoder, view| {
+                                let _pass =
+                                    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                        label: Some("Flutter Rust plugin demo clear"),
+                                        color_attachments: &[Some(
+                                            wgpu::RenderPassColorAttachment {
+                                                view,
+                                                depth_slice: None,
+                                                resolve_target: None,
+                                                ops: wgpu::Operations {
+                                                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                                                        r: color[0],
+                                                        g: color[1],
+                                                        b: color[2],
+                                                        a: color[3],
+                                                    }),
+                                                    store: wgpu::StoreOp::Store,
+                                                },
+                                            },
+                                        )],
+                                        ..Default::default()
+                                    });
+                            })
+                            .expect("failed to record demo frame");
+                        frame.present().expect("failed to present demo frame");
+                        true
+                    } else {
+                        false
+                    }
+                }
+                DemoTextureHandle::Pixels(texture) => {
+                    if let Ok(mut frame) = texture.try_next_frame() {
+                        frame
+                            .write_pixels_direct(move |pixels, _row_bytes| {
+                                let rgba = [
+                                    (color[0] * 255.0) as u8,
+                                    (color[1] * 255.0) as u8,
+                                    (color[2] * 255.0) as u8,
+                                    255,
+                                ];
+                                // Solid color: filling the row padding too is
+                                // harmless and keeps this a single linear fill.
+                                pixels.into_chunks::<4>().0.fill(rgba);
+                            })
+                            .expect("failed to write demo pixels");
+                        frame.present().expect("failed to present demo pixels");
+                        true
+                    } else {
+                        false
+                    }
+                }
+            };
+            if presented {
+                demo.frames_on_texture = demo.frames_on_texture.saturating_add(1);
+            }
+            if let Some(pending) = &mut demo.pending_replacement
+                && pending.acknowledged
+            {
+                let replacement_presented = match &pending.texture {
+                    DemoTextureHandle::Wgpu(texture) => {
+                        if let Ok(mut frame) = texture.try_next_frame() {
+                            frame
+                                .render(move |_, encoder, view| {
+                                    let _pass =
+                                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                            label: Some("Flutter Rust replacement clear"),
+                                            color_attachments: &[Some(
+                                                wgpu::RenderPassColorAttachment {
+                                                    view,
+                                                    depth_slice: None,
+                                                    resolve_target: None,
+                                                    ops: wgpu::Operations {
+                                                        load: wgpu::LoadOp::Clear(
+                                                            wgpu::Color::BLUE,
+                                                        ),
+                                                        store: wgpu::StoreOp::Store,
+                                                    },
+                                                },
+                                            )],
+                                            ..Default::default()
+                                        });
+                                })
+                                .expect("failed to record replacement frame");
+                            frame
+                                .present()
+                                .expect("failed to present replacement frame");
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    DemoTextureHandle::Pixels(texture) => {
+                        if let Ok(mut frame) = texture.try_next_frame() {
+                            frame
+                                .write_pixels(|pixels, _| pixels.fill(0x5f))
+                                .expect("failed to write replacement pixels");
+                            frame
+                                .present()
+                                .expect("failed to present replacement pixels");
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                };
+                if replacement_presented {
+                    pending.frames = pending.frames.saturating_add(1);
+                }
+            }
+            if demo
+                .pending_replacement
+                .as_ref()
+                .is_some_and(|pending| pending.frames >= 4)
+            {
+                let pending = demo
+                    .pending_replacement
+                    .take()
+                    .expect("checked pending replacement");
+                let texture_id = pending.texture.texture_id();
+                drop(std::mem::replace(&mut demo.texture, pending.texture));
+                demo.lifecycle_remaining -= 1;
+                demo.lifecycle_completed = pending.generation;
+                demo.lifecycle_not_before = Instant::now() + Duration::from_millis(100);
+                if let Some(path) = &demo.lifecycle_status_path {
+                    std::fs::write(path, format!("{} {texture_id}\n", pending.generation))
+                        .expect("failed to update texture replacement status");
+                }
+            }
+            if !demo.context_recreate_requested
+                && demo.context_recreate_at > 0
+                && demo.lifecycle_completed >= demo.context_recreate_at
+                && demo.pending_replacement.is_none()
+                && let Some(shell) = self.windows.borrow().shell
+            {
+                demo.context_recreate_requested = true;
+                let completed = Arc::into_raw(Arc::clone(&demo.context_recreated));
+                test_recreate_cpp_texture_context(
+                    shell,
+                    texture_context_recreated,
+                    completed.cast_mut().cast(),
+                );
+            }
+            if demo.dart_ready
+                && demo.pending_replacement.is_none()
+                && demo.lifecycle_remaining > 0
+                && Instant::now() >= demo.lifecycle_not_before
+                && (!demo.context_recreate_requested
+                    || demo.context_recreated.load(Ordering::Acquire))
+            {
+                let generation = demo.lifecycle_completed + 1;
+                let width = 96 + (generation as u32 * 37) % 321;
+                let height = 96 + (generation as u32 * 53) % 257;
+                demo.pixel_buffer = !demo.pixel_buffer;
+                let next = create_demo_texture(&demo.gpu, demo.pixel_buffer, width, height)
+                    .expect("failed to recreate lifecycle-stress texture");
+                let texture_id = next.texture_id();
+                let kind = if demo.pixel_buffer { "pixels" } else { "wgpu" };
+                log::info!(
+                    "Flutter Rust texture lifecycle generation {generation}: ID {texture_id}, {width}x{height}, {kind}"
+                );
+                if let Some(shell) = self.windows.borrow().shell {
+                    send_cpp_platform_message(
+                        shell,
+                        TEXTURE_FIXTURE_CHANNEL,
+                        format!("{texture_id} {width} {height} {kind} {generation}").as_bytes(),
+                    );
+                }
+                demo.pending_replacement = Some(PendingTextureReplacement {
+                    texture: next,
+                    acknowledged: false,
+                    frames: 0,
+                    generation,
+                });
+            }
+            demo.phase += 1;
+            demo.next_frame = Instant::now() + Duration::from_millis(16);
+        }
+        let task_deadline = self.task_runner_host.next_deadline();
+        let mut next_deadline = match (task_deadline, self.demo_texture.as_ref()) {
+            (Some(task), Some(demo)) => Some(task.min(demo.next_frame)),
+            (Some(task), None) => Some(task),
+            (None, Some(demo)) => Some(demo.next_frame),
+            (None, None) => None,
+        };
+        if self.vsync_armed {
+            // A selected view may be static, hidden, or awaiting a compositor
+            // callback without another commit. Bound the wait to the nominal
+            // refresh interval rather than depending on that surface forever.
+            let vsync_deadline = self.next_vsync.unwrap_or_else(Instant::now);
+            next_deadline = Some(next_deadline.map_or(vsync_deadline, |d| d.min(vsync_deadline)));
+        }
+        // Android has no event to wake the loop when GameActivity's text
+        // buffer changes (see `poll_android_text_input`), so force a short
+        // poll cadence while a field is focused instead of only picking up
+        // typed text whenever something else (e.g. cursor blink) happens to
+        // wake the loop.
+        #[cfg(target_os = "android")]
+        if self.text_input_session.ime_allowed() {
+            let poll_deadline = Instant::now() + Duration::from_millis(16);
+            next_deadline = Some(next_deadline.map_or(poll_deadline, |d| d.min(poll_deadline)));
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(window) = self.pacing_window() {
+            CurrentPlatform::arm_wake(window.as_ref(), next_deadline);
+        }
+        #[cfg(all(target_os = "linux", feature = "agent-monitor"))]
+        let next_deadline = if self.monitor.is_some() {
+            Some(
+                next_deadline.map_or(Instant::now() + Duration::from_secs(1), |d| {
+                    d.min(Instant::now() + Duration::from_secs(1))
+                }),
+            )
+        } else {
+            next_deadline
+        };
+        match next_deadline {
+            Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
+        }
+    }
+}
+
+impl ShellApplication {
+    fn handle_window_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
         let Some(view_id) = self
             .windows
             .borrow()
@@ -5527,7 +5821,7 @@ impl ApplicationHandler for ShellApplication {
         }
     }
 
-    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+    fn handle_proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         for event in self.host_events.drain() {
             match event {
                 HostEvent::TaskScheduled => {}
@@ -5637,275 +5931,6 @@ impl ApplicationHandler for ShellApplication {
         }
         #[cfg(target_os = "windows")]
         self.about_to_wait(event_loop);
-    }
-
-    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
-        #[cfg(target_os = "macos")]
-        self.dismiss_unfocused_popups();
-        #[cfg(all(target_os = "linux", feature = "agent-monitor"))]
-        if let Some(monitor) = &self.monitor {
-            monitor.publish(&self.windows.borrow(), &self.text_input_inbox);
-        }
-        self.deliver_vsync();
-        with_active_windowing_context(event_loop, &self.windows, || {
-            self.task_runner_host.dispatch_due_tasks();
-        });
-        self.apply_text_input_commands();
-        self.apply_mouse_cursor_commands();
-        self.apply_window_titles();
-        #[cfg(target_os = "android")]
-        self.poll_android_text_input();
-        if let Some(demo) = &mut self.demo_texture {
-            for message in self.text_input_inbox.drain_texture_fixture_messages() {
-                if message == "ready" {
-                    demo.dart_ready = true;
-                } else if let Some(id) = message.strip_prefix("ack ")
-                    && id.parse::<i64>().ok()
-                        == demo
-                            .pending_replacement
-                            .as_ref()
-                            .map(|pending| pending.texture.texture_id())
-                {
-                    demo.pending_replacement
-                        .as_mut()
-                        .expect("checked pending replacement")
-                        .acknowledged = true;
-                }
-            }
-        }
-        if let Some(demo) = &mut self.demo_texture
-            && Instant::now() >= demo.next_frame
-        {
-            let angle = demo.phase as f64 * 0.04;
-            let color = [
-                angle.sin() * 0.5 + 0.5,
-                (angle + 2.094).sin() * 0.5 + 0.5,
-                (angle + 4.189).sin() * 0.5 + 0.5,
-                1.0,
-            ];
-            let presented = match &demo.texture {
-                DemoTextureHandle::Wgpu(texture) => {
-                    if let Ok(mut frame) = texture.try_next_frame() {
-                        frame
-                            .render(move |_, encoder, view| {
-                                let _pass =
-                                    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                        label: Some("Flutter Rust plugin demo clear"),
-                                        color_attachments: &[Some(
-                                            wgpu::RenderPassColorAttachment {
-                                                view,
-                                                depth_slice: None,
-                                                resolve_target: None,
-                                                ops: wgpu::Operations {
-                                                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                                                        r: color[0],
-                                                        g: color[1],
-                                                        b: color[2],
-                                                        a: color[3],
-                                                    }),
-                                                    store: wgpu::StoreOp::Store,
-                                                },
-                                            },
-                                        )],
-                                        ..Default::default()
-                                    });
-                            })
-                            .expect("failed to record demo frame");
-                        frame.present().expect("failed to present demo frame");
-                        true
-                    } else {
-                        false
-                    }
-                }
-                DemoTextureHandle::Pixels(texture) => {
-                    if let Ok(mut frame) = texture.try_next_frame() {
-                        frame
-                            .write_pixels_direct(move |pixels, _row_bytes| {
-                                let rgba = [
-                                    (color[0] * 255.0) as u8,
-                                    (color[1] * 255.0) as u8,
-                                    (color[2] * 255.0) as u8,
-                                    255,
-                                ];
-                                // Solid color: filling the row padding too is
-                                // harmless and keeps this a single linear fill.
-                                pixels.into_chunks::<4>().0.fill(rgba);
-                            })
-                            .expect("failed to write demo pixels");
-                        frame.present().expect("failed to present demo pixels");
-                        true
-                    } else {
-                        false
-                    }
-                }
-            };
-            if presented {
-                demo.frames_on_texture = demo.frames_on_texture.saturating_add(1);
-            }
-            if let Some(pending) = &mut demo.pending_replacement
-                && pending.acknowledged
-            {
-                let replacement_presented = match &pending.texture {
-                    DemoTextureHandle::Wgpu(texture) => {
-                        if let Ok(mut frame) = texture.try_next_frame() {
-                            frame
-                                .render(move |_, encoder, view| {
-                                    let _pass =
-                                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                            label: Some("Flutter Rust replacement clear"),
-                                            color_attachments: &[Some(
-                                                wgpu::RenderPassColorAttachment {
-                                                    view,
-                                                    depth_slice: None,
-                                                    resolve_target: None,
-                                                    ops: wgpu::Operations {
-                                                        load: wgpu::LoadOp::Clear(
-                                                            wgpu::Color::BLUE,
-                                                        ),
-                                                        store: wgpu::StoreOp::Store,
-                                                    },
-                                                },
-                                            )],
-                                            ..Default::default()
-                                        });
-                                })
-                                .expect("failed to record replacement frame");
-                            frame
-                                .present()
-                                .expect("failed to present replacement frame");
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    DemoTextureHandle::Pixels(texture) => {
-                        if let Ok(mut frame) = texture.try_next_frame() {
-                            frame
-                                .write_pixels(|pixels, _| pixels.fill(0x5f))
-                                .expect("failed to write replacement pixels");
-                            frame
-                                .present()
-                                .expect("failed to present replacement pixels");
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                };
-                if replacement_presented {
-                    pending.frames = pending.frames.saturating_add(1);
-                }
-            }
-            if demo
-                .pending_replacement
-                .as_ref()
-                .is_some_and(|pending| pending.frames >= 4)
-            {
-                let pending = demo
-                    .pending_replacement
-                    .take()
-                    .expect("checked pending replacement");
-                let texture_id = pending.texture.texture_id();
-                drop(std::mem::replace(&mut demo.texture, pending.texture));
-                demo.lifecycle_remaining -= 1;
-                demo.lifecycle_completed = pending.generation;
-                demo.lifecycle_not_before = Instant::now() + Duration::from_millis(100);
-                if let Some(path) = &demo.lifecycle_status_path {
-                    std::fs::write(path, format!("{} {texture_id}\n", pending.generation))
-                        .expect("failed to update texture replacement status");
-                }
-            }
-            if !demo.context_recreate_requested
-                && demo.context_recreate_at > 0
-                && demo.lifecycle_completed >= demo.context_recreate_at
-                && demo.pending_replacement.is_none()
-                && let Some(shell) = self.windows.borrow().shell
-            {
-                demo.context_recreate_requested = true;
-                let completed = Arc::into_raw(Arc::clone(&demo.context_recreated));
-                test_recreate_cpp_texture_context(
-                    shell,
-                    texture_context_recreated,
-                    completed.cast_mut().cast(),
-                );
-            }
-            if demo.dart_ready
-                && demo.pending_replacement.is_none()
-                && demo.lifecycle_remaining > 0
-                && Instant::now() >= demo.lifecycle_not_before
-                && (!demo.context_recreate_requested
-                    || demo.context_recreated.load(Ordering::Acquire))
-            {
-                let generation = demo.lifecycle_completed + 1;
-                let width = 96 + (generation as u32 * 37) % 321;
-                let height = 96 + (generation as u32 * 53) % 257;
-                demo.pixel_buffer = !demo.pixel_buffer;
-                let next = create_demo_texture(&demo.gpu, demo.pixel_buffer, width, height)
-                    .expect("failed to recreate lifecycle-stress texture");
-                let texture_id = next.texture_id();
-                let kind = if demo.pixel_buffer { "pixels" } else { "wgpu" };
-                log::info!(
-                    "Flutter Rust texture lifecycle generation {generation}: ID {texture_id}, {width}x{height}, {kind}"
-                );
-                if let Some(shell) = self.windows.borrow().shell {
-                    send_cpp_platform_message(
-                        shell,
-                        TEXTURE_FIXTURE_CHANNEL,
-                        format!("{texture_id} {width} {height} {kind} {generation}").as_bytes(),
-                    );
-                }
-                demo.pending_replacement = Some(PendingTextureReplacement {
-                    texture: next,
-                    acknowledged: false,
-                    frames: 0,
-                    generation,
-                });
-            }
-            demo.phase += 1;
-            demo.next_frame = Instant::now() + Duration::from_millis(16);
-        }
-        let task_deadline = self.task_runner_host.next_deadline();
-        let mut next_deadline = match (task_deadline, self.demo_texture.as_ref()) {
-            (Some(task), Some(demo)) => Some(task.min(demo.next_frame)),
-            (Some(task), None) => Some(task),
-            (None, Some(demo)) => Some(demo.next_frame),
-            (None, None) => None,
-        };
-        if self.vsync_armed {
-            // A selected view may be static, hidden, or awaiting a compositor
-            // callback without another commit. Bound the wait to the nominal
-            // refresh interval rather than depending on that surface forever.
-            let vsync_deadline = self.next_vsync.unwrap_or_else(Instant::now);
-            next_deadline = Some(next_deadline.map_or(vsync_deadline, |d| d.min(vsync_deadline)));
-        }
-        // Android has no event to wake the loop when GameActivity's text
-        // buffer changes (see `poll_android_text_input`), so force a short
-        // poll cadence while a field is focused instead of only picking up
-        // typed text whenever something else (e.g. cursor blink) happens to
-        // wake the loop.
-        #[cfg(target_os = "android")]
-        if self.text_input_session.ime_allowed() {
-            let poll_deadline = Instant::now() + Duration::from_millis(16);
-            next_deadline = Some(next_deadline.map_or(poll_deadline, |d| d.min(poll_deadline)));
-        }
-        #[cfg(target_os = "windows")]
-        if let Some(window) = self.pacing_window() {
-            CurrentPlatform::arm_wake(window.as_ref(), next_deadline);
-        }
-        #[cfg(all(target_os = "linux", feature = "agent-monitor"))]
-        let next_deadline = if self.monitor.is_some() {
-            Some(
-                next_deadline.map_or(Instant::now() + Duration::from_secs(1), |d| {
-                    d.min(Instant::now() + Duration::from_secs(1))
-                }),
-            )
-        } else {
-            next_deadline
-        };
-        match next_deadline {
-            Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
-            None => event_loop.set_control_flow(ControlFlow::Wait),
-        }
     }
 }
 

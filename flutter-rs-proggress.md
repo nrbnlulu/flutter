@@ -11,6 +11,31 @@ semantics and optional widget assertions, input, screenshots, video and CI
 evidence. Phases 0 and 1 are complete on Linux x64. The display-free virtual
 host is available; agent observation/control and verification remain pending.
 
+### Shared host: windows created from input handlers (2026-11-16)
+
+Found while recording a macOS demo of `examples/multiple_windows`: none of the
+reference app's window buttons opened a window. The tap reached Flutter and
+`onPressed` threw `Bad state: The Rust shell failed to create a regular
+window.` The host accepted window callbacks only inside
+`with_active_windowing_context`, which wrapped the task runner in
+`about_to_wait`. The engine dispatches pointer (and key) events to Dart
+synchronously when the platform and UI threads are the same, so a click
+handler ran inside `window_event`, with no context. The windowing fixtures
+create windows from timers (queued tasks), so they never hit this. The code is
+shared; Linux and Windows very likely had the same problem but were not
+checked.
+
+Fix (`shell.rs`, `host_events.rs`, all platforms): `window_event` and
+`proxy_wake_up` now run their handlers inside the windowing context. The
+context is reentrant, so Win32's `RedrawRequested` -> `about_to_wait` path
+reuses the outer context instead of tripping the old nesting assert.
+
+Verification (macOS): clicking Regular, Modeless Dialog and Satellite in the
+reference app opens each window (2/2 runs); `windowing`, `owned-windowing`,
+`tooltip-windowing` and `popup-windowing` each pass once more under
+validation; `cargo test -p flutter-shell-winit` (50) passes; Linux and Windows
+`cargo check` are clean. Linux and Windows runtime behaviour is unverified.
+
 ### macOS M5 — multi-window: dialog, satellite, tooltip and popup (2026-11-16)
 
 Milestone 3 of [`flutter-rs-macos-plan.md`](flutter-rs-macos-plan.md), on

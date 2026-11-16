@@ -127,8 +127,13 @@ pub(crate) fn with_active_windowing_context<T>(
     windows: &Rc<RefCell<WindowRegistry>>,
     callback: impl FnOnce() -> T,
 ) -> T {
+    // Event handlers install the context and may run the task runner (for
+    // example Win32's modal-loop RedrawRequested calls about_to_wait), so an
+    // inner call reuses the outer context for the same event loop.
+    if ACTIVE_WINDOWING_CONTEXT.with(|slot| slot.borrow().is_some()) {
+        return callback();
+    }
     ACTIVE_WINDOWING_CONTEXT.with(|slot| {
-        assert!(slot.borrow().is_none(), "nested Rust windowing context");
         *slot.borrow_mut() = Some(ActiveWindowingContext {
             event_loop,
             windows: Rc::downgrade(windows),
