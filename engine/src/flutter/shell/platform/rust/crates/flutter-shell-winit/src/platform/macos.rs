@@ -14,7 +14,7 @@
 
 use flutter_shell_core::{FlutterRustKeyEvent, FlutterRustKeyEventType};
 use objc2::{MainThreadMarker, rc::Retained};
-use objc2_app_kit::{NSPanel, NSScreen, NSView, NSWindow, NSWindowOrderingMode};
+use objc2_app_kit::{NSScreen, NSView, NSWindow, NSWindowOrderingMode};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::{
@@ -242,14 +242,9 @@ impl PlatformBackend for MacPlatform {
             )
             .map_err(|error| error.to_string())?;
         let native = ns_window(window.as_ref(), mtm)?;
-        // A panel that becomes key only when a text view needs it never takes
-        // key focus from its owner on click, the AppKit equivalent of Win32's
-        // WS_EX_NOACTIVATE: keyboard input, including Escape, stays with the
-        // owner, and an inside click does not deactivate the owner.
-        native
-            .downcast_ref::<NSPanel>()
-            .ok_or_else(|| "winit did not create an NSPanel for the popup".to_owned())?
-            .setBecomesKeyOnlyIfNeeded(true);
+        // A non-activating panel never activates the app, but AppKit still
+        // makes it key when it is clicked. The shared host therefore treats
+        // focus moving into a popup as staying inside the grab.
         // Panels hide when the app deactivates by default; owned Win32 and
         // Wayland tooltips stay until their owner removes them.
         native.setHidesOnDeactivate(false);

@@ -4165,6 +4165,8 @@ fn run_application_with_fixture(
         monitor: None,
         #[cfg(target_os = "android")]
         android_app: None,
+        #[cfg(target_os = "macos")]
+        popup_focus_check: false,
     };
     event_loop.run_app(application)?;
     match registration_error.lock().take() {
@@ -4200,6 +4202,10 @@ struct ShellApplication {
     // `TextInputSession` the Linux Wayland/X11 IME path feeds.
     #[cfg(target_os = "android")]
     android_app: Option<winit::platform::android::activity::AndroidApp>,
+    // A focus change happened since popups were last checked for owner
+    // activation loss (see `dismiss_unfocused_popups`).
+    #[cfg(target_os = "macos")]
+    popup_focus_check: bool,
 }
 struct DemoTextureFixture {
     texture: Arc<Mutex<Option<DemoTextureHandle>>>,
@@ -4589,6 +4595,50 @@ impl ShellApplication {
             })
             .max_by_key(|view| view.view_id)
             .map(|view| (view.view_id, Arc::clone(&view.window)))
+    }
+
+    /// Dismisses grabbing popups whose owner lost activation: no window in
+    /// the owner's family (the owner and its descendants, including the
+    /// popup itself) is focused. Focus moving into the popup is not a loss.
+    /// This covers another app or another of our windows becoming active.
+    #[cfg(target_os = "macos")]
+    fn dismiss_unfocused_popups(&mut self) {
+        if !std::mem::take(&mut self.popup_focus_check) {
+            return;
+        }
+        let dismiss = {
+            let windows = self.windows.borrow();
+            let within = |mut id: Option<FlutterRustViewId>, root: FlutterRustViewId| {
+                while let Some(current) = id {
+                    if current == root {
+                        return true;
+                    }
+                    id = windows.view(current).and_then(|view| view.parent_view_id);
+                }
+                false
+            };
+            windows
+                .views
+                .values()
+                .filter(|view| {
+                    view.kind == NativeWindowKind::Popup
+                        && !view.popup_dismissed
+                        && !windows.removing_views.contains(&view.view_id)
+                })
+                .filter(|popup| {
+                    popup.parent_view_id.is_some_and(|owner| {
+                        !windows
+                            .views
+                            .values()
+                            .any(|view| view.focused && within(Some(view.view_id), owner))
+                    })
+                })
+                .map(|view| view.view_id)
+                .collect::<Vec<_>>()
+        };
+        for popup in dismiss {
+            self.dismiss_popup(popup);
+        }
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -5110,7 +5160,14 @@ impl ApplicationHandler for ShellApplication {
                 }
             }
             WindowEvent::Focused(focused) => {
-                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                // Clicking an AppKit panel makes it key, so on macOS a popup
+                // can take focus from its owner. Decide after this batch of
+                // events, once the newly focused window is known.
+                #[cfg(target_os = "macos")]
+                {
+                    self.popup_focus_check = true;
+                }
+                #[cfg(target_os = "windows")]
                 if !focused {
                     // WM_NCACTIVATE can arrive before GetForegroundWindow
                     // changes. Trust winit's focus transition here.
@@ -5578,6 +5635,8 @@ impl ApplicationHandler for ShellApplication {
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        #[cfg(target_os = "macos")]
+        self.dismiss_unfocused_popups();
         #[cfg(all(target_os = "linux", feature = "agent-monitor"))]
         if let Some(monitor) = &self.monitor {
             monitor.publish(&self.windows.borrow(), &self.text_input_inbox);
