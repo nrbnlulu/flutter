@@ -126,6 +126,11 @@ class Host:
     source = target / triple / profile / 'flutter-rust-shell-smoke.exe' if self.windows else target / profile / 'flutter-rust-shell-smoke'
     stage = self.out / 'rust-smoke'
     stage.mkdir(exist_ok=True)
+    if self.macos:
+      # macOS caches a binary's code signature per file; overwriting a signed
+      # executable or dylib in place makes the kernel kill it at launch.
+      for name in (source.name, 'libflutter_rust_engine.dylib'):
+        (stage / name).unlink(missing_ok=True)
     shutil.copy2(source, stage)
     if self.windows:
       shutil.copy2(self.out / 'flutter_rust_engine.dll', stage)
