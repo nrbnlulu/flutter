@@ -63,6 +63,31 @@ tests, 6 wgpu tests and 109 CLI tests; the native texture regression passed
 with 22 presentations. Agent transport, semantics, input,
 assertions and production capture remain Phase 2/3 work.
 
+## Android MapLibre integration (2026-11-16)
+
+The Android texture backend now exposes the same wgpu device and guarded queue
+capabilities as the desktop backend. Standalone MapLibre map creation otherwise
+fails with `shell exposes no wgpu device: Unsupported`, despite successful plugin
+registration. Queue operations delegate through the existing shared queue and
+its Impeller synchronization hooks; no raw queue is exported.
+
+Generated debug activities default `RUST_LIB_BACKTRACE=0` before native startup,
+while preserving an explicit override and panic diagnostics. A Samsung SM-E225F
+(Android 13) map-drag profile attributed 32.5% of sampled CPU time to Android's
+library walker through wgpu debug lock backtrace capture; the application-level
+startup equivalent removed that hotspot and the operator reported smoother
+interaction. Applying the same default in the generated activity avoids requiring
+each application to carry that workaround.
+
+Validation: eight Android project-generator tests passed, including startup
+ordering/preservation, and `flutter-shell-android` cross-checked for ARM64.
+The corresponding local SDK adapter was exercised with vector and hybrid maps,
+cluster zoom, dragging and live radar alerts. This does not qualify the complete
+engine pipeline: text/icon corruption appeared in the consuming UI during hybrid
+map use. Inspect the Rust external-texture acquire/release/image-layout path and
+shared Vulkan resource lifetimes under validation layers before claiming that
+issue is resolved. No engine synchronization change is included in this patch.
+
 ## Current focus
 
 Android hardware-buffer textures have an experimental SDK capability and a
