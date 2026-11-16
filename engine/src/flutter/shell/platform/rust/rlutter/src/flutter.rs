@@ -10,6 +10,21 @@ use anyhow::{Context, Result, bail};
 
 use crate::sdk::Engine;
 
+pub(crate) fn cache_dir() -> Result<PathBuf> {
+    let cache = env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            if cfg!(windows) {
+                env::var_os("LOCALAPPDATA").map(PathBuf::from)
+            } else {
+                None
+            }
+        })
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .context("set LOCALAPPDATA, HOME or XDG_CACHE_HOME for the rlutter SDK cache")?;
+    Ok(cache.join("rlutter"))
+}
+
 pub struct Flutter {
     root: PathBuf,
 }
@@ -21,18 +36,7 @@ impl Flutter {
         if let Some(root) = explicit {
             return Self::at(root);
         }
-        let cache = env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                if cfg!(windows) {
-                    env::var_os("LOCALAPPDATA").map(PathBuf::from)
-                } else {
-                    None
-                }
-            })
-            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-            .context("set LOCALAPPDATA, HOME or XDG_CACHE_HOME for the rlutter SDK cache")?;
-        Self::managed(&cache.join("rlutter"))
+        Self::managed(&cache_dir()?)
     }
 
     fn managed(cache: &Path) -> Result<Self> {

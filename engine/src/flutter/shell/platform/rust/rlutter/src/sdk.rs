@@ -3,7 +3,7 @@
 //! ```text
 //! sdk/
 //!   Cargo.toml, Cargo.lock      workspace manifest for the shell crates
-//!   crates/, third_party/       shell sources (links into a local checkout, or unpacked)
+//!   crates/, third_party/       shell sources (links into a local checkout or global cache, or unpacked)
 //!   engine/src/out/<variant>/   engine-shaped directory for `flutter --local-engine`
 //!   lib/<platform>-<mode>       link to the variant above; what runner-rs/build.rs links
 //! ```
@@ -137,14 +137,29 @@ pub fn link_host(
     mode: BuildMode,
 ) -> Result<Engine> {
     let variant = format!("host_{}", mode.name());
+    let fallback =
+        if find_engine_build(std::slice::from_ref(&variant), None, flutter, sources).is_some() {
+            None
+        } else {
+            let project_engine = project.sdk_dir().join("lib").join(mode.name());
+            if project_engine.join(host_engine_library()).is_file() {
+                Some(project_engine)
+            } else {
+                let cache = crate::flutter::cache_dir()?;
+                Some(
+                    ensure_managed_bundle(&cache, download_bundle)?
+                        .join("lib")
+                        .join(mode.name()),
+                )
+            }
+        };
     let layout = link_variant(
         project,
         flutter,
         sources,
         &variant,
         std::slice::from_ref(&variant),
-        // Layout of the downloaded bundle: one directory per mode.
-        Some(project.sdk_dir().join("lib").join(mode.name())),
+        fallback,
         &format!("{}-{}", host_platform(), mode.name()),
     )?;
     Ok(Engine {
@@ -173,7 +188,17 @@ pub fn link_android(
     let fallback = if find_engine_build(&candidates, None, flutter, sources).is_some() {
         None
     } else {
-        Some(ensure_android_bundle(&project.sdk_dir(), abi, mode)?)
+        let project_engine = project
+            .sdk_dir()
+            .join("lib")
+            .join(abi.flutter_platform())
+            .join(mode.name());
+        if android_bundle_complete(&project_engine, abi, mode) {
+            Some(project_engine)
+        } else {
+            let cache = crate::flutter::cache_dir()?;
+            Some(ensure_cached_android_bundle(&cache, abi, mode)?)
+        }
     };
     let target = link_variant(
         project,
@@ -301,13 +326,36 @@ fn link_engine_build(source: &Path, layout: &Path) -> Result<()> {
 }
 
 /// Makes `sdk` contain the shell crates, from the local checkout when there is
-/// one and otherwise from the downloaded bundle.
+/// one and otherwise from the globally cached release bundle.
 fn ensure_shell_sources(sdk: &Path, flutter: &Flutter, sources: &EngineSources) -> Result<()> {
-    ensure_shell_sources_with(sdk, flutter, sources, download_bundle)
+    let cache = crate::flutter::cache_dir()?;
+    ensure_shell_sources_with(sdk, &cache, flutter, sources, download_bundle)
+}
+
+fn sync_shell_sources(sdk: &Path, source: &Path) -> Result<()> {
+    fs::create_dir_all(sdk)?;
+    copy_if_changed(&source.join("Cargo.toml"), &sdk.join("Cargo.toml"))?;
+    if source.join("Cargo.lock").is_file() {
+        copy_if_changed(&source.join("Cargo.lock"), &sdk.join("Cargo.lock"))?;
+    }
+    for optional in ["rust-toolchain.toml", "sdk-manifest.json"] {
+        if source.join(optional).is_file() {
+            copy_if_changed(&source.join(optional), &sdk.join(optional))?;
+        }
+    }
+    replace_link(&sdk.join("crates"), &source.join("crates"))?;
+    replace_link(&sdk.join("third_party"), &source.join("third_party"))?;
+    for dir in ["dart", "docs", "skills", "tests"] {
+        if source.join(dir).is_dir() {
+            replace_link(&sdk.join(dir), &source.join(dir))?;
+        }
+    }
+    Ok(())
 }
 
 fn ensure_shell_sources_with(
     sdk: &Path,
+    cache: &Path,
     flutter: &Flutter,
     sources: &EngineSources,
     download: impl FnOnce(&Path) -> Result<()>,
@@ -316,19 +364,57 @@ fn ensure_shell_sources_with(
     if local.join("crates").is_dir() {
         // Always re-sync: crates from another checkout or bundle would not
         // match the engine library linked from this one (misaligned shell ABI).
-        copy_if_changed(&local.join("Cargo.toml"), &sdk.join("Cargo.toml"))?;
-        copy_if_changed(&local.join("Cargo.lock"), &sdk.join("Cargo.lock"))?;
-        replace_link(&sdk.join("crates"), &local.join("crates"))?;
-        replace_link(&sdk.join("third_party"), &local.join("third_party"))?;
-        if local.join("dart").is_dir() {
-            replace_link(&sdk.join("dart"), &local.join("dart"))?;
-        }
-        return Ok(());
+        return sync_shell_sources(sdk, &local);
     }
     if release_bundle_complete(sdk) {
         return Ok(());
     }
-    download(sdk)
+    let bundle = ensure_managed_bundle(cache, download)?;
+    sync_shell_sources(sdk, &bundle)
+}
+
+fn ensure_managed_bundle(
+    cache: &Path,
+    download: impl FnOnce(&Path) -> Result<()>,
+) -> Result<PathBuf> {
+    let root = cache.join("rust-BETA");
+    if release_bundle_complete(&root) {
+        return Ok(root);
+    }
+    fs::create_dir_all(cache)?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(cache.join("rust.lock"))?;
+    lock.lock()?;
+    if release_bundle_complete(&root) {
+        return Ok(root);
+    }
+    let staging = cache.join(format!(".rust-download-{}", std::process::id()));
+    remove_path(&staging)?;
+    let result = (|| {
+        download(&staging)?;
+        if !release_bundle_complete(&staging) {
+            bail!("the Flutter Rust shell BETA SDK archive is incomplete");
+        }
+        if let Ok(entries) = fs::read_dir(root.join("lib")) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with("android-") {
+                    let dest = staging.join("lib").join(&name);
+                    if !dest.exists() {
+                        let _ = fs::rename(entry.path(), dest);
+                    }
+                }
+            }
+        }
+        remove_path(&root)?;
+        fs::rename(&staging, &root)?;
+        Ok(root)
+    })();
+    let _ = remove_path(&staging);
+    result
 }
 
 // Sources alone may belong to a previous local-checkout setup or an interrupted
@@ -386,6 +472,25 @@ fn android_bundle_url(abi: Abi) -> String {
         "{BETA_RELEASE_URL}/flutter-rust-{}.tar.gz",
         abi.flutter_platform()
     )
+}
+
+fn ensure_cached_android_bundle(cache: &Path, abi: Abi, mode: BuildMode) -> Result<PathBuf> {
+    let root = cache.join("rust-BETA");
+    let engine = root
+        .join("lib")
+        .join(abi.flutter_platform())
+        .join(mode.name());
+    if android_bundle_complete(&engine, abi, mode) {
+        return Ok(engine);
+    }
+    fs::create_dir_all(cache)?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(cache.join("rust.lock"))?;
+    lock.lock()?;
+    ensure_android_bundle(&root, abi, mode)
 }
 
 /// Returns `<sdk>/lib/<platform>/<mode>`, the prebuilt Android engine,
@@ -593,29 +698,34 @@ mod tests {
     #[test]
     fn incomplete_release_cache_is_refreshed_before_linking_host() {
         let root = tempdir("sdk_incomplete_release");
+        let cache = root.join("cache");
+        let cached_sdk = cache.join("rust-BETA");
         let sdk = root.join("sdk");
         let flutter = flutter_at(&root.join("flutter"));
-        fake_release_bundle(&sdk);
+        fake_release_bundle(&cached_sdk);
         // Reproduce a cache with valid sources but no host debug engine.
-        remove_path(&sdk.join("lib/debug")).unwrap();
-        ensure_shell_sources_with(&sdk, &flutter, &EngineSources::default(), |dest| {
+        remove_path(&cached_sdk.join("lib/debug")).unwrap();
+        ensure_shell_sources_with(&sdk, &cache, &flutter, &EngineSources::default(), |dest| {
             fake_release_bundle(dest);
             Ok(())
         })
         .unwrap();
-        assert!(release_bundle_complete(&sdk));
+        assert!(release_bundle_complete(&cached_sdk));
+        assert!(sdk.join("crates/flutter-plugin-sdk/Cargo.toml").is_file());
         let source = find_engine_build(
             &["host_debug".to_owned()],
-            Some(sdk.join("lib/debug")),
+            Some(cached_sdk.join("lib/debug")),
             &flutter,
             &EngineSources::default(),
         )
         .unwrap();
         link_engine_build(&source, &sdk.join("engine/src/out/host_debug")).unwrap();
-        ensure_shell_sources_with(&sdk, &flutter, &EngineSources::default(), |_| {
-            panic!("a complete bundle must not be downloaded again")
+        let sdk2 = root.join("sdk2");
+        ensure_shell_sources_with(&sdk2, &cache, &flutter, &EngineSources::default(), |_| {
+            panic!("a complete global bundle must not be downloaded again")
         })
         .unwrap();
+        assert!(sdk2.join("crates/flutter-plugin-sdk/Cargo.toml").is_file());
     }
 
     #[test]
