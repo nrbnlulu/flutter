@@ -1,5 +1,9 @@
 # Local headless agent protocol v1
 
+For MCP clients, prefer the [compact UI observation workflow](mcp.md#compact-observations-and-references).
+`ui.snapshot`, short refs and `ui.screenshot` are adapter conveniences, not new
+NDJSON methods. Full native semantics and capture contracts below are unchanged.
+
 Linux x64 supports `rlutter agent --headless --stdio --artifacts DIR` with the
 same build-mode, target and Dart defines as `rlutter build`. The directory must
 be fresh. Build and application output goes to stderr and logs. Only NDJSON
