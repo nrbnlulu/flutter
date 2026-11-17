@@ -11,6 +11,44 @@ semantics and optional widget assertions, input, screenshots, video and CI
 evidence. Phases 0 and 1 are complete on Linux x64. The display-free virtual
 host is available; agent observation/control and verification remain pending.
 
+### macOS release/profile AOT and CI packaging (2026-11-17)
+
+Engines: `out/host_release_arm64` and `out/host_profile_arm64` built locally
+(`gn --runtime-mode <mode> --mac-cpu arm64`; flutter_rust_engine, gen_snapshot,
+font_subset, impellerc, dart_sdk, frontend_server_aot, flutter_patched_sdk,
+sky_engine).
+
+AOT format: on darwin the snapshotter emits a Mach-O dylib, not ELF. The stock
+`aot_snapshot_release`/`aot_snapshot_profile` assemble targets cannot build it
+outside an Xcode app (they dereference an absent CPU architecture and declare
+`app.so` while writing `App.framework/App`). rlutter therefore assembles
+`kernel_snapshot_program` on darwin and runs the engine's `gen_snapshot
+--snapshot_kind=app-aot-macho-dylib --macho=app.so` itself, then ad-hoc signs it
+(`codesign -s -`; Apple Silicon will not map unsigned code). The runner keeps
+loading `data/flutter_assets/app.so` through dlopen, so no engine change.
+
+`test_rlutter_aot.py` runs on macOS (expects a 64-bit Mach-O `app.so`): release
+3/3 and profile 3/3 - relocated bundle, initial frame color, a native click
+changing it, and close with status 0. The macOS desktop backend now converts
+captures to sRGB: this display is wide-gamut (the capture carried a BT.2020
+profile), so the composited sRGB (32, 64, 96) was captured as (49, 63, 93); after
+conversion it reads (31, 64, 96), so the AOT test allows +/-1 per channel on
+macOS only. Texture and rlutter runtime tests still pass.
+
+CI (`flutter-rust-beta.yml`): `build-macos-engine` (macos-14, debug/profile/
+release, `host_<mode>_arm64`, Metal toolchain download, same compiler pieces as
+Linux) and `package-macos` (stages sources with `--validate-engines`, archives
+`flutter-rust-darwin-arm64.tar.gz` - the name rlutter downloads on Apple
+Silicon - and builds debug/profile/release apps from that archive alone);
+`publish` uploads the archive and its release notes mention macOS.
+`package_engine_artifacts.sh` handles `.dylib` engines and the SDK manifest's
+`headlessPlatforms` includes `darwin-arm64`. Verified locally only: packaging
+all three local engines validates ABI 16 per mode, and an app built from the
+archive alone (no local engine) produces the debug kernel, profile and release
+`app.so`. The workflow itself has not run on GitHub; hosted macOS runners have
+no GPU, so the job checks building, not rendering. The managed release Flutter
+SDK is still Linux/Windows only, so macOS users pass `--flutter-root`.
+
 ### macOS text input, clipboard and metrics; IME status (2026-11-17)
 
 `test_text_input.py` passes on macOS: a real click focuses the field, typed

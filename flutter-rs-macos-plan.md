@@ -6,9 +6,10 @@ Progress will be recorded in [`flutter-rs-proggress.md`](flutter-rs-proggress.md
 Status (2026-11-16), branch `macos-support` (PR #21): M0–M4 done, including a
 manual check of input, live resize and close. M5 (multi-window) done: dialog,
 satellite, tooltip and popup windows pass the shared windowing, owned-window,
-tooltip-motion and popup-dismissal tests 3/3 under validation. Retina, release
-AOT, bundling MoltenVK and IME remain open; display-link vsync and textures are done
-(2026-11-17). See the
+tooltip-motion and popup-dismissal tests 3/3 under validation. Retina, bundling
+MoltenVK and interactive IME verification remain open. Done on 2026-11-17:
+textures, display-link vsync, rlutter (create/build/run, hot reload, headless
+agent/verify/MCP), release and profile AOT, and the CI packaging job. See the
 progress log.
 
 Target: macOS 13+ on Apple Silicon (`aarch64-apple-darwin`). Intel (x64) is
