@@ -9,7 +9,7 @@ use crate::{abi::Abi, mode::ModeArgs};
     name = "rlutter",
     version,
     about = "Build, run, and verify Flutter apps on the Rust shell",
-    after_help = "Headless workflows (Linux x64, Vulkan required):\n  run --headless        Launch an app for development\n  agent --headless      Control an app through NDJSON over stdio\n  mcp --headless        Expose app control as MCP tools over stdio\n  verify --headless     Execute a JSON scenario and write a report\n\nRun rlutter <COMMAND> --help for examples and required options."
+    after_help = "Headless workflows (Linux x64 or macOS, Vulkan required):\n  run --headless        Launch an app for development\n  agent --headless      Control an app through NDJSON over stdio\n  mcp --headless        Expose app control as MCP tools over stdio\n  verify --headless     Execute a JSON scenario and write a report\n\nRun rlutter <COMMAND> --help for examples and required options."
 )]
 pub struct Cli {
     /// Override the release-managed Flutter SDK.
@@ -150,7 +150,7 @@ pub struct AndroidBuildArgs {
 
 #[derive(Args, Debug)]
 #[command(
-    after_help = "Example (from the application directory):\n  rlutter run -d linux --headless --size 1280x800 --pixel-ratio 1.25\n\nHeadless rendering requires Linux x64 and Vulkan; no display server is needed.\nFor agent control use `rlutter agent`; for assertions and reports use `rlutter verify`."
+    after_help = "Example (from the application directory):\n  rlutter run -d linux --headless --size 1280x800 --pixel-ratio 1.25\n\nHeadless rendering requires Linux x64 or macOS, and Vulkan; no display server is needed.\nFor agent control use `rlutter agent`; for assertions and reports use `rlutter verify`."
 )]
 pub struct RunArgs {
     /// Run without a display server or native windows (Linux x64).

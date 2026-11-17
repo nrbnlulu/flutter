@@ -76,13 +76,13 @@ fn load(path: &Path) -> Result<Scenario> {
     Ok(scenario)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct Client {
     input: BufReader<std::os::unix::net::UnixStream>,
     output: std::os::unix::net::UnixStream,
     id: u64,
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Client {
     fn new(stream: &std::os::unix::net::UnixStream) -> Result<Self> {
         Ok(Self {
@@ -172,12 +172,12 @@ impl Client {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn run(_: &Ctx, _: &VerifyArgs) -> Result<()> {
     bail!("verification currently requires Linux x64");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn run(ctx: &Ctx, args: &VerifyArgs) -> Result<()> {
     let scenario = load(&args.scenario)?;
     if args.report.exists() {

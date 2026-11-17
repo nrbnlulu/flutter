@@ -1,10 +1,10 @@
 //! MCP stdio adapter. The native agent remains the authority for app operations.
 use crate::cli::AgentArgs;
 use anyhow::{Result, bail};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::io::{BufRead, Read, Write};
 use std::path::Path;
 
@@ -540,7 +540,7 @@ impl Attached {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct Native {
     args: AgentArgs,
     flutter_root: Option<std::path::PathBuf>,
@@ -551,7 +551,7 @@ struct Native {
     project_dir: Option<std::path::PathBuf>,
     closed: bool,
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Native {
     fn new(
         args: AgentArgs,
@@ -681,7 +681,7 @@ impl Native {
         Ok(result)
     }
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Backend for Native {
     fn call(&mut self, method: &str, params: Value) -> Result<Value> {
         let result = self.call_inner(method, params);
@@ -698,9 +698,9 @@ impl Backend for Native {
         Ok(())
     }
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 struct Native;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 impl Native {
     fn set_project(&mut self, _: std::path::PathBuf) {}
     fn artifact_path(&self) -> &Path {
@@ -710,23 +710,23 @@ impl Native {
         Self
     }
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 impl Backend for Native {
     fn call(&mut self, _: &str, _: Value) -> Result<Value> {
-        bail!("MCP app control currently requires Linux x64")
+        bail!("MCP app control currently requires Linux x64 or macOS")
     }
     fn finish(&mut self) -> Result<()> {
         Ok(())
     }
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn write_message(output: &mut impl Write, value: &Value) -> Result<()> {
     serde_json::to_writer(&mut *output, value)?;
     output.write_all(b"\n")?;
     output.flush()?;
     Ok(())
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn native_rpc(
     reader: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
     output: &mut std::os::unix::net::UnixStream,
@@ -1041,7 +1041,7 @@ mod tests {
             .unwrap();
         assert_eq!(available.available_permits(), 1);
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn native_transport_skips_events_and_rejects_wrong_ids() {
         use std::{io::BufReader, os::unix::net::UnixStream};

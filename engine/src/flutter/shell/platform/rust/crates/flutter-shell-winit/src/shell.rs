@@ -12,7 +12,7 @@ mod monitor;
 #[path = "platform.rs"]
 mod platform;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "headless.rs"]
 mod headless;
 
@@ -4101,7 +4101,7 @@ fn run_application_with_fixture(
     demo_fixture: Option<DemoTextureFixture>,
 ) -> Result<(), RunError> {
     init_logging();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if std::env::var_os("FLUTTER_RUST_HEADLESS").is_some_and(|v| v == "1") {
         return headless::run(config, register_application);
     }

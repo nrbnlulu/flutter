@@ -2,12 +2,12 @@
 use crate::{cli::AgentArgs, commands::Ctx};
 use anyhow::{Context, Result, bail};
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn run_stdio(_: &Ctx, _: &AgentArgs) -> Result<()> {
-    bail!("headless agent sessions currently require Linux x64")
+    bail!("headless agent sessions currently require Linux x64 or macOS")
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod linux {
     use super::*;
     use serde_json::json;
@@ -130,8 +130,8 @@ mod linux {
             ratio: f64,
             project: crate::project::Project,
         ) -> Result<Self> {
-            if !cfg!(target_arch = "x86_64") {
-                bail!("headless agents currently require Linux x64");
+            if !cfg!(any(target_arch = "x86_64", target_os = "macos")) {
+                bail!("headless agents currently require Linux x64 or macOS");
             }
             if artifacts.exists() && fs::read_dir(artifacts)?.next().is_some() {
                 bail!("artifacts directory must be fresh: {}", artifacts.display());
@@ -154,7 +154,7 @@ mod linux {
                 mode,
                 target,
                 &defines,
-                "linux",
+                std::env::consts::OS,
                 crate::project::Project::load(&project.dir)?,
             )?;
             if source != super::super::provenance::sources(&project.dir, target)? {
@@ -396,5 +396,5 @@ mod linux {
         }
     }
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use linux::{Session, run_stdio};

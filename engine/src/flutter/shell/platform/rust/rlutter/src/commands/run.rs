@@ -16,12 +16,20 @@ use crate::{
 pub fn run_app(ctx: &Ctx, args: &RunArgs) -> Result<i32> {
     let mode = args.mode.resolve()?;
     let device: Box<dyn device::Device> = if args.headless {
-        if !crate::device::linux::LinuxHost::is_supported()
-            || args.device.as_deref().is_some_and(|d| d != "linux")
-        {
-            bail!("headless rendering currently requires Linux x64 (-d linux)");
+        let host: Box<dyn device::Device> = if crate::device::linux::LinuxHost::is_supported() {
+            Box::new(crate::device::linux::LinuxHost)
+        } else if crate::device::macos::MacosHost::is_supported() {
+            Box::new(crate::device::macos::MacosHost)
+        } else {
+            bail!("headless rendering currently requires Linux x64 or macOS");
+        };
+        if args.device.as_deref().is_some_and(|d| d != host.platform()) {
+            bail!(
+                "headless rendering runs on the host (-d {})",
+                host.platform()
+            );
         }
-        Box::new(crate::device::linux::LinuxHost)
+        host
     } else {
         device::select(device::discover(), args.device.as_deref())?
     };
@@ -36,7 +44,14 @@ pub fn run_app(ctx: &Ctx, args: &RunArgs) -> Result<i32> {
 
     let mut app = if args.headless {
         crate::device::linux::launch_headless(
-            super::build::build_linux(ctx, mode, &args.target, &args.defines.dart_defines)?,
+            super::build::build_desktop(
+                ctx,
+                mode,
+                &args.target,
+                &args.defines.dart_defines,
+                std::env::consts::OS,
+                crate::project::Project::discover()?,
+            )?,
             mode,
             args.size,
             args.pixel_ratio,

@@ -16,6 +16,8 @@ from pathlib import Path
 import selectors
 import subprocess
 
+from native_desktop import runner_environment
+
 
 def exercise(args, output, shutdown):
   artifacts = output / ('shutdown' if shutdown else 'eof')
@@ -23,8 +25,8 @@ def exercise(args, output, shutdown):
   if args.local_engine_src:
     command += ['--local-engine-src', str(args.local_engine_src.resolve())]
   command += ['mcp', '--stdio']
-  env = dict(
-      os.environ, RUSTUP_TOOLCHAIN='1.93.1', VK_INSTANCE_LAYERS='VK_LAYER_KHRONOS_validation'
+  env = runner_environment(
+      dict(os.environ, RUSTUP_TOOLCHAIN='1.93.1', VK_INSTANCE_LAYERS='VK_LAYER_KHRONOS_validation')
   )
   with (output / f'{artifacts.name}.log').open('w') as log:
     process = subprocess.Popen(

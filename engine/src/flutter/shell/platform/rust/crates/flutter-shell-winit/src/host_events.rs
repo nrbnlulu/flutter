@@ -26,14 +26,14 @@ pub(crate) struct HostEventSender {
 
 enum HostWake {
     Native(EventLoopProxy),
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     Headless(parking_lot::Condvar),
 }
 impl HostWake {
     fn notify(&self) {
         match self {
             Self::Native(proxy) => proxy.wake_up(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             Self::Headless(wake) => {
                 wake.notify_one();
             }
@@ -51,7 +51,7 @@ impl HostEventSender {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn headless() -> Self {
         Self {
             queue: Arc::new(Mutex::new(VecDeque::new())),
@@ -59,7 +59,7 @@ impl HostEventSender {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn wait_until(&self, deadline: Option<Instant>) {
         let HostWake::Headless(wake) = &*self.wake else {
             return;

@@ -11,6 +11,37 @@ semantics and optional widget assertions, input, screenshots, video and CI
 evidence. Phases 0 and 1 are complete on Linux x64. The display-free virtual
 host is available; agent observation/control and verification remain pending.
 
+### Headless agent, verify and MCP on macOS (2026-11-17)
+
+The display-free host and its agent were Linux-only by `cfg`, not by design:
+they use Unix sockets and offscreen wgpu, both available on macOS.
+
+- Shell (`flutter-shell-winit`): the `headless` module, its dispatch and the
+  headless `HostEventSender` now also compile on macOS. The agent's
+  parent-liveness check used `/proc/<pid>`; other Unix hosts use `kill(pid, 0)`.
+  The accepted agent socket is set blocking explicitly: BSD sockets (macOS)
+  inherit `O_NONBLOCK` from the non-blocking listener, Linux sockets do not, so
+  on macOS the session died with `EAGAIN` (os error 35) after a passing
+  scenario instead of honoring the read/write timeouts.
+- rlutter: `agent`, `mcp` and `verify` are enabled on macOS, the agent builds
+  for the host OS instead of `"linux"`, an x86_64-only check now also accepts
+  macOS, and `run --headless` uses the host (Linux or macOS) device.
+- Harnesses: `test_mcp.py`, `test_verify.py` and `test_agent.py` use
+  `runner_environment()` (with `WGPU_VALIDATION=1`, wgpu enables the Khronos
+  layer, and without the library path instance creation failed with "No
+  suitable graphics adapter").
+
+Results (Apple M6, MoltenVK headless adapter): `test_mcp.py` 3/3 - session
+start/health, window list, a real `input_tap`, `verify_wait`, an MCP image
+screenshot, and both shutdown and EOF exits; `headless-e2e` (`rlutter verify`)
+passes its Unicode text entry, dialog window, screenshot and assertion
+scenario; `headless-agent` passes. 54 winit and 117 rlutter unit tests pass;
+shell `cargo check` for Linux and Windows is clean. rlutter's own Linux/Windows
+cross-check cannot run on this Mac (`ring`'s build script needs a C cross
+compiler). Not run: `headless-render`/`headless-host` (they verify the absence
+of display connections with `strace`, which macOS does not have) and
+`test_agent_crash.py` (needs ffmpeg).
+
 ### rlutter on macOS: create, build, run and hot reload (2026-11-17)
 
 rlutter treated every non-Windows host as Linux. It now has a macOS path:
