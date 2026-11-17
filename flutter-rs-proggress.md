@@ -11,6 +11,34 @@ semantics and optional widget assertions, input, screenshots, video and CI
 evidence. Phases 0 and 1 are complete on Linux x64. The display-free virtual
 host is available; agent observation/control and verification remain pending.
 
+### rlutter on macOS: create, build, run and hot reload (2026-11-17)
+
+rlutter treated every non-Windows host as Linux. It now has a macOS path:
+
+- `sdk.rs`: `libflutter_rust_engine.dylib` / `libtessellator.dylib`, host
+  platform `darwin-arm64` (or `darwin-x64`, also accepted by `flutter
+  assemble`), all three host bundle modes, and local-engine discovery of macOS
+  GN output names (`host_<mode>`, `host_<mode>_<cpu>`, `host_debug_unopt_<cpu>`).
+- Runner template (version 10 -> 11, so existing projects regenerate):
+  `darwin-*` platforms, the `.dylib`, rpaths `@executable_path/libs` then the
+  in-tree engine directory, and `-export_dynamic`.
+- `rlutter build macos`, a `macos` device (`-d macos`, `flutter attach -d
+  macos`), `create --rust-platforms macos` (the default on a Mac), native plugin
+  libraries named `lib<name>.dylib`, and `--vm-service-info-file` on macOS.
+- `copy_if_changed` removes the destination before copying on macOS, so a
+  restaged dylib or runner is not killed for a stale code signature.
+- The managed release Flutter SDK is still Linux/Windows only, so macOS needs
+  `--flutter-root` (or `FLUTTER_ROOT`) until a macOS SDK is published.
+
+`test_rlutter.py` runs `-d macos` and uses `runner_environment()`;
+`tasks.py rlutter-e2e` checks the macOS bundle. Results on this Mac with the
+local `host_debug_unopt_arm64` engine: rlutter unit tests 115 pass (one new
+macOS discovery test; the managed-SDK test is skipped on macOS);
+`rlutter-runtime` 3/3 - Dart debugger breakpoint and expression evaluation,
+hot reload with state preserved ("Reloaded 1 of 484 libraries in 67ms"), hot
+restart ("Restarted application in 169ms"), and a relocated bundle that renders
+the same frame and closes with status 0; `rlutter-e2e` passes.
+
 ### macOS display-link vsync (2026-11-17)
 
 `platform/macos_vsync.rs` implements `next_vsync` from a CoreVideo display

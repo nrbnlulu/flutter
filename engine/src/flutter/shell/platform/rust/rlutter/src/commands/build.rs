@@ -40,6 +40,22 @@ pub fn build_linux(
     )
 }
 
+pub fn build_macos(
+    ctx: &Ctx,
+    mode: BuildMode,
+    target: &str,
+    dart_defines: &[String],
+) -> Result<DesktopBuild> {
+    build_desktop(
+        ctx,
+        mode,
+        target,
+        dart_defines,
+        "macos",
+        Project::discover()?,
+    )
+}
+
 pub fn build_windows(
     ctx: &Ctx,
     mode: BuildMode,
@@ -64,8 +80,13 @@ pub(super) fn build_desktop(
     platform: &str,
     project: Project,
 ) -> Result<DesktopBuild> {
-    if std::env::consts::OS != platform || !cfg!(target_arch = "x86_64") {
-        bail!("{platform} desktop builds require a native {platform} x64 host");
+    let supported_arch = if platform == "macos" {
+        cfg!(any(target_arch = "aarch64", target_arch = "x86_64"))
+    } else {
+        cfg!(target_arch = "x86_64")
+    };
+    if std::env::consts::OS != platform || !supported_arch {
+        bail!("{platform} desktop builds require a native {platform} host");
     }
     project.require_rust_shell()?;
     let engine = prepare(ctx, &project, mode)?;
@@ -80,7 +101,7 @@ pub(super) fn build_desktop(
         &project,
         &engine,
         mode,
-        &format!("{platform}-x64"),
+        crate::sdk::host_platform(),
         target,
         dart_defines,
         &output,

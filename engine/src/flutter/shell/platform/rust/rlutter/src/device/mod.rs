@@ -1,7 +1,8 @@
-//! Places an app can run: native Linux/Windows hosts and Android devices.
+//! Places an app can run: native Linux/macOS/Windows hosts and Android devices.
 
 pub mod android;
 pub mod linux;
+pub mod macos;
 pub mod windows;
 
 use std::{
@@ -32,7 +33,7 @@ pub struct RunningApp {
 pub trait Device {
     /// The id used with `-d`.
     fn id(&self) -> String;
-    /// `linux`, `windows` or `android`; `-d <platform>` selects among a platform's devices.
+    /// `linux`, `macos`, `windows` or `android`; `-d <platform>` selects among a platform's devices.
     fn platform(&self) -> &'static str;
     fn description(&self) -> String;
     /// The `-d` value `flutter attach` knows this device by.
@@ -56,13 +57,16 @@ pub fn discover() -> Vec<Box<dyn Device>> {
     if windows::WindowsHost::is_supported() {
         devices.push(Box::new(windows::WindowsHost));
     }
+    if macos::MacosHost::is_supported() {
+        devices.push(Box::new(macos::MacosHost));
+    }
     let (android, _) = android::discover_all();
     devices.extend(android.into_iter().map(|d| Box::new(d) as Box<dyn Device>));
     devices
 }
 
 /// Platform names accepted by `-d` as a filter.
-const PLATFORMS: [&str; 3] = ["linux", "windows", "android"];
+const PLATFORMS: [&str; 4] = ["linux", "macos", "windows", "android"];
 
 /// Picks the device to run on. `requested` is an exact device id, or a
 /// platform name (`android`) to choose among that platform's devices. Several

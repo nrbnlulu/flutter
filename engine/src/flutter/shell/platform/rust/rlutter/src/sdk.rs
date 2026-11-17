@@ -44,11 +44,13 @@ const ENGINE_ENTRIES: &[&str] = &[
     "impellerc",
     "shader_lib",
     "libtessellator.so",
+    "libtessellator.dylib",
     "gen/dart-pkg",
     // Android engines keep the host-run AOT compiler here.
     "clang_x64/gen_snapshot",
     "icudtl.dat",
     "libflutter_rust_engine.so",
+    "libflutter_rust_engine.dylib",
     "flutter_rust_engine.dll",
     "flutter_rust_engine.dll.lib",
     "gen_snapshot.exe",
@@ -76,19 +78,53 @@ const ENGINE_ENTRIES: &[&str] = &[
 pub fn host_engine_library() -> &'static str {
     if cfg!(windows) {
         "flutter_rust_engine.dll"
+    } else if cfg!(target_os = "macos") {
+        "libflutter_rust_engine.dylib"
     } else {
         "libflutter_rust_engine.so"
     }
 }
+/// The host's Flutter target platform name, also used for the BETA SDK
+/// archive and the runner's `lib/<platform>-<mode>` link.
 pub(crate) fn host_platform() -> &'static str {
     if cfg!(windows) {
         "windows-x64"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "darwin-arm64"
+    } else if cfg!(target_os = "macos") {
+        "darwin-x64"
     } else {
         "linux-x64"
     }
 }
 
-const ENGINE_REQUIRED: &[&str] = &["libflutter_rust_engine.so", "icudtl.dat"];
+/// GN output directory names for a host engine build of `mode`, most specific
+/// first. macOS builds carry the CPU (and debug builds are usually
+/// unoptimized), so `host_debug_unopt_arm64` is a debug candidate there.
+fn host_engine_candidates(mode: &str) -> Vec<String> {
+    let mut candidates = vec![format!("host_{mode}")];
+    if cfg!(target_os = "macos") {
+        let cpu = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "x64"
+        };
+        candidates.push(format!("host_{mode}_{cpu}"));
+        if mode == "debug" {
+            candidates.push(format!("host_debug_unopt_{cpu}"));
+        }
+    }
+    candidates
+}
+
+const ENGINE_REQUIRED: &[&str] = &[
+    if cfg!(target_os = "macos") {
+        "libflutter_rust_engine.dylib"
+    } else {
+        "libflutter_rust_engine.so"
+    },
+    "icudtl.dat",
+];
 fn host_bundle_modes() -> &'static [&'static str] {
     if cfg!(windows) {
         &["debug", "release"]
@@ -137,28 +173,30 @@ pub fn link_host(
     mode: BuildMode,
 ) -> Result<Engine> {
     let variant = format!("host_{}", mode.name());
-    let fallback =
-        if find_engine_build(std::slice::from_ref(&variant), None, flutter, sources).is_some() {
-            None
+    // On macOS, local builds are also named host_<mode>_<cpu> or
+    // host_debug_unopt_<cpu>; check all of them before falling back.
+    let candidates = host_engine_candidates(mode.name());
+    let fallback = if find_engine_build(&candidates, None, flutter, sources).is_some() {
+        None
+    } else {
+        let project_engine = project.sdk_dir().join("lib").join(mode.name());
+        if project_engine.join(host_engine_library()).is_file() {
+            Some(project_engine)
         } else {
-            let project_engine = project.sdk_dir().join("lib").join(mode.name());
-            if project_engine.join(host_engine_library()).is_file() {
-                Some(project_engine)
-            } else {
-                let cache = crate::flutter::cache_dir()?;
-                Some(
-                    ensure_managed_bundle(&cache, download_bundle)?
-                        .join("lib")
-                        .join(mode.name()),
-                )
-            }
-        };
+            let cache = crate::flutter::cache_dir()?;
+            Some(
+                ensure_managed_bundle(&cache, download_bundle)?
+                    .join("lib")
+                    .join(mode.name()),
+            )
+        }
+    };
     let layout = link_variant(
         project,
         flutter,
         sources,
         &variant,
-        std::slice::from_ref(&variant),
+        &candidates,
         fallback,
         &format!("{}-{}", host_platform(), mode.name()),
     )?;
@@ -632,6 +670,7 @@ mod tests {
         fs::create_dir_all(dir.join("flutter_patched_sdk")).unwrap();
         for file in [
             "libflutter_rust_engine.so",
+            "libflutter_rust_engine.dylib",
             "flutter_rust_engine.dll",
             "flutter_rust_engine.dll.lib",
             "libflutter.so",
@@ -847,6 +886,35 @@ mod tests {
         )
         .unwrap();
         Flutter::discover(Some(root)).unwrap()
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_finds_cpu_suffixed_and_unoptimized_host_builds() {
+        let root = tempdir("sdk_macos_variants");
+        let src = root.join("engine/src");
+        let flutter = flutter_at(&root.join("flutter"));
+        let sources = EngineSources {
+            local_engine_src: Some(src.clone()),
+        };
+        let cpu = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "x64"
+        };
+        let unopt = src.join(format!("out/host_debug_unopt_{cpu}"));
+        fake_engine(&unopt);
+        assert_eq!(
+            find_engine_build(&host_engine_candidates("debug"), None, &flutter, &sources),
+            Some(unopt)
+        );
+        let release = src.join(format!("out/host_release_{cpu}"));
+        fake_engine(&release);
+        assert_eq!(
+            find_engine_build(&host_engine_candidates("release"), None, &flutter, &sources),
+            Some(release)
+        );
+        assert_eq!(host_engine_library(), "libflutter_rust_engine.dylib");
     }
 
     #[test]

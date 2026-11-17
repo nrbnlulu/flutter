@@ -71,6 +71,8 @@ pub fn build_all(project: &Project, mode: BuildMode, cross: CrossTarget) -> Resu
             "android"
         } else if cfg!(windows) {
             "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
         } else {
             "linux"
         });

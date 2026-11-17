@@ -595,11 +595,13 @@ def main():
       cli = SHELL / 'rlutter/target/release' / ('rlutter' + host.exe)
       host.run([cli, 'create', 'smoke_app', f'--flutter-root={ROOT}'], work)
       project = Path(work) / 'smoke_app'
-      host.run([cli, 'build', 'windows' if host.windows else 'linux', f'--flutter-root={ROOT}'],
-               project)
+      host.run([cli, 'build', 'windows' if host.windows else 'macos' if host.macos else 'linux',
+                f'--flutter-root={ROOT}'], project)
       bundle = project / 'runner-rs/target/debug'
       for path in ['smoke_app' + host.exe, 'data/flutter_assets/kernel_blob.bin', 'data/icudtl.dat',
-                   'flutter_rust_engine.dll' if host.windows else 'libs/libflutter_rust_engine.so']:
+                   'flutter_rust_engine.dll' if host.windows else
+                   'libs/libflutter_rust_engine.dylib' if host.macos else
+                   'libs/libflutter_rust_engine.so']:
         if not (bundle / path).is_file():
           raise RuntimeError(f'Missing bundled artifact: {bundle / path}')
   else:

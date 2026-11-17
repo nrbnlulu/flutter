@@ -68,6 +68,7 @@ pub struct PassthroughArgs {
 pub enum RustPlatform {
     Linux,
     Windows,
+    Macos,
     Android,
 }
 
@@ -77,7 +78,7 @@ pub struct CreateArgs {
     pub dir: PathBuf,
 
     /// Rust shells to generate.
-    #[arg(long, value_enum, value_delimiter = ',', default_value = if cfg!(windows) { "windows" } else { "linux" })]
+    #[arg(long, value_enum, value_delimiter = ',', default_value = if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" })]
     pub rust_platforms: Vec<RustPlatform>,
 
     /// Organization, forwarded to `flutter create`.
@@ -100,6 +101,8 @@ pub enum BuildTarget {
     Linux(BuildArgs),
     /// Build for the Windows x64 host.
     Windows(BuildArgs),
+    /// Build for the macOS host (Apple Silicon or Intel).
+    Macos(BuildArgs),
     /// Build an Android APK.
     Android(AndroidBuildArgs),
 }
@@ -388,6 +391,8 @@ mod tests {
             args.rust_platforms,
             [if cfg!(windows) {
                 RustPlatform::Windows
+            } else if cfg!(target_os = "macos") {
+                RustPlatform::Macos
             } else {
                 RustPlatform::Linux
             }]

@@ -97,6 +97,13 @@ fn run() -> Result<()> {
                 &args.defines.dart_defines,
             )
             .map(drop),
+            BuildTarget::Macos(args) => commands::build::build_macos(
+                &ctx,
+                args.mode.resolve()?,
+                &args.target,
+                &args.defines.dart_defines,
+            )
+            .map(drop),
             BuildTarget::Android(args) => commands::build_android::build_android(
                 &ctx,
                 args.build.mode.resolve()?,

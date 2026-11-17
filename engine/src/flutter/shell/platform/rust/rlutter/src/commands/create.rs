@@ -44,7 +44,10 @@ pub fn run_create(ctx: &Ctx, args: &CreateArgs) -> Result<()> {
     })
     .and_then(|()| {
         // So `cargo build` works in runner-rs/ right away.
-        if linux || args.rust_platforms.contains(&RustPlatform::Windows) {
+        if linux
+            || args.rust_platforms.contains(&RustPlatform::Windows)
+            || args.rust_platforms.contains(&RustPlatform::Macos)
+        {
             sdk::link_host(&project, &ctx.flutter, &ctx.sources, BuildMode::Debug)?;
         }
         Ok(())
