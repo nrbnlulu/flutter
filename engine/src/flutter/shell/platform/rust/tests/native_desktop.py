@@ -528,8 +528,9 @@ class MacOS(Desktop):
 
   Coordinates are global points with a top-left origin, as reported by
   CGWindowList and used by CGEvent and AXPosition, so metrics report a
-  logical coordinate space. `at`/`size` are the window frame, which for
-  titled windows includes the title bar. Reading the window list needs
+  logical coordinate space. Like the Windows backend, `at`/`size` are the
+  client (content) area: titled windows exclude their title bar. `move` and
+  the `resize` action address the whole window frame. Reading the window list needs
   Screen Recording permission for titles; input, focus and movement need
   Accessibility permission for the app that runs Python.
   """
@@ -538,7 +539,8 @@ class MacOS(Desktop):
       'ESCAPE': 53, 'TAB': 48, 'ENTER': 36, 'BACKSPACE': 51, 'LEFT': 123, 'RIGHT': 124, 'CTRL': 59,
       'SHIFT': 56, 'ALT': 58, 'CMD': 55, 'A': 0, 'S': 1, 'D': 2, 'F': 3, 'H': 4, 'G': 5, 'Z': 6,
       'X': 7, 'C': 8, 'V': 9, 'B': 11, 'Q': 12, 'W': 13, 'E': 14, 'R': 15, 'Y': 16, 'T': 17,
-      'O': 31, 'U': 32, 'I': 34, 'P': 35, 'L': 37, 'J': 38, 'K': 40, 'N': 45, 'M': 46
+      'O': 31, 'U': 32, 'I': 34, 'P': 35, 'L': 37, 'J': 38, 'K': 40, 'N': 45, 'M': 46, '1': 18,
+      '2': 19, '3': 20, '4': 21, '5': 23, '6': 22, '7': 26, '8': 28, '9': 25, '0': 29, 'SPACE': 49
   }
   _FLAGS = {'CTRL': 1 << 18, 'SHIFT': 1 << 17, 'ALT': 1 << 19, 'CMD': 1 << 20}
 
@@ -591,6 +593,26 @@ class MacOS(Desktop):
         )
     }
 
+  def titlebar_height(self):
+    """Height of a standard titled window's title bar, from AppKit."""
+    if not hasattr(self, '_titlebar'):
+      objc = ctypes.cdll.LoadLibrary('/usr/lib/libobjc.A.dylib')
+      ctypes.cdll.LoadLibrary('/System/Library/Frameworks/AppKit.framework/AppKit')
+      objc.objc_getClass.restype = ctypes.c_void_p
+      objc.objc_getClass.argtypes = [ctypes.c_char_p]
+      objc.sel_registerName.restype = ctypes.c_void_p
+      objc.sel_registerName.argtypes = [ctypes.c_char_p]
+      send = ctypes.CFUNCTYPE(_CGRect, ctypes.c_void_p, ctypes.c_void_p, _CGRect,
+                              ctypes.c_uint64)(('objc_msgSend', objc))
+      # Titled | closable | miniaturizable | resizable.
+      frame = send(
+          objc.objc_getClass(b'NSWindow'),
+          objc.sel_registerName(b'frameRectForContentRect:styleMask:'),
+          _CGRect(_CGPoint(0, 0), _CGSize(100, 100)), 15
+      )
+      self._titlebar = round(frame.size.height - 100)
+    return self._titlebar
+
   def _string(self, text):
     return self.cf.CFStringCreateWithCString(None, text.encode(), 0x08000100)
 
@@ -624,13 +646,18 @@ class MacOS(Desktop):
           continue
         if rect.size.width <= 0 or rect.size.height <= 0:
           continue
+        title = self._text(value('kCGWindowName'))
+        # Titled windows carry a title bar above their client area; popups
+        # and tooltips are untitled and borderless.
+        titlebar = self.titlebar_height() if title else 0
         result.append(
             dict(
                 address=str(self._number(value('kCGWindowNumber'))),
                 pid=self._number(value('kCGWindowOwnerPID')),
-                title=self._text(value('kCGWindowName')),
-                at=[round(rect.origin.x), round(rect.origin.y)],
-                size=[round(rect.size.width), round(rect.size.height)]
+                title=title,
+                at=[round(rect.origin.x), round(rect.origin.y) + titlebar],
+                size=[round(rect.size.width),
+                      round(rect.size.height) - titlebar]
             )
         )
     finally:
@@ -639,6 +666,23 @@ class MacOS(Desktop):
 
   def _client(self, address):
     return next(c for c in self.clients() if str(c['address']) == str(address))
+
+  def _owner_pid(self, address):
+    """The owning process of a window, including minimized or off-screen ones."""
+    # Only the full list (option 0) includes minimized windows; the
+    # single-window option omits them.
+    windows = self.cg.CGWindowListCopyWindowInfo(0, 0)
+    if not windows:
+      raise RuntimeError('CGWindowListCopyWindowInfo failed')
+    try:
+      for index in range(self.cf.CFArrayGetCount(windows)):
+        info = self.cf.CFArrayGetValueAtIndex(windows, index)
+        number = self._number(self.cf.CFDictionaryGetValue(info, self.keys['kCGWindowNumber']))
+        if str(number) == str(address):
+          return self._number(self.cf.CFDictionaryGetValue(info, self.keys['kCGWindowOwnerPID']))
+    finally:
+      self.cf.CFRelease(windows)
+    raise RuntimeError(f'Window {address} does not exist')
 
   def _require_accessibility(self):
     if not self.ax.AXIsProcessTrusted():
@@ -650,7 +694,7 @@ class MacOS(Desktop):
   def _ax_window(self, address):
     """Returns (application, window) AX elements for a CGWindowID; caller releases both."""
     self._require_accessibility()
-    pid = self._client(address)['pid']
+    pid = self._owner_pid(address)
     application = self.ax.AXUIElementCreateApplication(pid)
     windows = ctypes.c_void_p()
     attribute = self._string('AXWindows')
@@ -735,6 +779,10 @@ class MacOS(Desktop):
     result = super().metrics(address)
     result['coordinate_space'] = 'logical'
     return result
+
+  def resize_client(self, address, width, height):
+    titlebar = self.titlebar_height() if self._client(address)['title'] else 0
+    self.action('resize', address, width=width, height=height + titlebar)
 
   def move(self, address, x, y):
     self._set_geometry(address, 'AXPosition', 1, _CGPoint(x, y))

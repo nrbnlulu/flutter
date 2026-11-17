@@ -11,6 +11,32 @@ semantics and optional widget assertions, input, screenshots, video and CI
 evidence. Phases 0 and 1 are complete on Linux x64. The display-free virtual
 host is available; agent observation/control and verification remain pending.
 
+### macOS text input, clipboard and metrics; IME status (2026-11-17)
+
+`test_text_input.py` passes on macOS: a real click focuses the field, typed
+`hello123` reaches Flutter, Cmd+A/Cmd+C round-trips through
+`Clipboard.getData`, Unicode `A😀שלום` survives `setData`/`getData`/`hasStrings`
+and a Cmd+V paste with UTF-16 selection [7, 7], minimize/restore report
+lifecycle hidden/resumed, and Flutter's logical size and scale match the native
+client area before and after a resize. The test uses Cmd on macOS where it uses
+Ctrl elsewhere.
+
+Backend changes: `MacOS.clients()` now reports the client (content) area like
+the Windows backend - a titled window excludes its title bar, measured from
+`+[NSWindow frameRectForContentRect:styleMask:]` (32 pt on macOS 27) - and
+`resize_client` adds it back; digit and Space key codes; and a window's owner
+is found in the full window list, because minimized windows are absent from
+the on-screen list and from `kCGWindowListOptionIncludingWindow`. Popup,
+tooltip, texture and rlutter runtime tests still pass with content-area
+coordinates.
+
+IME: winit's AppKit backend feeds marked-text (preedit) and commit events into
+the shared `WindowEvent::Ime` path, which is unchanged. Composition with a real
+input method is not exercised - on every platform the test records "requires an
+interactive IME" - and on macOS it would need a Japanese/Chinese input source
+enabled in System Settings. Still open: verifying composition by hand, and
+`charactersIgnoringModifiers` in legacy key messages.
+
 ### Headless agent, verify and MCP on macOS (2026-11-17)
 
 The display-free host and its agent were Linux-only by `cfg`, not by design:

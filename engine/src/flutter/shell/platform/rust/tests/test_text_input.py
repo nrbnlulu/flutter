@@ -10,9 +10,13 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
 import time
 
-from native_desktop import desktop
+from native_desktop import desktop, runner_environment
+
+# The platform's shortcut modifier for select-all, copy and paste.
+PRIMARY = 'CMD' if sys.platform == 'darwin' else 'CTRL'
 from test_texture import DIAGNOSTIC, wait_until
 
 
@@ -31,6 +35,7 @@ def main():
       'WGPU_VALIDATION': '1',
       'WGPU_DEBUG': '1',
   }
+  runner_environment(environment)
   address = None
   succeeded = False
   with log_path.open('wb') as log:
@@ -99,8 +104,8 @@ def main():
         api.chord(address, character)
         time.sleep(.03)
       require(lambda s: s.get('text') == 'hello123', 'Native typing did not reach Flutter')
-      api.chord(address, 'CTRL', 'A')
-      api.chord(address, 'CTRL', 'C')
+      api.chord(address, PRIMARY, 'A')
+      api.chord(address, PRIMARY, 'C')
       click('read')
       require(
           lambda s: s.get('clipboard') == 'hello123' and s.get('hasStrings'),
@@ -113,8 +118,8 @@ def main():
           'Unicode Clipboard.setData/getData/hasStrings failed'
       )
       click('field')
-      api.chord(address, 'CTRL', 'A')
-      api.chord(address, 'CTRL', 'V')
+      api.chord(address, PRIMARY, 'A')
+      api.chord(address, PRIMARY, 'V')
       require(
           lambda s: s.get('text') == sample and s.get('selection') == [7, 7] and s.get('composing')
           == [-1, -1], 'Unicode paste or UTF-16 selection was incorrect'
