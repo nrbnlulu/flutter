@@ -8,9 +8,8 @@
 //! Every AppKit call here runs on the event-loop thread, which on macOS is
 //! the main thread; `main_thread` enforces that before touching an NSWindow.
 //!
-//! Frames are paced by the shared nominal-interval timer fallback for now;
-//! a display-link source belongs in `uses_host_vsync`/`next_vsync`, as
-//! `windows_vsync.rs` does for DWM.
+//! Frames are paced from the window's display link (`macos_vsync.rs`), as
+//! `windows_vsync.rs` does for DWM, with the shared timer as fallback.
 
 use flutter_shell_core::{FlutterRustKeyEvent, FlutterRustKeyEventType};
 use objc2::{MainThreadMarker, rc::Retained};
@@ -25,7 +24,10 @@ use winit::{
 };
 
 use super::super::{NativeWindowKind, PopupPlacement};
-use super::PlatformBackend;
+use super::{PlatformBackend, VsyncTiming};
+
+#[path = "macos_vsync.rs"]
+mod vsync;
 
 pub(crate) struct MacPlatform;
 
@@ -211,6 +213,20 @@ impl PlatformBackend for MacPlatform {
 
     fn is_wayland(_event_loop: &dyn ActiveEventLoop) -> bool {
         false
+    }
+
+    fn uses_host_vsync(_event_loop: &dyn ActiveEventLoop) -> bool {
+        true
+    }
+
+    fn next_vsync(window: &dyn Window) -> Option<VsyncTiming> {
+        // The monitor's native ID is its CGDirectDisplayID; None falls back
+        // to the main display.
+        vsync::next_vsync(
+            window
+                .current_monitor()
+                .and_then(|monitor| u32::try_from(monitor.native_id()).ok()),
+        )
     }
 
     fn create_popup(

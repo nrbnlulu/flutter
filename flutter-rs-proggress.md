@@ -11,6 +11,31 @@ semantics and optional widget assertions, input, screenshots, video and CI
 evidence. Phases 0 and 1 are complete on Linux x64. The display-free virtual
 host is available; agent observation/control and verification remain pending.
 
+### macOS display-link vsync (2026-11-17)
+
+`platform/macos_vsync.rs` implements `next_vsync` from a CoreVideo display
+link for the window's display (`current_monitor().native_id()` is the
+`CGDirectDisplayID`); `MacPlatform::uses_host_vsync` is now true, as on
+Windows. The link's output callback records each vblank's `inNow.host_time`
+(mach ticks) and the refresh period in atomics; `next_vsync` advances that
+vblank by whole periods past now, the same (last vblank, period) model as
+`windows_vsync.rs`. Until the first callback, or if the link cannot be
+created, the shared timer fallback paces.
+
+A first version used `CVDisplayLinkGetCurrentTime`. A probe showed its host
+time is the time of the call (host - now = 0.00 ms on every sample) and only
+its video time is quantized, so it carries no phase: every request waited a
+full period from when it was asked and the animated windowing fixture dropped
+to 52.7-53.0 fps against 59.6 for the timer fallback. With callback vblanks it
+runs at 59.6-59.9 fps on this 60 Hz display (interval_ns=16674291). The rate is
+not the improvement; ticks are now aligned to the display's vblank phase.
+
+Tests: 3 new unit tests for the phase math (53 winit tests pass);
+`windowing`, `owned-windowing`, `tooltip-windowing`, `popup-windowing`,
+`texture` and `pixel-buffer` each pass once with display-link pacing. Not
+verified: ProMotion/variable refresh displays, moving a window between
+displays with different rates, and pacing during AppKit's live-resize loop.
+
 ### macOS textures: wgpu and CPU pixel-buffer (2026-11-17)
 
 The texture runtime needed no shell changes on macOS: the wgpu texture ring,
