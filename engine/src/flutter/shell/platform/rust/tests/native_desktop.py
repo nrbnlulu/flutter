@@ -22,6 +22,21 @@ import time
 import zlib
 
 
+def runner_environment(environment: dict) -> dict:
+  """Returns `environment` adjusted for launching the native runner.
+
+  macOS strips DYLD_* from processes started through protected binaries such
+  as /usr/bin/python3, and Homebrew's Vulkan validation-layer manifest names
+  its library by leaf name, so the (unprotected) runner needs an explicit
+  library search path. FLUTTER_RUST_DYLD_LIBRARY_PATH overrides the default.
+  """
+  if sys.platform == 'darwin' and 'DYLD_FALLBACK_LIBRARY_PATH' not in environment:
+    environment['DYLD_FALLBACK_LIBRARY_PATH'] = environment.get(
+        'FLUTTER_RUST_DYLD_LIBRARY_PATH', '/opt/homebrew/lib:/usr/local/lib:/usr/lib'
+    )
+  return environment
+
+
 class Desktop(ABC):
 
   def resize_client(self, address, width, height):
@@ -768,6 +783,48 @@ class MacOS(Desktop):
         self.cg.CGEventSetFlags(event, flags)
       self._post(event)
       time.sleep(.05)
+
+  def _display_bounds(self):
+    count = ctypes.c_uint32()
+    displays = (ctypes.c_uint32 * 16)()
+    self.cg.CGGetActiveDisplayList.argtypes = [
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.POINTER(ctypes.c_uint32)
+    ]
+    self.cg.CGDisplayBounds.argtypes = [ctypes.c_uint32]
+    self.cg.CGDisplayBounds.restype = _CGRect
+    if self.cg.CGGetActiveDisplayList(16, displays, ctypes.byref(count)):
+      raise RuntimeError('CGGetActiveDisplayList failed')
+    return [self.cg.CGDisplayBounds(displays[index]) for index in range(count.value)]
+
+  def settled_client(self, address, timeout=5.0):
+    """Waits until a window's frame stops changing and lies on a display.
+
+    A window opened on a Space that is not showing makes macOS slide to it,
+    and CGWindowList reports shifted frames during the animation (window
+    open animations also change the size). Capturing then would read pixels
+    from the wrong place or fail for an off-display rectangle.
+    """
+    deadline = time.monotonic() + timeout
+    last, since = None, time.monotonic()
+    while time.monotonic() < deadline:
+      client = self._client(address)
+      frame = (*client['at'], *client['size'])
+      if frame != last:
+        last, since = frame, time.monotonic()
+      elif time.monotonic() - since >= .5:
+        x, y, width, height = frame
+        if any(b.origin.x <= x and b.origin.y <= y and x + width <= b.origin.x +
+               b.size.width and y + height <= b.origin.y + b.size.height
+               for b in self._display_bounds()):
+          return client
+      time.sleep(.05)
+    raise RuntimeError(f'Window {address} did not settle on a display: {last}')
+
+  def capture_window(self, address, path, region=None):
+    self.settled_client(address)
+    super().capture_window(address, path, region)
 
   def capture(self, rect, path):
     x, y, width, height = rect

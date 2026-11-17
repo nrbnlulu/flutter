@@ -11,6 +11,29 @@ semantics and optional widget assertions, input, screenshots, video and CI
 evidence. Phases 0 and 1 are complete on Linux x64. The display-free virtual
 host is available; agent observation/control and verification remain pending.
 
+### macOS textures: wgpu and CPU pixel-buffer (2026-11-17)
+
+The texture runtime needed no shell changes on macOS: the wgpu texture ring,
+`PixelBufferTexture` staging and the external-texture seam already compile
+there (M1 widened the gpu-queue and wgpu `cfg`s). Two harness fixes:
+
+- `native_desktop.runner_environment()` now holds the macOS
+  `DYLD_FALLBACK_LIBRARY_PATH` setup (Homebrew's validation-layer manifest
+  names its library by leaf name, and SIP strips `DYLD_*` from
+  `/usr/bin/python3` children). `test_texture.py` uses it; `test_windowing.py`
+  now uses it instead of its inline copy. The other harnesses that set
+  `VK_INSTANCE_LAYERS` will switch as their features are ported.
+- `MacOS.capture_window` waits until the window frame has been stable for
+  0.5 s and lies on an active display. When the runner opens on a Space that
+  is not showing, macOS slides to it and CGWindowList reports frames shifted
+  by a screen width (x = -2114 on this 3440-wide display); the wgpu texture
+  test failed 3 of 5 runs that way before this.
+
+Results, `tasks.py --engine host_debug_unopt_arm64` with Khronos validation:
+`texture` 3/3 (85, 80, 77 presentations, pixels changed between captures),
+`pixel-buffer` 3/3, `texture-lifecycle` 3/3 (40 rotations each);
+`windowing` still passes.
+
 ### Shared host: windows created from input handlers (2026-11-16)
 
 Found while recording a macOS demo of `examples/multiple_windows`: none of the
