@@ -3,6 +3,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::{Context, Result, bail};
@@ -74,9 +75,53 @@ fn assemble_args(
         "copy_flutter_bundle".to_owned(),
     ];
     if mode.config().dart_aot {
-        args.push(format!("aot_snapshot_{}", mode.name()));
+        if platform.starts_with("darwin") {
+            // The stock aot_snapshot_* targets cannot build a darwin snapshot
+            // outside an Xcode app (they need a CPU architecture and write
+            // App.framework/App, not the declared app.so). Assemble only the
+            // AOT kernel; `compile_macho` runs gen_snapshot on it.
+            args.push("kernel_snapshot_program".to_owned());
+        } else {
+            args.push(format!("aot_snapshot_{}", mode.name()));
+        }
     }
     args
+}
+
+/// Matches Flutter's macOS deployment target for App.framework.
+const MACOS_MIN_VERSION: &str = "10.15";
+
+/// The gen_snapshot arguments that turn the AOT kernel into a Mach-O dylib,
+/// as the Flutter tool does for App.framework on macOS.
+fn macho_args(app_dill: &Path, output: &Path) -> Vec<String> {
+    vec![
+        "--deterministic".to_owned(),
+        "--snapshot_kind=app-aot-macho-dylib".to_owned(),
+        format!("--macho={}", output.display()),
+        format!("--macho-min-os-version={MACOS_MIN_VERSION}"),
+        "--macho-install-name=@rpath/app.so".to_owned(),
+        app_dill.display().to_string(),
+    ]
+}
+
+/// Compiles the assembled AOT kernel into `app.so`, a Mach-O dylib the engine
+/// loads with dlopen, and ad-hoc signs it: Apple Silicon refuses to map
+/// unsigned code, and gen_snapshot (unlike the linker) does not sign.
+fn compile_macho(engine: &Engine, project: &Project, output: &Path) -> Result<PathBuf> {
+    let build = build_dir(project, output)?;
+    let app_dill = build.join("app.dill");
+    if !app_dill.is_file() {
+        bail!("assemble did not produce {}", app_dill.display());
+    }
+    let app_so = build.join("app.so");
+    let gen_snapshot = engine.host.join("gen_snapshot");
+    run(Command::new(&gen_snapshot).args(macho_args(&app_dill, &app_so)))
+        .with_context(|| format!("{} failed", gen_snapshot.display()))?;
+    run(Command::new("codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(&app_so))
+    .context("cannot ad-hoc sign the AOT snapshot")?;
+    Ok(app_so)
 }
 
 /// Compiles the app's Dart code and assets for `platform` (a Flutter target
@@ -99,10 +144,12 @@ pub fn assemble_bundle(
         .current_dir(&project.dir);
     run(&mut command)?;
 
-    let app_so = if mode.config().dart_aot {
-        Some(find_app_so(project, output)?)
-    } else {
+    let app_so = if !mode.config().dart_aot {
         None
+    } else if platform.starts_with("darwin") {
+        Some(compile_macho(engine, project, output)?)
+    } else {
+        Some(find_app_so(project, output)?)
     };
     Ok(Bundle {
         assets: output.to_owned(),
@@ -110,18 +157,22 @@ pub fn assemble_bundle(
     })
 }
 
-/// `aot_snapshot_release` writes `app.so` into a build directory named by the
-/// build id that assemble records in the output directory.
-fn find_app_so(project: &Project, output: &Path) -> Result<PathBuf> {
+/// The assemble build directory, named by the build id that assemble records
+/// in the output directory.
+fn build_dir(project: &Project, output: &Path) -> Result<PathBuf> {
     let id_file = output.join(".last_build_id");
     let id = fs::read_to_string(&id_file)
         .with_context(|| format!("assemble did not write {}", id_file.display()))?;
-    let app_so = project
+    Ok(project
         .dir
         .join(".dart_tool")
         .join("flutter_build")
-        .join(id.trim())
-        .join("app.so");
+        .join(id.trim()))
+}
+
+/// `aot_snapshot_release` writes `app.so` into the build directory.
+fn find_app_so(project: &Project, output: &Path) -> Result<PathBuf> {
+    let app_so = build_dir(project, output)?.join("app.so");
     if !app_so.is_file() {
         bail!("assemble did not produce {}", app_so.display());
     }
@@ -195,6 +246,25 @@ mod tests {
             &args[args.len() - 2..],
             ["copy_flutter_bundle", "aot_snapshot_release"]
         );
+    }
+
+    #[test]
+    fn darwin_assembles_the_aot_kernel_and_compiles_a_macho_dylib() {
+        let args = assemble_args(
+            BuildMode::Release,
+            "darwin-arm64",
+            "lib/main.dart",
+            &[],
+            Path::new("/o"),
+        );
+        assert_eq!(
+            &args[args.len() - 2..],
+            ["copy_flutter_bundle", "kernel_snapshot_program"]
+        );
+        let macho = macho_args(Path::new("/b/app.dill"), Path::new("/b/app.so"));
+        assert!(macho.contains(&"--snapshot_kind=app-aot-macho-dylib".to_owned()));
+        assert!(macho.contains(&"--macho=/b/app.so".to_owned()));
+        assert_eq!(macho.last().unwrap(), "/b/app.dill");
     }
 
     #[test]

@@ -874,6 +874,11 @@ class MacOS(Desktop):
     self.settled_client(address)
     super().capture_window(address, path, region)
 
+  # The app renders sRGB and macOS composites it into the display's color
+  # space, which screencapture records. Convert back so pixel checks compare
+  # rendered sRGB values (the round trip can be off by one per channel).
+  SRGB_PROFILE = '/System/Library/ColorSync/Profiles/sRGB Profile.icc'
+
   def capture(self, rect, path):
     x, y, width, height = rect
     if width <= 0 or height <= 0:
@@ -881,6 +886,10 @@ class MacOS(Desktop):
     subprocess.run(['screencapture', '-x', '-R', f'{x},{y},{width},{height}',
                     str(path)],
                    check=True)
+    subprocess.run(['sips', '--matchTo', self.SRGB_PROFILE,
+                    str(path)],
+                   check=True,
+                   stdout=subprocess.DEVNULL)
 
 
 def desktop() -> Desktop:
