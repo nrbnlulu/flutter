@@ -63,6 +63,31 @@ tests, 6 wgpu tests and 109 CLI tests; the native texture regression passed
 with 22 presentations. Agent transport, semantics, input,
 assertions and production capture remain Phase 2/3 work.
 
+## Android MapLibre integration (2026-11-16)
+
+The Android texture backend now exposes the same wgpu device and guarded queue
+capabilities as the desktop backend. Standalone MapLibre map creation otherwise
+fails with `shell exposes no wgpu device: Unsupported`, despite successful plugin
+registration. Queue operations delegate through the existing shared queue and
+its Impeller synchronization hooks; no raw queue is exported.
+
+Generated debug activities default `RUST_LIB_BACKTRACE=0` before native startup,
+while preserving an explicit override and panic diagnostics. A Samsung SM-E225F
+(Android 13) map-drag profile attributed 32.5% of sampled CPU time to Android's
+library walker through wgpu debug lock backtrace capture; the application-level
+startup equivalent removed that hotspot and the operator reported smoother
+interaction. Applying the same default in the generated activity avoids requiring
+each application to carry that workaround.
+
+Validation: eight Android project-generator tests passed, including startup
+ordering/preservation, and `flutter-shell-android` cross-checked for ARM64.
+The corresponding local SDK adapter was exercised with vector and hybrid maps,
+cluster zoom, dragging and live radar alerts. This does not qualify the complete
+engine pipeline: text/icon corruption appeared in the consuming UI during hybrid
+map use. Inspect the Rust external-texture acquire/release/image-layout path and
+shared Vulkan resource lifetimes under validation layers before claiming that
+issue is resolved. No engine synchronization change is included in this patch.
+
 ## Current focus
 
 Android hardware-buffer textures have an experimental SDK capability and a
@@ -2628,3 +2653,32 @@ shutdown/restart and EOF cleanup under Vulkan validation. Evidence:
 `/tmp/rlutter-mcp-two-project-check`. The second root is a copied generated
 fixture; no Git metadata is required for project selection. Docs and the
 application skill describe the new registration and session arguments.
+
+
+## Android glyph atlas growth with a non-power-of-two texture limit
+
+The SM-E225F (Mali) reproduced global Flutter text/icon corruption during map
+pitch changes, rapid zoom and max zoom. LLDB caught
+`TypographerContextSkia::CreateGlyphAtlas` returning null with an 8192px atlas,
+a reported maximum height of 16383, and a normal 361px glyph. Atlas growth
+only tries doubled heights, but eviction previously waited for the current
+height to reach the physical maximum. It therefore attempted 16384, failed,
+and left atlas positions invalid. This is a glyph atlas capacity bug, not an
+imagery URL or map texture cache problem.
+
+`GlyphAtlasContext::CanGrowAtlas` checks whether doubling fits by comparing
+against half the device limit. The existing rebuild path now runs before an
+unsupported next height. Regression tests cover 16383 and power-of-two limits.
+
+Validation: changed C++ files pass clang-format; an isolated C++ harness compiling
+the exact new method passes normal/16383/overflow boundaries. The full Impeller
+unit target has not been built here because this checkout lacks engine DEPS.
+For prompt device validation, an isolated APK used the equivalent two-instruction
+ARM64 correction in the existing debug engine; the SDK artifacts were not
+modified. With the normal polygon labels, live radar/camera overlays, tilt,
+rapid zoom and max zoom, glyphs stayed readable and the operator confirmed the
+fix. This prototype is not a source-built engine qualification. Rebuild the
+engine from this commit and run Impeller tests before release.
+
+App evidence: tzevet5/t5hob PR #188. Failed queue-serialization and label-widget
+experiments were reverted. Temporary Vulkan validation settings were removed.
