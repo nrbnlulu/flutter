@@ -4577,6 +4577,23 @@ struct CreatedRegularView {
     event_proxy: HostEventSender,
 }
 
+/// Whether `view` is `root` or one of its descendants, following `parent`.
+#[cfg(any(target_os = "macos", test))]
+fn descends_from(
+    view: FlutterRustViewId,
+    root: FlutterRustViewId,
+    parent: impl Fn(FlutterRustViewId) -> Option<FlutterRustViewId>,
+) -> bool {
+    let mut current = Some(view);
+    while let Some(id) = current {
+        if id == root {
+            return true;
+        }
+        current = parent(id);
+    }
+    false
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeWindowKind {
     Regular,
@@ -4613,15 +4630,8 @@ impl ShellApplication {
         }
         let dismiss = {
             let windows = self.windows.borrow();
-            let within = |mut id: Option<FlutterRustViewId>, root: FlutterRustViewId| {
-                while let Some(current) = id {
-                    if current == root {
-                        return true;
-                    }
-                    id = windows.view(current).and_then(|view| view.parent_view_id);
-                }
-                false
-            };
+            let parent =
+                |id: FlutterRustViewId| windows.view(id).and_then(|view| view.parent_view_id);
             windows
                 .views
                 .values()
@@ -4635,7 +4645,7 @@ impl ShellApplication {
                         !windows
                             .views
                             .values()
-                            .any(|view| view.focused && within(Some(view.view_id), owner))
+                            .any(|view| view.focused && descends_from(view.view_id, owner, parent))
                     })
                 })
                 .map(|view| view.view_id)
@@ -4816,6 +4826,8 @@ impl ShellApplication {
 impl Drop for ShellApplication {
     fn drop(&mut self) {
         self.main_thread_dispatcher.shutdown_for_shell();
+        #[cfg(target_os = "macos")]
+        CurrentPlatform::release_display_link();
         let mut windows = self.windows.borrow_mut();
         if let Some(shell) = windows.shell.take() {
             #[cfg(all(target_os = "linux", feature = "agent-monitor"))]
@@ -5688,20 +5700,22 @@ impl ShellApplication {
                 button,
                 ..
             } => {
-                // AppKit has no pointer capture: a press outside a grabbing
-                // popup is delivered to another of our windows. Dismiss the
-                // popup and consume the press, as Wayland's grab and Win32's
-                // capture do. Presses inside a popup are delivered normally.
+                // AppKit has no pointer capture: a press outside the active
+                // grabbing popup is delivered to another of our windows,
+                // possibly an ancestor popup. Dismiss the active popup and
+                // consume the press, as Wayland's grab and Win32's capture
+                // do. Presses inside it or its child popups are delivered.
                 #[cfg(target_os = "macos")]
                 if state == ElementState::Pressed {
-                    let outside = self
-                        .windows
-                        .borrow()
-                        .view(view_id)
-                        .is_none_or(|view| view.kind != NativeWindowKind::Popup);
-                    if outside {
-                        if let Some((id, _)) = self.active_popup() {
-                            self.dismiss_popup(id);
+                    if let Some((active, _)) = self.active_popup() {
+                        let inside = {
+                            let windows = self.windows.borrow();
+                            descends_from(view_id, active, |id| {
+                                windows.view(id).and_then(|view| view.parent_view_id)
+                            })
+                        };
+                        if !inside {
+                            self.dismiss_popup(active);
                             return;
                         }
                     }

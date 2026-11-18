@@ -124,6 +124,11 @@ fn popup_frame(parent: &NSWindow, placement: PopupPlacement, mtm: MainThreadMark
 }
 
 impl MacPlatform {
+    /// Stops the display-link vsync source during shell teardown.
+    pub(crate) fn release_display_link() {
+        vsync::release();
+    }
+
     /// AppKit has no pointer capture to release; outside presses are routed
     /// by the shared host instead (see `WindowEvent::PointerButton`).
     pub(crate) fn release_popup(_window: &dyn Window) {}
@@ -143,6 +148,10 @@ fn encode_key(event: &FlutterRustKeyEvent, key_code: u32, modifiers: u64) -> Vec
         // exact logical key.
         "charactersIgnoringModifiers": characters,
         "modifiers": modifiers,
+        // Key-up events carry no characters, so without this Flutter's macOS
+        // decoder would derive an opaque macOS-plane key on release instead of
+        // the logical key reported on press (for example keyA).
+        "specifiedLogicalKey": event.logical,
     }))
     .expect("macOS key message serializes")
 }
@@ -233,7 +242,7 @@ impl PlatformBackend for MacPlatform {
         event_loop: &dyn ActiveEventLoop,
         parent: &dyn Window,
         placement: PopupPlacement,
-        _grab: bool,
+        grab: bool,
     ) -> Result<Box<dyn Window>, String> {
         let mtm = main_thread()?;
         let frame = popup_frame(&*ns_window(parent, mtm)?, placement, mtm);
@@ -264,6 +273,12 @@ impl PlatformBackend for MacPlatform {
         // Panels hide when the app deactivates by default; owned Win32 and
         // Wayland tooltips stay until their owner removes them.
         native.setHidesOnDeactivate(false);
+        if !grab {
+            // A clicked panel becomes key, and Flutter's tooltip contract
+            // forbids tooltips from taking input focus. Let presses on a
+            // tooltip fall through to the window underneath instead.
+            native.setIgnoresMouseEvents(true);
+        }
         native.setFrame_display(frame, false);
         // A child window follows its owner when the owner moves, is ordered
         // above it and is hidden with it. Show with orderFront: winit's
@@ -297,5 +312,49 @@ impl PlatformBackend for MacPlatform {
 
     fn set_dialog_parent(child: &dyn Window, parent: &dyn Window) -> Result<(), String> {
         attach_child(child, parent)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key_event(event_type: FlutterRustKeyEventType, character: &str) -> FlutterRustKeyEvent {
+        let mut event = FlutterRustKeyEvent {
+            timestamp_micros: 0,
+            event_type: event_type as u32,
+            physical: 0x0007_0004,
+            logical: u64::from('a'),
+            synthesized: 0,
+            character_length: character.len() as u32,
+            character: [0; flutter_shell_core::FLUTTER_RUST_KEY_CHARACTER_CAPACITY],
+        };
+        event.character[..character.len()].copy_from_slice(character.as_bytes());
+        event
+    }
+
+    #[test]
+    fn printable_key_up_keeps_the_logical_key_of_the_press() {
+        // AppKit key code 0 is the A key.
+        let down: serde_json::Value = serde_json::from_slice(&encode_key(
+            &key_event(FlutterRustKeyEventType::Down, "a"),
+            0,
+            0,
+        ))
+        .unwrap();
+        let up: serde_json::Value = serde_json::from_slice(&encode_key(
+            &key_event(FlutterRustKeyEventType::Up, ""),
+            0,
+            0,
+        ))
+        .unwrap();
+        assert_eq!(down["type"], "keydown");
+        assert_eq!(down["characters"], "a");
+        assert_eq!(up["type"], "keyup");
+        assert_eq!(up["characters"], "");
+        assert_eq!(down["specifiedLogicalKey"], u64::from('a'));
+        assert_eq!(up["specifiedLogicalKey"], down["specifiedLogicalKey"]);
+        assert_eq!(up["keymap"], "macos");
+        assert_eq!(up["keyCode"], 0);
     }
 }
