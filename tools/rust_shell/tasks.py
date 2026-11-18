@@ -77,7 +77,11 @@ class Host:
     if not args.exists():
       command = [
           sys.executable, self.src / 'flutter/tools/gn', '--runtime-mode', self.args.mode,
-          '--no-goma'
+          '--no-goma',
+          # Configure exactly the directory every later step uses (self.out).
+          # GN would otherwise derive its own name, which on macOS appends the
+          # CPU (host_debug_arm64) and no longer matches --engine.
+          '--target-dir', self.args.engine
       ]
       if self.windows:
         command += ['--no-prebuilt-dart-sdk']
