@@ -2,7 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Check compositor command encoding, deterministic captures, and Win32 control."""
+"""Check compositor command encoding, deterministic captures, and Win32/macOS control."""
 from pathlib import Path
 import struct
 import subprocess
@@ -182,6 +182,69 @@ class WindowsTest(unittest.TestCase):
       if process.poll() is None:
         process.kill()
         process.wait()
+
+
+@unittest.skipUnless(sys.platform == 'darwin', 'macOS native automation')
+class MacOSTest(unittest.TestCase):
+
+  def test_lists_real_windows_in_logical_points(self):
+    api = desktop()
+    clients = api.clients()
+    self.assertTrue(all(c['size'][0] > 0 and c['size'][1] > 0 for c in clients))
+    if clients:
+      self.assertEqual(api.metrics(clients[0]['address'])['coordinate_space'], 'logical')
+
+  def test_owned_windows_are_untitled_windows_of_the_owner_process(self):
+    api = desktop()
+    clients = [
+        dict(address='1', pid=10, title='Owner', at=[0, 0], size=[10, 10]),
+        dict(address='2', pid=10, title='', at=[0, 0], size=[5, 5]),
+        dict(address='3', pid=10, title='Other top-level', at=[0, 0], size=[5, 5]),
+        dict(address='4', pid=11, title='', at=[0, 0], size=[5, 5]),
+    ]
+    with patch.object(api, 'clients', return_value=clients):
+      self.assertEqual([c['address'] for c in api.owned_windows('1')], ['2'])
+
+  def test_control_without_accessibility_names_the_setting(self):
+    api = desktop()
+    with patch.object(api.ax, 'AXIsProcessTrusted', return_value=False), \
+        patch.object(api, 'clients', return_value=[
+            dict(address='1', pid=10, title='Owner', at=[0, 0], size=[10, 10])]):
+      with self.assertRaisesRegex(RuntimeError, 'Privacy & Security > Accessibility'):
+        api.move('1', 5, 5)
+
+  def test_unsupported_keys_are_rejected_before_any_input(self):
+    api = desktop()
+    with patch.object(api, 'action') as action:
+      with self.assertRaises(ValueError):
+        api.chord('1', 'F13')
+      action.assert_not_called()
+
+  def test_capture_waits_only_for_the_requested_region_to_be_visible(self):
+    from native_desktop import _CGPoint, _CGRect, _CGSize
+    api = desktop()
+    display = _CGRect(_CGPoint(0, 0), _CGSize(1440, 900))
+    client = dict(address='7', pid=1, title='W', at=[900, 100], size=[800, 600])
+    clock = iter(range(0, 10000))
+    with patch.object(api, '_client', return_value=client), \
+        patch.object(api, '_display_bounds', return_value=[display]), \
+        patch('native_desktop.time.monotonic', side_effect=lambda: next(clock) / 10), \
+        patch('native_desktop.time.sleep'):
+      # The window extends past the right edge, but the requested pixel at
+      # client (150, 150) -> screen (1050, 250) is visible.
+      self.assertIs(api.settled_client('7', region=(150, 150, 1, 1)), client)
+      with self.assertRaisesRegex(RuntimeError, 'did not settle'):
+        api.settled_client('7', region=(700, 150, 1, 1), timeout=2)
+
+  def test_failed_accessibility_actions_are_reported(self):
+    api = desktop()
+    with patch.object(api, '_ax_window', return_value=(object(), object())), \
+        patch.object(api, '_set'), patch.object(api.cf, 'CFRelease'), \
+        patch.object(api.ax, 'AXUIElementCopyAttributeValue', return_value=0), \
+        patch.object(api.ax, 'AXUIElementPerformAction', return_value=-25202):
+      for action, name in (('focus', 'AXRaise'), ('close', 'AXPress')):
+        with self.assertRaisesRegex(RuntimeError, f'{name} on window 9 failed with AXError -25202'):
+          api.action(action, '9')
 
 
 if __name__ == '__main__':

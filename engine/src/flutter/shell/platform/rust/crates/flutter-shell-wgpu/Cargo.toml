@@ -37,6 +37,14 @@ ash = "=0.38.0"
 pollster = "=0.4.0"
 wgpu = { git = "https://github.com/gfx-rs/wgpu.git", rev = "014d9e84813a2946febfa4888694c0b70565b2f5", default-features = false, features = ["std", "vulkan", "wgsl"] }
 
+# macOS runs the same Vulkan broker on MoltenVK. wgpu builds its Vulkan backend
+# on Apple targets only with `vulkan-portability`; winit uses its AppKit backend.
+[target.'cfg(target_os = "macos")'.dependencies]
+ash = "=0.38.0"
+pollster = "=0.4.0"
+wgpu = { git = "https://github.com/gfx-rs/wgpu.git", rev = "014d9e84813a2946febfa4888694c0b70565b2f5", default-features = false, features = ["std", "vulkan", "vulkan-portability", "wgsl"] }
+winit = { version = "=0.31.0-beta.2", default-features = false }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 ash = "=0.38.0"
 pollster = "=0.4.0"

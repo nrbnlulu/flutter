@@ -733,7 +733,7 @@ fn serve(
             let parent = parent.parse::<u32>().map_err(|_| {
                 AgentError::new("invalid_request", "invalid parent process identity")
             })?;
-            if !std::path::Path::new(&format!("/proc/{parent}")).exists() {
+            if !process_exists(parent) {
                 return Err(AgentError::new(
                     "process_exit",
                     "agent parent exited before connecting",
@@ -748,6 +748,11 @@ fn serve(
             Err(error) => return Err(AgentError::new("process_exit", error.to_string())),
         }
     };
+    // BSD sockets (macOS) inherit O_NONBLOCK from the listening socket;
+    // Linux does not. The read/write timeouts below need a blocking stream.
+    stream
+        .set_nonblocking(false)
+        .map_err(|e| AgentError::new("process_exit", e.to_string()))?;
     stream
         .set_read_timeout(Some(Duration::from_millis(100)))
         .map_err(|e| AgentError::new("process_exit", e.to_string()))?;
@@ -2293,4 +2298,25 @@ fn dispatch(host: &VirtualHost, shared: &Shared, command: UiCommand) -> Reply {
     let mut result = result;
     result["actionSequence"] = json!(sequence);
     Ok(result)
+}
+
+/// Whether a process with this ID exists. Linux checks procfs; other Unix
+/// hosts send signal 0, which reports existence without delivering anything
+/// (EPERM means it exists but belongs to another user).
+fn process_exists(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        unsafe extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        let Ok(pid) = i32::try_from(pid) else {
+            return false;
+        };
+        // SAFETY: signal 0 performs only the existence and permission check.
+        (unsafe { kill(pid, 0) } == 0) || std::io::Error::last_os_error().raw_os_error() == Some(1) // EPERM
+    }
 }

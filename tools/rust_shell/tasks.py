@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,7 @@ class Host:
   def __init__(self, args):
     self.args = args
     self.windows = sys.platform == 'win32'
+    self.macos = sys.platform == 'darwin'
     self.src = ROOT / 'engine/src'
     self.out = self.src / 'out' / args.engine
     self.env = os.environ.copy()
@@ -75,9 +77,19 @@ class Host:
     if not args.exists():
       command = [
           sys.executable, self.src / 'flutter/tools/gn', '--runtime-mode', self.args.mode,
-          '--no-goma'
+          '--no-goma',
+          # Configure exactly the directory every later step uses (self.out).
+          # GN would otherwise derive its own name, which on macOS appends the
+          # CPU (host_debug_arm64) and no longer matches --engine.
+          '--target-dir', self.args.engine
       ]
-      command += ['--no-prebuilt-dart-sdk'] if self.windows else ['--enable-fontconfig']
+      if self.windows:
+        command += ['--no-prebuilt-dart-sdk']
+      elif self.macos:
+        # Fontconfig is Linux-only; the engine defaults Vulkan on for macOS.
+        command += ['--mac-cpu', 'arm64' if platform.machine() == 'arm64' else 'x64']
+      else:
+        command += ['--enable-fontconfig']
       self.run(command)
     elif sys.platform.startswith('linux'):
       contents = args.read_text()
@@ -94,7 +106,11 @@ class Host:
     targets = [
         'flutter_rust_engine.dll', 'gen_snapshot.exe', 'font-subset.exe', 'impellerc.exe',
         'libtessellator.dll', 'flutter_patched_sdk', 'flutter/sky/packages/sky_engine:sky_engine'
-    ] if self.windows else ['flutter_rust_shell_runner', 'libflutter_rust_engine.so']
+    ] if self.windows else [
+        # macOS links the Cargo smoke runner against the engine dylib, as
+        # Windows does with the DLL, instead of building the GN runner.
+        'flutter_rust_engine', 'flutter_patched_sdk', 'flutter/sky/packages/sky_engine:sky_engine'
+    ] if self.macos else ['flutter_rust_shell_runner', 'libflutter_rust_engine.so']
     self.run(['ninja', '-C', self.out, *targets, 'dart_sdk', 'frontend_server_aot'])
 
   def smoke(self):
@@ -114,9 +130,18 @@ class Host:
     source = target / triple / profile / 'flutter-rust-shell-smoke.exe' if self.windows else target / profile / 'flutter-rust-shell-smoke'
     stage = self.out / 'rust-smoke'
     stage.mkdir(exist_ok=True)
+    if self.macos:
+      # macOS caches a binary's code signature per file; overwriting a signed
+      # executable or dylib in place makes the kernel kill it at launch.
+      for name in (source.name, 'libflutter_rust_engine.dylib'):
+        (stage / name).unlink(missing_ok=True)
     shutil.copy2(source, stage)
     if self.windows:
       shutil.copy2(self.out / 'flutter_rust_engine.dll', stage)
+    elif self.macos:
+      # The runner's rpath lists @executable_path first, so the staged copy
+      # loads this dylib rather than the one in the GN output directory.
+      shutil.copy2(self.out / 'libflutter_rust_engine.dylib', stage)
     shutil.copy2(self.out / 'icudtl.dat', stage)
 
   def tests(self):
@@ -159,6 +184,8 @@ class Host:
   def runner(self):
     if self.windows:
       runner = self.out / 'rust-smoke/flutter-rust-shell-smoke.exe'
+    elif self.macos:
+      runner = self.out / 'rust-smoke/flutter-rust-shell-smoke'
     else:
       runner = self.out / 'flutter_rust_shell_runner'
     if not runner.is_file():
@@ -439,7 +466,7 @@ def main():
     headless(host, task)
   elif task == 'build':
     host.build()
-    if host.windows:
+    if host.windows or host.macos:
       host.smoke()
   elif task == 'smoke':
     host.smoke()
@@ -516,7 +543,7 @@ def main():
   elif task == 'tooltip-windowing':
     assets = host.bundle(TESTS / 'windowing_fixture', 'lib/tooltips.dart', True)
     host.fixture('test_windowing.py', assets,
-                 '--tooltip-motion' if host.windows else '--wait-parent-mapped')
+                 '--tooltip-motion' if host.windows or host.macos else '--wait-parent-mapped')
   elif task == 'owned-windowing':
     assets = host.bundle(TESTS / 'windowing_fixture', 'lib/owned.dart', True)
     host.fixture('test_windowing.py', assets)
@@ -572,11 +599,13 @@ def main():
       cli = SHELL / 'rlutter/target/release' / ('rlutter' + host.exe)
       host.run([cli, 'create', 'smoke_app', f'--flutter-root={ROOT}'], work)
       project = Path(work) / 'smoke_app'
-      host.run([cli, 'build', 'windows' if host.windows else 'linux', f'--flutter-root={ROOT}'],
-               project)
+      host.run([cli, 'build', 'windows' if host.windows else 'macos' if host.macos else 'linux',
+                f'--flutter-root={ROOT}'], project)
       bundle = project / 'runner-rs/target/debug'
       for path in ['smoke_app' + host.exe, 'data/flutter_assets/kernel_blob.bin', 'data/icudtl.dat',
-                   'flutter_rust_engine.dll' if host.windows else 'libs/libflutter_rust_engine.so']:
+                   'flutter_rust_engine.dll' if host.windows else
+                   'libs/libflutter_rust_engine.dylib' if host.macos else
+                   'libs/libflutter_rust_engine.so']:
         if not (bundle / path).is_file():
           raise RuntimeError(f'Missing bundled artifact: {bundle / path}')
   else:

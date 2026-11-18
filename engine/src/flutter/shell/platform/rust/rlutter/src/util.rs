@@ -213,6 +213,12 @@ pub fn copy_if_changed(source: &Path, destination: &Path) -> Result<()> {
     if destination.is_dir() {
         remove_path(destination)?;
     }
+    // macOS caches a binary's code signature per file: overwriting a signed
+    // library or executable in place makes the kernel kill the next process
+    // that maps it. Replace the file instead.
+    if cfg!(target_os = "macos") && destination.is_file() {
+        fs::remove_file(destination)?;
+    }
     fs::copy(source, destination).with_context(|| format!("copy {}", source.display()))?;
     Ok(())
 }

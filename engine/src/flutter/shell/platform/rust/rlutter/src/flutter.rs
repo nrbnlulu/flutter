@@ -170,6 +170,8 @@ mod tests {
     }
 
     #[test]
+    // macOS has no managed release SDK yet (see `Flutter::managed`).
+    #[cfg(not(target_os = "macos"))]
     fn completed_managed_sdk_is_reused_without_discovery_or_network() {
         let cache = tempdir("flutter_managed");
         let root = cache.join("flutter-BETA");

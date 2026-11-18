@@ -15,7 +15,7 @@ import tempfile
 import struct
 import zlib
 
-from native_desktop import desktop
+from native_desktop import desktop, runner_environment
 from test_texture import DIAGNOSTIC, wait_until
 
 SOURCE = """import 'package:flutter/widgets.dart';
@@ -55,7 +55,7 @@ def main():
   print(f'AOT evidence: {evidence}', flush=True)
   project = args.project.resolve()
   (project / 'lib/aot_probe.dart').write_text(SOURCE, encoding='utf-8')
-  platform = 'windows' if sys.platform == 'win32' else 'linux'
+  platform = {'win32': 'windows', 'darwin': 'macos'}.get(sys.platform, 'linux')
   with (evidence / 'build.log').open('w', encoding='utf-8') as log:
     subprocess.run([
         str(args.cli.resolve()), 'build', platform, f'--{args.mode}', '-t', 'lib/aot_probe.dart',
@@ -78,7 +78,8 @@ def main():
   if not (assets / 'app.so').is_file() or (assets / 'kernel_blob.bin').exists():
     raise RuntimeError('AOT bundle must contain app.so and no debug kernel')
   with (assets / 'app.so').open('rb') as aot:
-    expected = b'MZ' if platform == 'windows' else b'\x7fELF'
+    # Windows: PE/COFF DLL; macOS: 64-bit Mach-O dylib; Linux: ELF.
+    expected = {'windows': b'MZ', 'macos': b'\xcf\xfa\xed\xfe'}.get(platform, b'\x7fELF')
     if not aot.read(4).startswith(expected):
       raise RuntimeError('AOT app.so has the wrong native library format')
   if platform == 'windows':
@@ -93,10 +94,12 @@ def main():
                            cwd=evidence,
                            stdout=log,
                            stderr=subprocess.STDOUT,
-                           env=os.environ | {
-                               'VK_INSTANCE_LAYERS': 'VK_LAYER_KHRONOS_validation',
-                               'WGPU_VALIDATION': '1', 'WGPU_DEBUG': '1'
-                           })
+                           env=runner_environment(
+                               os.environ | {
+                                   'VK_INSTANCE_LAYERS': 'VK_LAYER_KHRONOS_validation',
+                                   'WGPU_VALIDATION': '1', 'WGPU_DEBUG': '1'
+                               }
+                           ))
     try:
       client = wait_until(
           lambda: next((c for c in api.clients() if c['pid'] == app.pid), None), app, 30
@@ -126,12 +129,19 @@ def main():
         # On the first pixel of a one-row image all PNG filter predictors are zero.
         return tuple(zlib.decompress(data)[1:4])
 
-      if not wait_until(lambda: frame_color() == (32, 64, 96), app):
+      # macOS captures are color-managed (converted back to sRGB), which can
+      # be off by one per channel; other desktops capture exact values.
+      tolerance = 1 if platform == 'macos' else 0
+
+      def frame_is(expected):
+        return all(abs(a - b) <= tolerance for a, b in zip(frame_color(), expected))
+
+      if not wait_until(lambda: frame_is((32, 64, 96)), app):
         raise RuntimeError('AOT app did not render its initial fixture color')
       api.capture_window(address, evidence / 'before.png')
       client = next(c for c in api.clients() if c['pid'] == app.pid)
       api.click(address, client['at'][0] + 150, client['at'][1] + 150)
-      if not wait_until(lambda: frame_color() == (128, 64, 32), app):
+      if not wait_until(lambda: frame_is((128, 64, 32)), app):
         raise RuntimeError('AOT native click did not change the rendered fixture color')
       api.capture_window(address, evidence / 'after.png')
       api.action('close', address)

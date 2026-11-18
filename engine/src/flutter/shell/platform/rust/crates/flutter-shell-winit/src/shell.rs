@@ -12,7 +12,7 @@ mod monitor;
 #[path = "platform.rs"]
 mod platform;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "headless.rs"]
 mod headless;
 
@@ -615,7 +615,7 @@ extern "C" fn set_window_constraints_callback(
         view.window.set_max_surface_size(Some(
             LogicalSize::new(finite_maximum(max_width), finite_maximum(max_height)).into(),
         ));
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         windows.reposition_popups(view_id);
     });
 }
@@ -736,7 +736,7 @@ extern "C" fn update_popup_position_callback(
         placement.gravity = request.gravity;
         placement.offset = request.offset;
         placement.constraint_adjustment = request.constraint_adjustment;
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         windows.reposition_popups(view_id);
         true
     })
@@ -1941,7 +1941,7 @@ struct TextInputInbox {
     agent_messages: Mutex<VecDeque<Vec<u8>>>,
     wake_proxy: HostEventSender,
     exit: Arc<ApplicationExitCoordinator>,
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     clipboard: Mutex<Option<arboard::Clipboard>>,
 }
 struct ApplicationExitCoordinator {
@@ -1990,7 +1990,7 @@ impl TextInputInbox {
                 pending: AtomicBool::new(false),
                 wake_proxy,
             }),
-            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             clipboard: Mutex::new(None),
         }
     }
@@ -2080,7 +2080,7 @@ extern "C" fn handle_platform_message(
             );
             return FlutterRustPlatformMessageDisposition::Pending;
         }
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         if let Ok(call) = serde_json::from_slice::<RawMethodCall>(message)
             && let Some(envelope) = handle_desktop_clipboard_call(inbox, &call)
         {
@@ -2815,7 +2815,8 @@ const SYNCED_MODIFIERS: [(ModifiersState, NamedKey, &[KeyCode]); 4] = [
         NamedKey::Alt,
         &[
             KeyCode::AltLeft,
-            #[cfg(target_os = "windows")]
+            // Right Alt is AltGr on Linux; on Windows and macOS it is Alt/Option.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             KeyCode::AltRight,
         ],
     ),
@@ -3250,6 +3251,10 @@ fn physical_key_id(key: PhysicalKey) -> Option<u64> {
     let usage = match key {
         PhysicalKey::Code(code) => key_code_usb_usage(code)?,
         PhysicalKey::Unidentified(NativeKeyCode::Xkb(code)) => {
+            return Some(CurrentPlatform::FALLBACK_KEY_PLANE | u64::from(code));
+        }
+        // AppKit virtual key codes with no USB HID mapping.
+        PhysicalKey::Unidentified(NativeKeyCode::MacOS(code)) => {
             return Some(CurrentPlatform::FALLBACK_KEY_PLANE | u64::from(code));
         }
         PhysicalKey::Unidentified(_) => return None,
@@ -3811,7 +3816,7 @@ mod android_app {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn handle_desktop_clipboard_call(inbox: &TextInputInbox, call: &RawMethodCall) -> Option<Vec<u8>> {
     use serde_json::json;
 
@@ -4096,7 +4101,7 @@ fn run_application_with_fixture(
     demo_fixture: Option<DemoTextureFixture>,
 ) -> Result<(), RunError> {
     init_logging();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if std::env::var_os("FLUTTER_RUST_HEADLESS").is_some_and(|v| v == "1") {
         return headless::run(config, register_application);
     }
@@ -4136,6 +4141,8 @@ fn run_application_with_fixture(
         shell: None,
         window_event_callback: None,
         presentation_stats_path: config.presentation_stats_path.clone(),
+        #[cfg(target_os = "macos")]
+        mouse_view: None,
     }));
     let application = ShellApplication {
         config,
@@ -4160,6 +4167,8 @@ fn run_application_with_fixture(
         monitor: None,
         #[cfg(target_os = "android")]
         android_app: None,
+        #[cfg(target_os = "macos")]
+        popup_focus_check: false,
     };
     event_loop.run_app(application)?;
     match registration_error.lock().take() {
@@ -4195,6 +4204,10 @@ struct ShellApplication {
     // `TextInputSession` the Linux Wayland/X11 IME path feeds.
     #[cfg(target_os = "android")]
     android_app: Option<winit::platform::android::activity::AndroidApp>,
+    // A focus change happened since popups were last checked for owner
+    // activation loss (see `dismiss_unfocused_popups`).
+    #[cfg(target_os = "macos")]
+    popup_focus_check: bool,
 }
 struct DemoTextureFixture {
     texture: Arc<Mutex<Option<DemoTextureHandle>>>,
@@ -4517,6 +4530,9 @@ struct WindowRegistry {
     shell: Option<*mut c_void>,
     window_event_callback: Option<FlutterRustWindowEventCallback>,
     presentation_stats_path: Option<PathBuf>,
+    // The view that currently has Flutter's single mouse device added.
+    #[cfg(target_os = "macos")]
+    mouse_view: Option<FlutterRustViewId>,
 }
 
 fn presentation_stats_path_for_view(
@@ -4535,7 +4551,7 @@ struct ViewWindow {
     kind: NativeWindowKind,
     parent_view_id: Option<FlutterRustViewId>,
     popup_placement: Option<PopupPlacement>,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     popup_dismissed: bool,
     // Stable callback owner. Raster releases its swapchain before the host
     // receives removal completion and drops this view's native window.
@@ -4561,6 +4577,23 @@ struct CreatedRegularView {
     event_proxy: HostEventSender,
 }
 
+/// Whether `view` is `root` or one of its descendants, following `parent`.
+#[cfg(any(target_os = "macos", test))]
+fn descends_from(
+    view: FlutterRustViewId,
+    root: FlutterRustViewId,
+    parent: impl Fn(FlutterRustViewId) -> Option<FlutterRustViewId>,
+) -> bool {
+    let mut current = Some(view);
+    while let Some(id) = current {
+        if id == root {
+            return true;
+        }
+        current = parent(id);
+    }
+    false
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeWindowKind {
     Regular,
@@ -4571,7 +4604,7 @@ enum NativeWindowKind {
 }
 
 impl ShellApplication {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn active_popup(&self) -> Option<(FlutterRustViewId, Arc<dyn Window>)> {
         let windows = self.windows.borrow();
         windows
@@ -4586,7 +4619,44 @@ impl ShellApplication {
             .map(|view| (view.view_id, Arc::clone(&view.window)))
     }
 
-    #[cfg(target_os = "windows")]
+    /// Dismisses grabbing popups whose owner lost activation: no window in
+    /// the owner's family (the owner and its descendants, including the
+    /// popup itself) is focused. Focus moving into the popup is not a loss.
+    /// This covers another app or another of our windows becoming active.
+    #[cfg(target_os = "macos")]
+    fn dismiss_unfocused_popups(&mut self) {
+        if !std::mem::take(&mut self.popup_focus_check) {
+            return;
+        }
+        let dismiss = {
+            let windows = self.windows.borrow();
+            let parent =
+                |id: FlutterRustViewId| windows.view(id).and_then(|view| view.parent_view_id);
+            windows
+                .views
+                .values()
+                .filter(|view| {
+                    view.kind == NativeWindowKind::Popup
+                        && !view.popup_dismissed
+                        && !windows.removing_views.contains(&view.view_id)
+                })
+                .filter(|popup| {
+                    popup.parent_view_id.is_some_and(|owner| {
+                        !windows
+                            .views
+                            .values()
+                            .any(|view| view.focused && descends_from(view.view_id, owner, parent))
+                    })
+                })
+                .map(|view| view.view_id)
+                .collect::<Vec<_>>()
+        };
+        for popup in dismiss {
+            self.dismiss_popup(popup);
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn dismiss_popup(&mut self, id: FlutterRustViewId) {
         let callback = {
             let mut windows = self.windows.borrow_mut();
@@ -4756,6 +4826,8 @@ impl ShellApplication {
 impl Drop for ShellApplication {
     fn drop(&mut self) {
         self.main_thread_dispatcher.shutdown_for_shell();
+        #[cfg(target_os = "macos")]
+        CurrentPlatform::release_display_link();
         let mut windows = self.windows.borrow_mut();
         if let Some(shell) = windows.shell.take() {
             #[cfg(all(target_os = "linux", feature = "agent-monitor"))]
@@ -4963,7 +5035,7 @@ impl ApplicationHandler for ShellApplication {
                     kind: NativeWindowKind::Regular,
                     parent_view_id: None,
                     popup_placement: None,
-                    #[cfg(target_os = "windows")]
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
                     popup_dismissed: false,
                     gpu_broker,
                     window,
@@ -5032,529 +5104,26 @@ impl ApplicationHandler for ShellApplication {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(view_id) = self
-            .windows
-            .borrow()
-            .views
-            .get(&window_id)
-            .map(|view| view.view_id)
-        else {
-            return;
-        };
-        match event {
-            #[cfg(target_os = "windows")]
-            WindowEvent::Moved(_) => self.windows.borrow().reposition_popups(view_id),
-            WindowEvent::SurfaceResized(size) => {
-                let (metrics, visible) = {
-                    let mut windows = self.windows.borrow_mut();
-                    let view = windows
-                        .views
-                        .get_mut(&window_id)
-                        .expect("known window disappeared");
-                    view.gpu_broker
-                        .configure(size.width, size.height)
-                        .expect("winit Vulkan surface reconfiguration failed");
-                    view.visible = size.width > 0 && size.height > 0;
-                    let metrics = WindowMetrics::from_window(
-                        view.window.as_ref(),
-                        view.window.scale_factor(),
-                    );
-                    (metrics, windows.aggregate_window_state().0)
-                };
-                self.windows.borrow().update_satellite_visibility(view_id);
-                #[cfg(target_os = "windows")]
-                self.windows.borrow().reposition_popups(view_id);
-                if let Some(shell) = { self.windows.borrow().shell } {
-                    set_cpp_shell_viewport_metrics(shell, view_id, metrics);
-                }
-                {
-                    let callback = { self.windows.borrow().window_event_callback };
-                    if let Some(callback) = callback {
-                        callback(view_id, FlutterRustWindowEvent::StateChanged);
-                    }
-                }
-                let state = self.lifecycle_state.visibility_changed(visible);
-                self.send_lifecycle_event(state);
-            }
-            WindowEvent::ScaleFactorChanged {
-                scale_factor: _scale_factor,
-                ..
-            } => {
-                let metrics = {
-                    let mut windows = self.windows.borrow_mut();
-                    let view = windows
-                        .views
-                        .get_mut(&window_id)
-                        .expect("known window disappeared");
-                    let size = view.window.surface_size();
-                    view.gpu_broker
-                        .configure(size.width, size.height)
-                        .expect("winit Vulkan surface reconfiguration failed");
-                    WindowMetrics::from_window(view.window.as_ref(), _scale_factor)
-                };
-                #[cfg(target_os = "windows")]
-                self.windows.borrow().reposition_popups(view_id);
-                if let Some(shell) = { self.windows.borrow().shell } {
-                    set_cpp_shell_viewport_metrics(shell, view_id, metrics);
-                }
-                {
-                    let callback = { self.windows.borrow().window_event_callback };
-                    if let Some(callback) = callback {
-                        callback(view_id, FlutterRustWindowEvent::StateChanged);
-                    }
-                }
-            }
-            WindowEvent::Focused(focused) => {
-                #[cfg(target_os = "windows")]
-                if !focused {
-                    // WM_NCACTIVATE can arrive before GetForegroundWindow
-                    // changes. Trust winit's focus transition here.
-                    let dismiss = {
-                        let windows = self.windows.borrow();
-                        windows
-                            .views
-                            .values()
-                            .filter(|view| view.kind == NativeWindowKind::Popup)
-                            .filter(|view| {
-                                let mut parent = view.parent_view_id;
-                                while let Some(id) = parent {
-                                    if id == view_id {
-                                        return true;
-                                    }
-                                    parent = windows.view(id).and_then(|view| view.parent_view_id);
-                                }
-                                false
-                            })
-                            .map(|view| view.view_id)
-                            .collect::<Vec<_>>()
-                    };
-                    for popup in dismiss {
-                        self.dismiss_popup(popup);
-                    }
-                }
-                let (any_focused, released_keys) = {
-                    let mut windows = self.windows.borrow_mut();
-                    let view = windows
-                        .views
-                        .get_mut(&window_id)
-                        .expect("known window disappeared");
-                    view.focused = focused;
-                    if focused {
-                        view.gpu_broker.wake_acquire();
-                    }
-                    // Releases of keys held across a focus loss go to
-                    // whichever window gains focus, never to this one.
-                    let released_keys = if focused {
-                        Vec::new()
-                    } else {
-                        view.keyboard_state.release_all()
-                    };
-                    if focused {
-                        windows.focused_window = Some(window_id);
-                    } else if windows.focused_window == Some(window_id) {
-                        windows.focused_window = None;
-                    }
-                    (windows.aggregate_window_state().1, released_keys)
-                };
-                for event in released_keys {
-                    self.send_key_event(event);
-                }
-                let state = self.lifecycle_state.focus_changed(any_focused);
-                self.send_lifecycle_event(state);
-                if let Some(shell) = { self.windows.borrow().shell } {
-                    send_cpp_view_focus_event(
-                        shell,
-                        view_id,
-                        if focused {
-                            FlutterRustViewFocusState::Focused
-                        } else {
-                            FlutterRustViewFocusState::Unfocused
-                        },
-                    );
-                }
-                {
-                    let callback = { self.windows.borrow().window_event_callback };
-                    if let Some(callback) = callback {
-                        callback(view_id, FlutterRustWindowEvent::StateChanged);
-                    }
-                }
-            }
-            WindowEvent::KeyboardInput {
-                event,
-                is_synthetic,
-                ..
-            } => {
-                #[cfg(target_os = "windows")]
-                if event.state == ElementState::Pressed
-                    && event.logical_key == Key::Named(NamedKey::Escape)
-                {
-                    if let Some((id, _)) = self.active_popup() {
-                        self.dismiss_popup(id);
-                        return;
-                    }
-                }
-                let (committed_text, processed) = {
-                    let mut windows = self.windows.borrow_mut();
-                    let keyboard = &mut windows
-                        .views
-                        .get_mut(&window_id)
-                        .expect("known window disappeared")
-                        .keyboard_state;
-                    let committed_text = keyboard.committed_text(&event).map(str::to_owned);
-                    let processed = keyboard.process(
-                        event.physical_key,
-                        &event.logical_key,
-                        event.text.as_deref(),
-                        event.state,
-                        event.repeat,
-                        is_synthetic,
-                    );
-                    (committed_text, processed)
-                };
-                if let Some(processed) = processed {
-                    for event in processed.before.into_iter().chain(processed.event) {
-                        self.send_key_event(event);
-                    }
-                    self.send_raw_key_event(&processed.raw_message);
-                }
-                if let Some(message) = committed_text
-                    .as_deref()
-                    .and_then(|text| self.text_input_session.keyboard_text(text))
-                {
-                    self.send_text_input_update(&message);
-                }
-            }
-            WindowEvent::ModifiersChanged(modifiers) => {
-                let released = self
-                    .windows
-                    .borrow_mut()
-                    .views
-                    .get_mut(&window_id)
-                    .expect("known window disappeared")
-                    .keyboard_state
-                    .modifiers_changed(modifiers.state());
-                for event in released {
-                    self.send_key_event(event);
-                }
-            }
-            WindowEvent::Ime(event) => {
-                if let Some(message) = self.text_input_session.ime(event) {
-                    self.send_text_input_update(&message);
-                }
-            }
-            WindowEvent::PointerEntered {
-                position,
-                kind: PointerKind::Mouse | PointerKind::Unknown,
-                ..
-            } => {
-                let event = {
-                    let mut windows = self.windows.borrow_mut();
-                    let pointer = &mut windows
-                        .views
-                        .get_mut(&window_id)
-                        .expect("known window disappeared")
-                        .pointer_state;
-                    pointer.physical_x = position.x;
-                    pointer.physical_y = position.y;
-                    pointer.entered()
-                };
-                if let Some(event) = event {
-                    self.send_pointer_events([event]);
-                }
-            }
-            WindowEvent::PointerLeft {
-                kind: PointerKind::Mouse | PointerKind::Unknown,
-                ..
-            } => {
-                let event = {
-                    let mut windows = self.windows.borrow_mut();
-                    windows
-                        .views
-                        .get_mut(&window_id)
-                        .expect("known window disappeared")
-                        .pointer_state
-                        .left()
-                };
-                if let Some(event) = event {
-                    self.send_pointer_events([event]);
-                }
-            }
-            WindowEvent::PointerLeft {
-                position,
-                kind: PointerKind::Touch(finger_id),
-                ..
-            } => {
-                let events = self
-                    .windows
-                    .borrow_mut()
-                    .views
-                    .get_mut(&window_id)
-                    .expect("known window disappeared")
-                    .pointer_state
-                    .touch_left(finger_id.into_raw(), position);
-                self.send_pointer_events(events);
-            }
-            WindowEvent::PointerMoved {
-                position, source, ..
-            } => {
-                let mut windows = self.windows.borrow_mut();
-                let pointer = &mut windows
-                    .views
-                    .get_mut(&window_id)
-                    .expect("known window disappeared")
-                    .pointer_state;
-                match source {
-                    PointerSource::Touch { finger_id, .. } => {
-                        let events = pointer.touch(
-                            finger_id.into_raw(),
-                            position.x,
-                            position.y,
-                            TouchPhase::Moved,
-                        );
-                        drop(windows);
-                        self.send_pointer_events(events);
-                    }
-                    _ => {
-                        let events = pointer.moved(position.x, position.y);
-                        drop(windows);
-                        self.send_pointer_events(events);
-                    }
-                }
-            }
-            WindowEvent::PointerButton {
-                state,
-                position,
-                button,
-                ..
-            } => {
-                #[cfg(target_os = "windows")]
-                {
-                    let popup = {
-                        let windows = self.windows.borrow();
-                        windows
-                            .view(view_id)
-                            .filter(|view| {
-                                view.kind == NativeWindowKind::Popup && !view.popup_dismissed
-                            })
-                            .map(|view| (Arc::clone(&view.window), view.window.surface_size()))
-                    };
-                    if let Some((window, size)) = popup {
-                        if state == ElementState::Pressed
-                            && (position.x < 0.0
-                                || position.y < 0.0
-                                || position.x >= f64::from(size.width)
-                                || position.y >= f64::from(size.height))
-                        {
-                            self.dismiss_popup(view_id);
-                            return;
-                        }
-                        // Winit releases capture before dispatching the last
-                        // button-up. Retain the popup grab after an inside click.
-                        if state == ElementState::Released {
-                            if CurrentPlatform::grab_popup(window.as_ref()).is_err() {
-                                self.dismiss_popup(view_id);
-                                return;
-                            }
-                        }
-                    }
-                }
-                let mut windows = self.windows.borrow_mut();
-                let pointer = &mut windows
-                    .views
-                    .get_mut(&window_id)
-                    .expect("known window disappeared")
-                    .pointer_state;
-                match button {
-                    ButtonSource::Touch { finger_id, .. } => {
-                        let events = pointer.touch(
-                            finger_id.into_raw(),
-                            position.x,
-                            position.y,
-                            match state {
-                                ElementState::Pressed => TouchPhase::Started,
-                                ElementState::Released => TouchPhase::Ended,
-                            },
-                        );
-                        drop(windows);
-                        self.send_pointer_events(events);
-                    }
-                    button => {
-                        pointer.physical_x = position.x;
-                        pointer.physical_y = position.y;
-                        let events = button
-                            .mouse_button()
-                            .map_or_else(Vec::new, |button| pointer.button(button, state));
-                        drop(windows);
-                        self.send_pointer_events(events);
-                    }
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let events = self
-                    .windows
-                    .borrow_mut()
-                    .views
-                    .get_mut(&window_id)
-                    .expect("known window disappeared")
-                    .pointer_state
-                    .scroll(delta);
-                self.send_pointer_events(events);
-            }
-            WindowEvent::RedrawRequested => {
-                // WaitUntil does not run while Win32 owns the modal sizing
-                // loop. A one-shot HWND timer posts this event at our deadline.
-                #[cfg(target_os = "windows")]
-                self.about_to_wait(event_loop);
-                self.deliver_vsync();
-            }
-            WindowEvent::CloseRequested => {
-                if view_id == FlutterRustViewId::IMPLICIT {
-                    if self.text_input_inbox.exit.begin(None) != ExitRequestStart::NotReady {
-                        return;
-                    }
-                    let state = self.lifecycle_state.detached();
-                    self.send_lifecycle_event(state);
-                    event_loop.exit();
-                } else {
-                    {
-                        let callback = { self.windows.borrow().window_event_callback };
-                        if let Some(callback) = callback {
-                            callback(view_id, FlutterRustWindowEvent::CloseRequested);
-                        }
-                    }
-                }
-            }
-            WindowEvent::Destroyed => {
-                if view_id == FlutterRustViewId::IMPLICIT {
-                    let state = self.lifecycle_state.detached();
-                    self.send_lifecycle_event(state);
-                    event_loop.exit();
-                } else {
-                    {
-                        let removals = { self.windows.borrow_mut().begin_remove_views(view_id) };
-                        for (view_id, shell, event_proxy) in removals {
-                            remove_cpp_shell_view(shell, view_id, event_proxy);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
+        // The engine dispatches pointer and key events to Dart synchronously
+        // when the platform and UI threads are the same, so a tap handler can
+        // create, update or destroy windows from inside this callback.
+        let windows = Rc::clone(&self.windows);
+        with_active_windowing_context(event_loop, &windows, || {
+            self.handle_window_event(event_loop, window_id, event)
+        });
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
-        for event in self.host_events.drain() {
-            match event {
-                HostEvent::TaskScheduled => {}
-                HostEvent::VsyncRequested => {
-                    if self.vsync_host.take_request() && !self.windows.borrow().views.is_empty() {
-                        if !self.vsync_armed {
-                            let timing = self
-                                .pacing_window()
-                                .and_then(|window| CurrentPlatform::next_vsync(window.as_ref()));
-                            self.native_vsync_interval =
-                                timing.as_ref().map(|timing| timing.interval);
-                            if let Some(timing) = timing {
-                                self.next_vsync = Some(timing.deadline);
-                            }
-                        }
-                        self.vsync_armed = true;
-                        // Vsync is engine-wide. Idle views have no pending
-                        // Wayland frame callback and redraw immediately, so
-                        // requesting every view can continuously wake the UI
-                        // thread while raster is still presenting a frame.
-                        if CurrentPlatform::is_wayland(event_loop)
-                            && let Some(window) = self.pacing_window()
-                        {
-                            window.request_redraw();
-                        }
-                    }
-                }
-                HostEvent::MainThreadTask(task) => task(),
-                HostEvent::ViewOperationCompleted {
-                    view_id,
-                    operation,
-                    succeeded,
-                } => match (operation, succeeded) {
-                    (ViewOperation::Add, true) => {
-                        log::debug!("Flutter view {} was added", view_id.0);
-                        let windows = self.windows.borrow();
-                        if let Some(window_id) = windows.view_windows.get(&view_id)
-                            && let Some(view) = windows.views.get(window_id)
-                        {
-                            view.window.request_redraw();
-                        }
-                    }
-                    (ViewOperation::Add, false) | (ViewOperation::Remove, true) => {
-                        if operation == ViewOperation::Add {
-                            log::error!("Flutter rejected view {}", view_id.0);
-                        }
-                        let removed = self.windows.borrow_mut().take_view_state(view_id);
-                        let _callback = removed.as_ref().and_then(|removed| removed.callback);
-                        // Native window destruction can synchronously produce
-                        // more winit events. Drop it only after releasing the
-                        // registry's RefCell borrow.
-                        drop(removed);
-                        #[cfg(target_os = "windows")]
-                        if let Some((id, window)) = self.active_popup() {
-                            if CurrentPlatform::grab_popup(window.as_ref()).is_err() {
-                                self.dismiss_popup(id);
-                            }
-                        }
-                        if let Some(callback) = _callback {
-                            callback(view_id, FlutterRustWindowEvent::Destroyed);
-                        }
-                        // The implicit window has its own close/destroy exit
-                        // path; a non-implicit view being the last one closed
-                        // must also terminate the run loop, or the process
-                        // never exits once all windows are gone.
-                        if self.windows.borrow().views.is_empty() {
-                            let state = self.lifecycle_state.detached();
-                            self.send_lifecycle_event(state);
-                            event_loop.exit();
-                        }
-                    }
-                    (ViewOperation::Remove, false) => {
-                        log::error!("Flutter failed to remove view {}", view_id.0);
-                        self.windows.borrow_mut().removing_views.remove(&view_id);
-                    }
-                },
-                HostEvent::RequestAppExit { response } => {
-                    let shell = self.windows.borrow().shell;
-                    if let Some(shell) = shell {
-                        send_cancelable_exit_request(
-                            shell,
-                            Arc::clone(&self.text_input_inbox.exit),
-                            response,
-                        );
-                    } else {
-                        self.text_input_inbox
-                            .exit
-                            .pending
-                            .store(false, Ordering::Release);
-                        if let Some(response) = response {
-                            complete_cpp_platform_message(
-                                response,
-                                ApplicationExitResponse::Exit.envelope(),
-                            );
-                        }
-                        let state = self.lifecycle_state.detached();
-                        self.send_lifecycle_event(state);
-                        event_loop.exit();
-                    }
-                }
-                HostEvent::ExitRequested => {
-                    let state = self.lifecycle_state.detached();
-                    self.send_lifecycle_event(state);
-                    event_loop.exit();
-                }
-            }
-        }
-        #[cfg(target_os = "windows")]
-        self.about_to_wait(event_loop);
+        // Host events can also reach Dart synchronously (see `window_event`).
+        let windows = Rc::clone(&self.windows);
+        with_active_windowing_context(event_loop, &windows, || {
+            self.handle_proxy_wake_up(event_loop)
+        });
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        #[cfg(target_os = "macos")]
+        self.dismiss_unfocused_popups();
         #[cfg(all(target_os = "linux", feature = "agent-monitor"))]
         if let Some(monitor) = &self.monitor {
             monitor.publish(&self.windows.borrow(), &self.text_input_inbox);
@@ -5822,7 +5391,611 @@ impl ApplicationHandler for ShellApplication {
     }
 }
 
+impl ShellApplication {
+    fn handle_window_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(view_id) = self
+            .windows
+            .borrow()
+            .views
+            .get(&window_id)
+            .map(|view| view.view_id)
+        else {
+            return;
+        };
+        match event {
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            WindowEvent::Moved(_) => self.windows.borrow().reposition_popups(view_id),
+            WindowEvent::SurfaceResized(size) => {
+                let (metrics, visible) = {
+                    let mut windows = self.windows.borrow_mut();
+                    let view = windows
+                        .views
+                        .get_mut(&window_id)
+                        .expect("known window disappeared");
+                    view.gpu_broker
+                        .configure(size.width, size.height)
+                        .expect("winit Vulkan surface reconfiguration failed");
+                    view.visible = size.width > 0 && size.height > 0;
+                    let metrics = WindowMetrics::from_window(
+                        view.window.as_ref(),
+                        view.window.scale_factor(),
+                    );
+                    (metrics, windows.aggregate_window_state().0)
+                };
+                self.windows.borrow().update_satellite_visibility(view_id);
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                self.windows.borrow().reposition_popups(view_id);
+                if let Some(shell) = { self.windows.borrow().shell } {
+                    set_cpp_shell_viewport_metrics(shell, view_id, metrics);
+                }
+                {
+                    let callback = { self.windows.borrow().window_event_callback };
+                    if let Some(callback) = callback {
+                        callback(view_id, FlutterRustWindowEvent::StateChanged);
+                    }
+                }
+                let state = self.lifecycle_state.visibility_changed(visible);
+                self.send_lifecycle_event(state);
+            }
+            WindowEvent::ScaleFactorChanged {
+                scale_factor: _scale_factor,
+                ..
+            } => {
+                let metrics = {
+                    let mut windows = self.windows.borrow_mut();
+                    let view = windows
+                        .views
+                        .get_mut(&window_id)
+                        .expect("known window disappeared");
+                    let size = view.window.surface_size();
+                    view.gpu_broker
+                        .configure(size.width, size.height)
+                        .expect("winit Vulkan surface reconfiguration failed");
+                    WindowMetrics::from_window(view.window.as_ref(), _scale_factor)
+                };
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                self.windows.borrow().reposition_popups(view_id);
+                if let Some(shell) = { self.windows.borrow().shell } {
+                    set_cpp_shell_viewport_metrics(shell, view_id, metrics);
+                }
+                {
+                    let callback = { self.windows.borrow().window_event_callback };
+                    if let Some(callback) = callback {
+                        callback(view_id, FlutterRustWindowEvent::StateChanged);
+                    }
+                }
+            }
+            WindowEvent::Focused(focused) => {
+                // Clicking an AppKit panel makes it key, so on macOS a popup
+                // can take focus from its owner. Decide after this batch of
+                // events, once the newly focused window is known.
+                #[cfg(target_os = "macos")]
+                {
+                    self.popup_focus_check = true;
+                }
+                #[cfg(target_os = "windows")]
+                if !focused {
+                    // WM_NCACTIVATE can arrive before GetForegroundWindow
+                    // changes. Trust winit's focus transition here.
+                    let dismiss = {
+                        let windows = self.windows.borrow();
+                        windows
+                            .views
+                            .values()
+                            .filter(|view| view.kind == NativeWindowKind::Popup)
+                            .filter(|view| {
+                                let mut parent = view.parent_view_id;
+                                while let Some(id) = parent {
+                                    if id == view_id {
+                                        return true;
+                                    }
+                                    parent = windows.view(id).and_then(|view| view.parent_view_id);
+                                }
+                                false
+                            })
+                            .map(|view| view.view_id)
+                            .collect::<Vec<_>>()
+                    };
+                    for popup in dismiss {
+                        self.dismiss_popup(popup);
+                    }
+                }
+                let (any_focused, released_keys) = {
+                    let mut windows = self.windows.borrow_mut();
+                    let view = windows
+                        .views
+                        .get_mut(&window_id)
+                        .expect("known window disappeared");
+                    view.focused = focused;
+                    if focused {
+                        view.gpu_broker.wake_acquire();
+                    }
+                    // Releases of keys held across a focus loss go to
+                    // whichever window gains focus, never to this one.
+                    let released_keys = if focused {
+                        Vec::new()
+                    } else {
+                        view.keyboard_state.release_all()
+                    };
+                    if focused {
+                        windows.focused_window = Some(window_id);
+                    } else if windows.focused_window == Some(window_id) {
+                        windows.focused_window = None;
+                    }
+                    (windows.aggregate_window_state().1, released_keys)
+                };
+                for event in released_keys {
+                    self.send_key_event(event);
+                }
+                let state = self.lifecycle_state.focus_changed(any_focused);
+                self.send_lifecycle_event(state);
+                if let Some(shell) = { self.windows.borrow().shell } {
+                    send_cpp_view_focus_event(
+                        shell,
+                        view_id,
+                        if focused {
+                            FlutterRustViewFocusState::Focused
+                        } else {
+                            FlutterRustViewFocusState::Unfocused
+                        },
+                    );
+                }
+                {
+                    let callback = { self.windows.borrow().window_event_callback };
+                    if let Some(callback) = callback {
+                        callback(view_id, FlutterRustWindowEvent::StateChanged);
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic,
+                ..
+            } => {
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                if event.state == ElementState::Pressed
+                    && event.logical_key == Key::Named(NamedKey::Escape)
+                {
+                    if let Some((id, _)) = self.active_popup() {
+                        self.dismiss_popup(id);
+                        return;
+                    }
+                }
+                let (committed_text, processed) = {
+                    let mut windows = self.windows.borrow_mut();
+                    let keyboard = &mut windows
+                        .views
+                        .get_mut(&window_id)
+                        .expect("known window disappeared")
+                        .keyboard_state;
+                    let committed_text = keyboard.committed_text(&event).map(str::to_owned);
+                    let processed = keyboard.process(
+                        event.physical_key,
+                        &event.logical_key,
+                        event.text.as_deref(),
+                        event.state,
+                        event.repeat,
+                        is_synthetic,
+                    );
+                    (committed_text, processed)
+                };
+                if let Some(processed) = processed {
+                    for event in processed.before.into_iter().chain(processed.event) {
+                        self.send_key_event(event);
+                    }
+                    self.send_raw_key_event(&processed.raw_message);
+                }
+                if let Some(message) = committed_text
+                    .as_deref()
+                    .and_then(|text| self.text_input_session.keyboard_text(text))
+                {
+                    self.send_text_input_update(&message);
+                }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                let released = self
+                    .windows
+                    .borrow_mut()
+                    .views
+                    .get_mut(&window_id)
+                    .expect("known window disappeared")
+                    .keyboard_state
+                    .modifiers_changed(modifiers.state());
+                for event in released {
+                    self.send_key_event(event);
+                }
+            }
+            WindowEvent::Ime(event) => {
+                if let Some(message) = self.text_input_session.ime(event) {
+                    self.send_text_input_update(&message);
+                }
+            }
+            WindowEvent::PointerEntered {
+                position,
+                kind: PointerKind::Mouse | PointerKind::Unknown,
+                ..
+            } => {
+                let event = {
+                    let mut windows = self.windows.borrow_mut();
+                    let pointer = &mut windows
+                        .views
+                        .get_mut(&window_id)
+                        .expect("known window disappeared")
+                        .pointer_state;
+                    pointer.physical_x = position.x;
+                    pointer.physical_y = position.y;
+                    pointer.entered()
+                };
+                if let Some(event) = event {
+                    self.send_pointer_events([event]);
+                }
+            }
+            WindowEvent::PointerLeft {
+                kind: PointerKind::Mouse | PointerKind::Unknown,
+                ..
+            } => {
+                let event = {
+                    let mut windows = self.windows.borrow_mut();
+                    windows
+                        .views
+                        .get_mut(&window_id)
+                        .expect("known window disappeared")
+                        .pointer_state
+                        .left()
+                };
+                if let Some(event) = event {
+                    self.send_pointer_events([event]);
+                }
+            }
+            WindowEvent::PointerLeft {
+                position,
+                kind: PointerKind::Touch(finger_id),
+                ..
+            } => {
+                let events = self
+                    .windows
+                    .borrow_mut()
+                    .views
+                    .get_mut(&window_id)
+                    .expect("known window disappeared")
+                    .pointer_state
+                    .touch_left(finger_id.into_raw(), position);
+                self.send_pointer_events(events);
+            }
+            WindowEvent::PointerMoved {
+                position, source, ..
+            } => {
+                let mut windows = self.windows.borrow_mut();
+                let pointer = &mut windows
+                    .views
+                    .get_mut(&window_id)
+                    .expect("known window disappeared")
+                    .pointer_state;
+                match source {
+                    PointerSource::Touch { finger_id, .. } => {
+                        let events = pointer.touch(
+                            finger_id.into_raw(),
+                            position.x,
+                            position.y,
+                            TouchPhase::Moved,
+                        );
+                        drop(windows);
+                        self.send_pointer_events(events);
+                    }
+                    _ => {
+                        let events = pointer.moved(position.x, position.y);
+                        drop(windows);
+                        self.send_pointer_events(events);
+                    }
+                }
+            }
+            WindowEvent::PointerButton {
+                state,
+                position,
+                button,
+                ..
+            } => {
+                // AppKit has no pointer capture: a press outside the active
+                // grabbing popup is delivered to another of our windows,
+                // possibly an ancestor popup. Dismiss the active popup and
+                // consume the press, as Wayland's grab and Win32's capture
+                // do. Presses inside it or its child popups are delivered.
+                #[cfg(target_os = "macos")]
+                if state == ElementState::Pressed {
+                    if let Some((active, _)) = self.active_popup() {
+                        let inside = {
+                            let windows = self.windows.borrow();
+                            descends_from(view_id, active, |id| {
+                                windows.view(id).and_then(|view| view.parent_view_id)
+                            })
+                        };
+                        if !inside {
+                            self.dismiss_popup(active);
+                            return;
+                        }
+                    }
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    let popup = {
+                        let windows = self.windows.borrow();
+                        windows
+                            .view(view_id)
+                            .filter(|view| {
+                                view.kind == NativeWindowKind::Popup && !view.popup_dismissed
+                            })
+                            .map(|view| (Arc::clone(&view.window), view.window.surface_size()))
+                    };
+                    if let Some((window, size)) = popup {
+                        if state == ElementState::Pressed
+                            && (position.x < 0.0
+                                || position.y < 0.0
+                                || position.x >= f64::from(size.width)
+                                || position.y >= f64::from(size.height))
+                        {
+                            self.dismiss_popup(view_id);
+                            return;
+                        }
+                        // Winit releases capture before dispatching the last
+                        // button-up. Retain the popup grab after an inside click.
+                        if state == ElementState::Released {
+                            if CurrentPlatform::grab_popup(window.as_ref()).is_err() {
+                                self.dismiss_popup(view_id);
+                                return;
+                            }
+                        }
+                    }
+                }
+                let mut windows = self.windows.borrow_mut();
+                let pointer = &mut windows
+                    .views
+                    .get_mut(&window_id)
+                    .expect("known window disappeared")
+                    .pointer_state;
+                match button {
+                    ButtonSource::Touch { finger_id, .. } => {
+                        let events = pointer.touch(
+                            finger_id.into_raw(),
+                            position.x,
+                            position.y,
+                            match state {
+                                ElementState::Pressed => TouchPhase::Started,
+                                ElementState::Released => TouchPhase::Ended,
+                            },
+                        );
+                        drop(windows);
+                        self.send_pointer_events(events);
+                    }
+                    button => {
+                        pointer.physical_x = position.x;
+                        pointer.physical_y = position.y;
+                        let events = button
+                            .mouse_button()
+                            .map_or_else(Vec::new, |button| pointer.button(button, state));
+                        drop(windows);
+                        self.send_pointer_events(events);
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let events = self
+                    .windows
+                    .borrow_mut()
+                    .views
+                    .get_mut(&window_id)
+                    .expect("known window disappeared")
+                    .pointer_state
+                    .scroll(delta);
+                self.send_pointer_events(events);
+            }
+            WindowEvent::RedrawRequested => {
+                // WaitUntil does not run while Win32 owns the modal sizing
+                // loop. A one-shot HWND timer posts this event at our deadline.
+                #[cfg(target_os = "windows")]
+                self.about_to_wait(event_loop);
+                self.deliver_vsync();
+            }
+            WindowEvent::CloseRequested => {
+                if view_id == FlutterRustViewId::IMPLICIT {
+                    if self.text_input_inbox.exit.begin(None) != ExitRequestStart::NotReady {
+                        return;
+                    }
+                    let state = self.lifecycle_state.detached();
+                    self.send_lifecycle_event(state);
+                    event_loop.exit();
+                } else {
+                    {
+                        let callback = { self.windows.borrow().window_event_callback };
+                        if let Some(callback) = callback {
+                            callback(view_id, FlutterRustWindowEvent::CloseRequested);
+                        }
+                    }
+                }
+            }
+            WindowEvent::Destroyed => {
+                if view_id == FlutterRustViewId::IMPLICIT {
+                    let state = self.lifecycle_state.detached();
+                    self.send_lifecycle_event(state);
+                    event_loop.exit();
+                } else {
+                    {
+                        let removals = { self.windows.borrow_mut().begin_remove_views(view_id) };
+                        for (view_id, shell, event_proxy) in removals {
+                            remove_cpp_shell_view(shell, view_id, event_proxy);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+        for event in self.host_events.drain() {
+            match event {
+                HostEvent::TaskScheduled => {}
+                HostEvent::VsyncRequested => {
+                    if self.vsync_host.take_request() && !self.windows.borrow().views.is_empty() {
+                        if !self.vsync_armed {
+                            let timing = self
+                                .pacing_window()
+                                .and_then(|window| CurrentPlatform::next_vsync(window.as_ref()));
+                            self.native_vsync_interval =
+                                timing.as_ref().map(|timing| timing.interval);
+                            if let Some(timing) = timing {
+                                self.next_vsync = Some(timing.deadline);
+                            }
+                        }
+                        self.vsync_armed = true;
+                        // Vsync is engine-wide. Idle views have no pending
+                        // Wayland frame callback and redraw immediately, so
+                        // requesting every view can continuously wake the UI
+                        // thread while raster is still presenting a frame.
+                        if CurrentPlatform::is_wayland(event_loop)
+                            && let Some(window) = self.pacing_window()
+                        {
+                            window.request_redraw();
+                        }
+                    }
+                }
+                HostEvent::MainThreadTask(task) => task(),
+                HostEvent::ViewOperationCompleted {
+                    view_id,
+                    operation,
+                    succeeded,
+                } => match (operation, succeeded) {
+                    (ViewOperation::Add, true) => {
+                        log::debug!("Flutter view {} was added", view_id.0);
+                        let windows = self.windows.borrow();
+                        if let Some(window_id) = windows.view_windows.get(&view_id)
+                            && let Some(view) = windows.views.get(window_id)
+                        {
+                            view.window.request_redraw();
+                        }
+                    }
+                    (ViewOperation::Add, false) | (ViewOperation::Remove, true) => {
+                        if operation == ViewOperation::Add {
+                            log::error!("Flutter rejected view {}", view_id.0);
+                        }
+                        let removed = self.windows.borrow_mut().take_view_state(view_id);
+                        let _callback = removed.as_ref().and_then(|removed| removed.callback);
+                        // Native window destruction can synchronously produce
+                        // more winit events. Drop it only after releasing the
+                        // registry's RefCell borrow.
+                        drop(removed);
+                        #[cfg(target_os = "windows")]
+                        if let Some((id, window)) = self.active_popup() {
+                            if CurrentPlatform::grab_popup(window.as_ref()).is_err() {
+                                self.dismiss_popup(id);
+                            }
+                        }
+                        if let Some(callback) = _callback {
+                            callback(view_id, FlutterRustWindowEvent::Destroyed);
+                        }
+                        // The implicit window has its own close/destroy exit
+                        // path; a non-implicit view being the last one closed
+                        // must also terminate the run loop, or the process
+                        // never exits once all windows are gone.
+                        if self.windows.borrow().views.is_empty() {
+                            let state = self.lifecycle_state.detached();
+                            self.send_lifecycle_event(state);
+                            event_loop.exit();
+                        }
+                    }
+                    (ViewOperation::Remove, false) => {
+                        log::error!("Flutter failed to remove view {}", view_id.0);
+                        self.windows.borrow_mut().removing_views.remove(&view_id);
+                    }
+                },
+                HostEvent::RequestAppExit { response } => {
+                    let shell = self.windows.borrow().shell;
+                    if let Some(shell) = shell {
+                        send_cancelable_exit_request(
+                            shell,
+                            Arc::clone(&self.text_input_inbox.exit),
+                            response,
+                        );
+                    } else {
+                        self.text_input_inbox
+                            .exit
+                            .pending
+                            .store(false, Ordering::Release);
+                        if let Some(response) = response {
+                            complete_cpp_platform_message(
+                                response,
+                                ApplicationExitResponse::Exit.envelope(),
+                            );
+                        }
+                        let state = self.lifecycle_state.detached();
+                        self.send_lifecycle_event(state);
+                        event_loop.exit();
+                    }
+                }
+                HostEvent::ExitRequested => {
+                    let state = self.lifecycle_state.detached();
+                    self.send_lifecycle_event(state);
+                    event_loop.exit();
+                }
+            }
+        }
+        #[cfg(target_os = "windows")]
+        self.about_to_wait(event_loop);
+    }
+}
+
 impl WindowRegistry {
+    /// Flutter tracks one state per pointer device across all views, while
+    /// each view tracks its own enter/leave. AppKit enters a window that
+    /// appears under a resting cursor without leaving the window below it,
+    /// so two views can both believe they have the mouse added. A later
+    /// Remove from the stale view then reaches the engine for a device it
+    /// no longer tracks. Keep exactly one view holding the mouse: an Add
+    /// takes it from the others, a stale Remove is dropped, and an event
+    /// from a view that does not hold the mouse is preceded by an Add.
+    #[cfg(target_os = "macos")]
+    fn single_mouse_device(
+        &mut self,
+        events: impl IntoIterator<Item = FlutterRustPointerEvent>,
+    ) -> Vec<FlutterRustPointerEvent> {
+        let mut result = Vec::new();
+        for event in events {
+            if event.device_kind != FlutterRustPointerDeviceKind::Mouse as u32 {
+                result.push(event);
+                continue;
+            }
+            if event.phase == FlutterRustPointerPhase::Remove as u32 {
+                if self.mouse_view == Some(event.view_id) {
+                    self.mouse_view = None;
+                    result.push(event);
+                }
+                continue;
+            }
+            if self.mouse_view != Some(event.view_id) {
+                for view in self.views.values_mut() {
+                    view.pointer_state.inside = view.view_id == event.view_id;
+                }
+                self.mouse_view = Some(event.view_id);
+                if event.phase != FlutterRustPointerPhase::Add as u32 {
+                    result.push(FlutterRustPointerEvent {
+                        phase: FlutterRustPointerPhase::Add as u32,
+                        signal_kind: FlutterRustPointerSignalKind::None as u32,
+                        scroll_delta_x: 0.0,
+                        scroll_delta_y: 0.0,
+                        buttons: 0,
+                        ..event
+                    });
+                }
+            }
+            result.push(event);
+        }
+        result
+    }
+
     fn view(&self, view_id: FlutterRustViewId) -> Option<&ViewWindow> {
         self.view_windows
             .get(&view_id)
@@ -5935,7 +6108,7 @@ impl WindowRegistry {
                 kind,
                 parent_view_id,
                 popup_placement: None,
-                #[cfg(target_os = "windows")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 popup_dismissed: false,
                 gpu_broker,
                 window,
@@ -6026,7 +6199,7 @@ impl WindowRegistry {
                 kind: request.kind,
                 parent_view_id: Some(request.parent_view_id),
                 popup_placement: Some(placement),
-                #[cfg(target_os = "windows")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 popup_dismissed: false,
                 gpu_broker,
                 window,
@@ -6162,7 +6335,7 @@ impl WindowRegistry {
         self.update_satellite_visibility(parent_view_id);
         Ok(())
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn reposition_popups(&self, changed: FlutterRustViewId) {
         let mut pending = vec![changed];
         while let Some(view_id) = pending.pop() {
@@ -6355,6 +6528,8 @@ impl ShellApplication {
     }
 
     fn send_pointer_events(&self, events: impl IntoIterator<Item = FlutterRustPointerEvent>) {
+        #[cfg(target_os = "macos")]
+        let events = self.windows.borrow_mut().single_mouse_device(events);
         if let Some(shell) = { self.windows.borrow().shell } {
             for event in events {
                 send_cpp_pointer_event(shell, event);

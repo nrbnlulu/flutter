@@ -9,7 +9,7 @@ use crate::{abi::Abi, mode::ModeArgs};
     name = "rlutter",
     version,
     about = "Build, run, and verify Flutter apps on the Rust shell",
-    after_help = "Headless workflows (Linux x64, Vulkan required):\n  run --headless        Launch an app for development\n  agent --headless      Control an app through NDJSON over stdio\n  mcp --headless        Expose app control as MCP tools over stdio\n  verify --headless     Execute a JSON scenario and write a report\n\nRun rlutter <COMMAND> --help for examples and required options."
+    after_help = "Headless workflows (Linux x64 or macOS, Vulkan required):\n  run --headless        Launch an app for development\n  agent --headless      Control an app through NDJSON over stdio\n  mcp --headless        Expose app control as MCP tools over stdio\n  verify --headless     Execute a JSON scenario and write a report\n\nRun rlutter <COMMAND> --help for examples and required options."
 )]
 pub struct Cli {
     /// Override the release-managed Flutter SDK.
@@ -68,6 +68,7 @@ pub struct PassthroughArgs {
 pub enum RustPlatform {
     Linux,
     Windows,
+    Macos,
     Android,
 }
 
@@ -77,7 +78,7 @@ pub struct CreateArgs {
     pub dir: PathBuf,
 
     /// Rust shells to generate.
-    #[arg(long, value_enum, value_delimiter = ',', default_value = if cfg!(windows) { "windows" } else { "linux" })]
+    #[arg(long, value_enum, value_delimiter = ',', default_value = if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" })]
     pub rust_platforms: Vec<RustPlatform>,
 
     /// Organization, forwarded to `flutter create`.
@@ -100,6 +101,8 @@ pub enum BuildTarget {
     Linux(BuildArgs),
     /// Build for the Windows x64 host.
     Windows(BuildArgs),
+    /// Build for the macOS host (Apple Silicon or Intel).
+    Macos(BuildArgs),
     /// Build an Android APK.
     Android(AndroidBuildArgs),
 }
@@ -147,7 +150,7 @@ pub struct AndroidBuildArgs {
 
 #[derive(Args, Debug)]
 #[command(
-    after_help = "Example (from the application directory):\n  rlutter run -d linux --headless --size 1280x800 --pixel-ratio 1.25\n\nHeadless rendering requires Linux x64 and Vulkan; no display server is needed.\nFor agent control use `rlutter agent`; for assertions and reports use `rlutter verify`."
+    after_help = "Example (from the application directory):\n  rlutter run -d linux --headless --size 1280x800 --pixel-ratio 1.25\n\nHeadless rendering requires Linux x64 or macOS, and Vulkan; no display server is needed.\nFor agent control use `rlutter agent`; for assertions and reports use `rlutter verify`."
 )]
 pub struct RunArgs {
     /// Run without a display server or native windows (Linux x64).
@@ -388,6 +391,8 @@ mod tests {
             args.rust_platforms,
             [if cfg!(windows) {
                 RustPlatform::Windows
+            } else if cfg!(target_os = "macos") {
+                RustPlatform::Macos
             } else {
                 RustPlatform::Linux
             }]

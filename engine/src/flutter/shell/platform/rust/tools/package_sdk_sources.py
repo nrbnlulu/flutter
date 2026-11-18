@@ -53,8 +53,8 @@ def stage(source, destination, validate_engines=False):
         raise RuntimeError(f'{mode} engine does not match packaged Rust ABI {abi}: {metadata}')
       engines[mode] = metadata
   manifest = {
-      'formatVersion': 1, 'shellAbi': abi, 'headlessPlatforms': ['linux-x64'], 'protocolVersion': 1,
-      'engines': engines, 'requiredSources': required
+      'formatVersion': 1, 'shellAbi': abi, 'headlessPlatforms': ['linux-x64', 'darwin-arm64'],
+      'protocolVersion': 1, 'engines': engines, 'requiredSources': required
   }
   (destination / 'sdk-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
   return manifest

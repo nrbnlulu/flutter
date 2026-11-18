@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import struct
 import zlib
 
@@ -47,7 +48,9 @@ def main():
   parser.add_argument('--assets', type=Path, required=True)
   parser.add_argument('--icu', type=Path, required=True)
   parser.add_argument('--artifacts', type=Path, required=True)
-  parser.add_argument('--strace', type=Path, required=True)
+  # strace is Linux-only. Without it the run still checks frames and
+  # validation, but cannot prove the absence of display-socket connections.
+  parser.add_argument('--strace', type=Path)
   parser.add_argument('--icd', type=Path)
   parser.add_argument('--driver-library-dir', type=Path)
   args = parser.parse_args()
@@ -61,10 +64,15 @@ def main():
   if args.icd:
     environment['VK_DRIVER_FILES'] = str(args.icd.resolve())
   if args.driver_library_dir:
-    environment['LD_LIBRARY_PATH'] = str(args.driver_library_dir.resolve())
-  command = [
+    # macOS dyld uses its own search variable for dlopen'd libraries such as
+    # the Vulkan loader.
+    variable = 'DYLD_FALLBACK_LIBRARY_PATH' if sys.platform == 'darwin' else 'LD_LIBRARY_PATH'
+    environment[variable] = str(args.driver_library_dir.resolve())
+  trace = [
       str(args.strace.resolve()), '-f', '-e', 'trace=connect', '-o',
-      str(output / 'connect.trace'),
+      str(output / 'connect.trace')
+  ] if args.strace else []
+  command = trace + [
       str(args.runner.resolve()),
       str(args.assets.resolve()),
       str(args.icu.resolve()),
@@ -88,8 +96,9 @@ def main():
     assert not re.search(
         r'Validation Error|VUID-|UNASSIGNED-|validation failed|Unhandled Exception|\[ERROR:', logs
     ), logs[-10000:]
-    sockets = (output / 'connect.trace').read_text()
-    assert not re.search(r'\.X11-unix|wayland-[0-9]+', sockets), sockets
+    if args.strace:
+      sockets = (output / 'connect.trace').read_text()
+      assert not re.search(r'\.X11-unix|wayland-[0-9]+', sockets), sockets
     captured = []
     for raw in sorted(frames.glob('*.rgba')):
       match = re.fullmatch(r'frame-(\d+)-(\d+)x(\d+)\.rgba', raw.name)
@@ -107,7 +116,7 @@ def main():
         frames=captured,
         colorConvention='RGBA8 linear UNORM; straight-alpha PNG with gAMA=1.0',
         validation=True,
-        displaySocketConnections=0
+        displaySocketConnections=0 if args.strace else None
     )
   finally:
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')

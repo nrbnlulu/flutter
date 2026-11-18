@@ -11,6 +11,496 @@ semantics and optional widget assertions, input, screenshots, video and CI
 evidence. Phases 0 and 1 are complete on Linux x64. The display-free virtual
 host is available; agent observation/control and verification remain pending.
 
+### PR #21 review fixes (2026-11-18)
+
+Rebased onto `rust/flutter-rs-shell` at 130dc77 (agent monitor, compact MCP
+observations): `shell.rs` and `rlutter/src/commands/mcp.rs` conflicts resolved;
+upstream's attach-to-monitor mode stays Linux-only. Then addressed the AI code
+review: B2 `tasks.py` passes `--target-dir`; B1/C1 `package-macos` fetches the
+version tag with full history and builds against an engine-free Flutter clone,
+asserting physical archive sources (simulated locally with a sparse worktree:
+version 3.50.0-1.0.pre-735, sources stay in the archive); B3 legacy key
+messages carry `specifiedLogicalKey`; B4 vsync anchors on the output timestamp;
+U3 the display link stops after 500 ms idle (observed stopping and restarting
+on input) and is released at teardown; U1 tooltips ignore mouse events; U2
+outside presses are judged against the active popup's subtree; B5/D1 the macOS
+backend checks only the captured region and reports failed AX actions; D2
+failing Vulkan loader candidates are logged. Windowing, owned, tooltip, popup,
+texture, text-input, rlutter runtime and release AOT tasks pass after the
+rebase and fixes; 57 winit, 138 rlutter and 14 backend unit tests pass; Linux
+and Windows `cargo check` are clean.
+
+### macOS release/profile AOT and CI packaging (2026-11-17)
+
+Engines: `out/host_release_arm64` and `out/host_profile_arm64` built locally
+(`gn --runtime-mode <mode> --mac-cpu arm64`; flutter_rust_engine, gen_snapshot,
+font_subset, impellerc, dart_sdk, frontend_server_aot, flutter_patched_sdk,
+sky_engine).
+
+AOT format: on darwin the snapshotter emits a Mach-O dylib, not ELF. The stock
+`aot_snapshot_release`/`aot_snapshot_profile` assemble targets cannot build it
+outside an Xcode app (they dereference an absent CPU architecture and declare
+`app.so` while writing `App.framework/App`). rlutter therefore assembles
+`kernel_snapshot_program` on darwin and runs the engine's `gen_snapshot
+--snapshot_kind=app-aot-macho-dylib --macho=app.so` itself, then ad-hoc signs it
+(`codesign -s -`; Apple Silicon will not map unsigned code). The runner keeps
+loading `data/flutter_assets/app.so` through dlopen, so no engine change.
+
+`test_rlutter_aot.py` runs on macOS (expects a 64-bit Mach-O `app.so`): release
+3/3 and profile 3/3 - relocated bundle, initial frame color, a native click
+changing it, and close with status 0. The macOS desktop backend now converts
+captures to sRGB: this display is wide-gamut (the capture carried a BT.2020
+profile), so the composited sRGB (32, 64, 96) was captured as (49, 63, 93); after
+conversion it reads (31, 64, 96), so the AOT test allows +/-1 per channel on
+macOS only. Texture and rlutter runtime tests still pass.
+
+CI (`flutter-rust-beta.yml`): `build-macos-engine` (macos-14, debug/profile/
+release, `host_<mode>_arm64`, Metal toolchain download, same compiler pieces as
+Linux) and `package-macos` (stages sources with `--validate-engines`, archives
+`flutter-rust-darwin-arm64.tar.gz` - the name rlutter downloads on Apple
+Silicon - and builds debug/profile/release apps from that archive alone);
+`publish` uploads the archive and its release notes mention macOS.
+`package_engine_artifacts.sh` handles `.dylib` engines and the SDK manifest's
+`headlessPlatforms` includes `darwin-arm64`. Verified locally only: packaging
+all three local engines validates ABI 16 per mode, and an app built from the
+archive alone (no local engine) produces the debug kernel, profile and release
+`app.so`. The workflow itself has not run on GitHub; hosted macOS runners have
+no GPU, so the job checks building, not rendering. The managed release Flutter
+SDK is still Linux/Windows only, so macOS users pass `--flutter-root`.
+
+### macOS text input, clipboard and metrics; IME status (2026-11-17)
+
+`test_text_input.py` passes on macOS: a real click focuses the field, typed
+`hello123` reaches Flutter, Cmd+A/Cmd+C round-trips through
+`Clipboard.getData`, Unicode `A😀שלום` survives `setData`/`getData`/`hasStrings`
+and a Cmd+V paste with UTF-16 selection [7, 7], minimize/restore report
+lifecycle hidden/resumed, and Flutter's logical size and scale match the native
+client area before and after a resize. The test uses Cmd on macOS where it uses
+Ctrl elsewhere.
+
+Backend changes: `MacOS.clients()` now reports the client (content) area like
+the Windows backend - a titled window excludes its title bar, measured from
+`+[NSWindow frameRectForContentRect:styleMask:]` (32 pt on macOS 27) - and
+`resize_client` adds it back; digit and Space key codes; and a window's owner
+is found in the full window list, because minimized windows are absent from
+the on-screen list and from `kCGWindowListOptionIncludingWindow`. Popup,
+tooltip, texture and rlutter runtime tests still pass with content-area
+coordinates.
+
+IME: winit's AppKit backend feeds marked-text (preedit) and commit events into
+the shared `WindowEvent::Ime` path, which is unchanged. Composition with a real
+input method is not exercised - on every platform the test records "requires an
+interactive IME" - and on macOS it would need a Japanese/Chinese input source
+enabled in System Settings. Still open: verifying composition by hand, and
+`charactersIgnoringModifiers` in legacy key messages.
+
+### Headless agent, verify and MCP on macOS (2026-11-17)
+
+The display-free host and its agent were Linux-only by `cfg`, not by design:
+they use Unix sockets and offscreen wgpu, both available on macOS.
+
+- Shell (`flutter-shell-winit`): the `headless` module, its dispatch and the
+  headless `HostEventSender` now also compile on macOS. The agent's
+  parent-liveness check used `/proc/<pid>`; other Unix hosts use `kill(pid, 0)`.
+  The accepted agent socket is set blocking explicitly: BSD sockets (macOS)
+  inherit `O_NONBLOCK` from the non-blocking listener, Linux sockets do not, so
+  on macOS the session died with `EAGAIN` (os error 35) after a passing
+  scenario instead of honoring the read/write timeouts.
+- rlutter: `agent`, `mcp` and `verify` are enabled on macOS, the agent builds
+  for the host OS instead of `"linux"`, an x86_64-only check now also accepts
+  macOS, and `run --headless` uses the host (Linux or macOS) device.
+- Harnesses: `test_mcp.py`, `test_verify.py` and `test_agent.py` use
+  `runner_environment()` (with `WGPU_VALIDATION=1`, wgpu enables the Khronos
+  layer, and without the library path instance creation failed with "No
+  suitable graphics adapter").
+
+Results (Apple M6, MoltenVK headless adapter): `test_mcp.py` 3/3 - session
+start/health, window list, a real `input_tap`, `verify_wait`, an MCP image
+screenshot, and both shutdown and EOF exits; `headless-e2e` (`rlutter verify`)
+passes its Unicode text entry, dialog window, screenshot and assertion
+scenario; `headless-agent` passes. 54 winit and 117 rlutter unit tests pass;
+shell `cargo check` for Linux and Windows is clean. rlutter's own Linux/Windows
+cross-check cannot run on this Mac (`ring`'s build script needs a C cross
+compiler). Not run: `headless-render`/`headless-host` (they verify the absence
+of display connections with `strace`, which macOS does not have) and
+`test_agent_crash.py` (needs ffmpeg).
+
+### rlutter on macOS: create, build, run and hot reload (2026-11-17)
+
+rlutter treated every non-Windows host as Linux. It now has a macOS path:
+
+- `sdk.rs`: `libflutter_rust_engine.dylib` / `libtessellator.dylib`, host
+  platform `darwin-arm64` (or `darwin-x64`, also accepted by `flutter
+  assemble`), all three host bundle modes, and local-engine discovery of macOS
+  GN output names (`host_<mode>`, `host_<mode>_<cpu>`, `host_debug_unopt_<cpu>`).
+- Runner template (version 10 -> 11, so existing projects regenerate):
+  `darwin-*` platforms, the `.dylib`, rpaths `@executable_path/libs` then the
+  in-tree engine directory, and `-export_dynamic`.
+- `rlutter build macos`, a `macos` device (`-d macos`, `flutter attach -d
+  macos`), `create --rust-platforms macos` (the default on a Mac), native plugin
+  libraries named `lib<name>.dylib`, and `--vm-service-info-file` on macOS.
+- `copy_if_changed` removes the destination before copying on macOS, so a
+  restaged dylib or runner is not killed for a stale code signature.
+- The managed release Flutter SDK is still Linux/Windows only, so macOS needs
+  `--flutter-root` (or `FLUTTER_ROOT`) until a macOS SDK is published.
+
+`test_rlutter.py` runs `-d macos` and uses `runner_environment()`;
+`tasks.py rlutter-e2e` checks the macOS bundle. Results on this Mac with the
+local `host_debug_unopt_arm64` engine: rlutter unit tests 115 pass (one new
+macOS discovery test; the managed-SDK test is skipped on macOS);
+`rlutter-runtime` 3/3 - Dart debugger breakpoint and expression evaluation,
+hot reload with state preserved ("Reloaded 1 of 484 libraries in 67ms"), hot
+restart ("Restarted application in 169ms"), and a relocated bundle that renders
+the same frame and closes with status 0; `rlutter-e2e` passes.
+
+### macOS display-link vsync (2026-11-17)
+
+`platform/macos_vsync.rs` implements `next_vsync` from a CoreVideo display
+link for the window's display (`current_monitor().native_id()` is the
+`CGDirectDisplayID`); `MacPlatform::uses_host_vsync` is now true, as on
+Windows. The link's output callback records each vblank's `inNow.host_time`
+(mach ticks) and the refresh period in atomics; `next_vsync` advances that
+vblank by whole periods past now, the same (last vblank, period) model as
+`windows_vsync.rs`. Until the first callback, or if the link cannot be
+created, the shared timer fallback paces.
+
+A first version used `CVDisplayLinkGetCurrentTime`. A probe showed its host
+time is the time of the call (host - now = 0.00 ms on every sample) and only
+its video time is quantized, so it carries no phase: every request waited a
+full period from when it was asked and the animated windowing fixture dropped
+to 52.7-53.0 fps against 59.6 for the timer fallback. With callback vblanks it
+runs at 59.6-59.9 fps on this 60 Hz display (interval_ns=16674291). The rate is
+not the improvement; ticks are now aligned to the display's vblank phase.
+
+Tests: 3 new unit tests for the phase math (53 winit tests pass);
+`windowing`, `owned-windowing`, `tooltip-windowing`, `popup-windowing`,
+`texture` and `pixel-buffer` each pass once with display-link pacing. Not
+verified: ProMotion/variable refresh displays, moving a window between
+displays with different rates, and pacing during AppKit's live-resize loop.
+
+### macOS textures: wgpu and CPU pixel-buffer (2026-11-17)
+
+The texture runtime needed no shell changes on macOS: the wgpu texture ring,
+`PixelBufferTexture` staging and the external-texture seam already compile
+there (M1 widened the gpu-queue and wgpu `cfg`s). Two harness fixes:
+
+- `native_desktop.runner_environment()` now holds the macOS
+  `DYLD_FALLBACK_LIBRARY_PATH` setup (Homebrew's validation-layer manifest
+  names its library by leaf name, and SIP strips `DYLD_*` from
+  `/usr/bin/python3` children). `test_texture.py` uses it; `test_windowing.py`
+  now uses it instead of its inline copy. The other harnesses that set
+  `VK_INSTANCE_LAYERS` will switch as their features are ported.
+- `MacOS.capture_window` waits until the window frame has been stable for
+  0.5 s and lies on an active display. When the runner opens on a Space that
+  is not showing, macOS slides to it and CGWindowList reports frames shifted
+  by a screen width (x = -2114 on this 3440-wide display); the wgpu texture
+  test failed 3 of 5 runs that way before this.
+
+Results, `tasks.py --engine host_debug_unopt_arm64` with Khronos validation:
+`texture` 3/3 (85, 80, 77 presentations, pixels changed between captures),
+`pixel-buffer` 3/3, `texture-lifecycle` 3/3 (40 rotations each);
+`windowing` still passes.
+
+### Shared host: windows created from input handlers (2026-11-16)
+
+Found while recording a macOS demo of `examples/multiple_windows`: none of the
+reference app's window buttons opened a window. The tap reached Flutter and
+`onPressed` threw `Bad state: The Rust shell failed to create a regular
+window.` The host accepted window callbacks only inside
+`with_active_windowing_context`, which wrapped the task runner in
+`about_to_wait`. The engine dispatches pointer (and key) events to Dart
+synchronously when the platform and UI threads are the same, so a click
+handler ran inside `window_event`, with no context. The windowing fixtures
+create windows from timers (queued tasks), so they never hit this. The code is
+shared; Linux and Windows very likely had the same problem but were not
+checked.
+
+Fix (`shell.rs`, `host_events.rs`, all platforms): `window_event` and
+`proxy_wake_up` now run their handlers inside the windowing context. The
+context is reentrant, so Win32's `RedrawRequested` -> `about_to_wait` path
+reuses the outer context instead of tripping the old nesting assert.
+
+Verification (macOS): clicking Regular, Modeless Dialog and Satellite in the
+reference app opens each window (2/2 runs); `windowing`, `owned-windowing`,
+`tooltip-windowing` and `popup-windowing` each pass once more under
+validation; `cargo test -p flutter-shell-winit` (50) passes; Linux and Windows
+`cargo check` are clean. Linux and Windows runtime behaviour is unverified.
+
+### macOS M5 — multi-window: dialog, satellite, tooltip and popup (2026-11-16)
+
+Milestone 3 of [`flutter-rs-macos-plan.md`](flutter-rs-macos-plan.md), on
+branch `macos-support` (PR #21). Upstream `rust/flutter-rs-shell` was still at
+`7c8b771`, so no rebase. Host: Apple M6, macOS 27.2, one 1x display,
+MoltenVK 1.4.2.
+
+Window kinds (`platform/macos.rs`, `objc2`/`objc2-app-kit` already in the graph
+through winit, lockfiles gain only dependency edges):
+
+- Dialog and satellite: AppKit child windows (`addChildWindow:ordered:Above`),
+  so they stay above the owner and hide with it. Unlike Win32 owned windows
+  they also move with the owner. `set_dialog_parent` removes the window from any
+  previous parent first and keeps its screen position (satellite reparenting).
+  No native modality, as on Linux and Windows. Satellites are excluded from
+  the Window menu.
+- Tooltip and popup: borderless, untitled, non-activating `NSPanel` child
+  windows shown with `orderFront` (winit's `set_visible` makes the window key)
+  and not hidden on app deactivation. Placement uses the shared
+  `positioner::place` in top-left global points against the parent's content
+  rect and its screen's `visibleFrame`, flipping AppKit's bottom-left frames
+  against the primary screen height. `reposition_popup` mirrors Windows and
+  skips unchanged frames.
+- Shared host (`shell.rs`, macOS added to existing Windows `cfg`s): popup
+  repositioning, popup state, Escape and `dismiss_popup`. macOS-only additions:
+  a press in a non-popup view dismisses the active popup and is consumed
+  (AppKit has no pointer capture); owner activation loss is decided after
+  each event batch, dismissing a popup only if no window in its owner's family
+  is focused, because AppKit makes a clicked panel key; and one view holds the
+  mouse at a time (below).
+
+Problems found and fixed on the way:
+
+- Swapping the panel's class at runtime to refuse key focus made AppKit assert
+  in `NSDynamicProperties`; `becomesKeyOnlyIfNeeded` did not stop a clicked
+  panel from becoming key either (the tooltip commit wrongly claimed it did;
+  the popup focus fix removes it). The popup test caught the inside-click
+  dismissal this caused.
+- `pointer_data_packet_converter.cc` DCHECK (Remove for an unknown device):
+  AppKit enters a window that appears under a resting cursor without leaving
+  the window below, so two views both had the mouse added. On macOS an Add
+  now takes the mouse from other views, stale Removes are dropped and events
+  from a view without the mouse get an Add first. The 60-window test hit this
+  3/3 with the cursor parked over the fixture windows and passes after.
+- `tasks.py smoke` overwrote the signed staged runner in place; macOS caches
+  code signatures per file and killed the new binary at launch (exit 137).
+  Staged files are now removed before copying.
+
+Tests (new `native_desktop.MacOS` backend: CGWindowList for clients, CGEvent
+for click/chord, Accessibility for move/resize/focus/close; `owned_windows`
+returns the owner's untitled same-PID windows because the window server does
+not expose child-window ownership; 4 new unit tests, 12 pass with 4
+Windows-only skipped). `tools/rust_shell/tasks.py` gained a macOS host path
+(engine dylib, staged Cargo smoke runner, `--tooltip-motion`). Final code,
+`python3 tools/rust_shell/tasks.py <task> --engine host_debug_unopt_arm64`
+under Khronos validation, 3 runs each:
+
+| Task | Passes | Primary presentations |
+|---|---|---|
+| `windowing` (60 views) | 3/3 | 473, 465, 470 |
+| `owned-windowing` | 3/3 | 538, 532, 532 |
+| `tooltip-windowing` (`--tooltip-motion`) | 3/3 | 472, 475, 471 |
+| `popup-windowing` (`--popup-dismissal`) | 3/3 | 509, 524, 503 |
+
+Every tooltip run reported parent movement, anchored resizing and explicit and
+partial position updates; every popup run reported that an inside click kept
+the popup and that outside click, Escape and owner activation loss dismissed
+it. No run logged a validation error. `cargo test -p flutter-shell-winit` (50)
+passes; `cargo check -p flutter-shell-winit` for `x86_64-unknown-linux-gnu`
+and `x86_64-pc-windows-msvc` is clean after each shared-file change.
+
+Limitations and requirements:
+
+- The tooltip-motion and popup tests need Accessibility permission for the
+  app that runs Python (here Claude and its Claude Code helper; a restart was
+  needed after granting it) and Screen Recording for window titles.
+- They need an idle desktop. Earlier runs failed when another app was
+  activated mid-run: the runner went inactive and its windows left the active
+  Space (confirmed with temporary AppKit state logging), which also starves
+  hidden windows of drawables. The owned-window lifecycle failed once that way.
+- Android `cargo check` could not run on this host (no NDK for a dependency's
+  build script). No Android code changed; every widened `cfg` only adds macOS.
+- Owned windows moving with their owner is an AppKit difference from Win32.
+  Dialog modality, nested popups beyond the fixtures and Retina placement are
+  unverified.
+
+### macOS M2–M4 — AppKit host, windowed rendering, relocatable runner (2026-11-13)
+
+Steps M2–M4 of [`flutter-rs-macos-plan.md`](flutter-rs-macos-plan.md), on
+branch `macos/m0-engine-build`. Host: Apple M6, macOS 27.0, one external 1x
+display (AW3426DWM), MoltenVK 1.4.2.
+
+M2 (`flutter-shell-winit`):
+
+- `src/platform/macos.rs` (`MacPlatform`): keymap `"macos"`, fallback plane
+  `0x01400000000`, no NumLock inference; Option-produced text counts as input
+  (`text_modifiers` drops ALT); CapsLock from `CGEventSourceFlagsState`; legacy
+  key messages in Flutter's macOS schema (`keyCode` from winit's scancode, which
+  is the AppKit virtual key code, `characters`, `modifiers` with the
+  `NSEventModifierFlags` layout including left/right bits;
+  `charactersIgnoringModifiers` repeats `characters` because winit does not
+  expose it). Regular windows only; dialogs, satellites, tooltips and popups are
+  reported unsupported. `is_wayland` is false and `uses_host_vsync`/`next_vsync`
+  keep their defaults (C++ timer pacing); a display-link source plugs into
+  those two methods later, as `windows_vsync.rs` does.
+- `platform.rs` selects `MacPlatform`; `Cargo.toml` adds a macOS block (winit
+  AppKit with no features, wgpu with `vulkan-portability`, arboard,
+  raw-window-handle). `shell.rs`: arboard clipboard enabled on macOS, right
+  Option synced as Alt, and unidentified `NativeKeyCode::MacOS` keys map into
+  the fallback plane instead of being dropped.
+- Deadlock fix in `flutter-shell-wgpu`: `present_image` called
+  `window.pre_present_notify()` while holding `surface_state`. On AppKit that
+  call is a no-op but winit dispatches it synchronously to the main thread,
+  which could be blocked on the same lock in `configure` during a resize. The
+  sampled hang showed exactly that pair of stacks. The call is skipped on macOS.
+- Vulkan loader discovery: vendored `wgpu-hal` gains `load_macos_vulkan` (see
+  its `README.flutter`), trying `FLUTTER_RUST_VULKAN_LIBRARY`, the default
+  lookup, the executable directory, `../Frameworks`, `/opt/homebrew/lib` and
+  `/usr/local/lib`. Without it the shell started with no Vulkan backend whenever
+  `DYLD_*` was absent, which includes anything launched via `/usr/bin/python3`
+  (SIP strips `DYLD_*`).
+
+M3: `_window_rust.dart` accepts `Platform.isMacOS`; the symbol probe finds
+`FlutterRustShellWindowCreateRegular` through the dylib's exports.
+
+M4: `tests/smoke_runner/build.rs` links the `.dylib`, uses ld64's
+`-export_dynamic`, and puts `@executable_path` before the GN directory in the
+rpath. `tests/test_windowing.py` passes `DYLD_FALLBACK_LIBRARY_PATH` to the
+runner on macOS (default `/opt/homebrew/lib:/usr/local/lib:/usr/lib`, override
+`FLUTTER_RUST_DYLD_LIBRARY_PATH`) because Homebrew's validation-layer manifest
+names its library by leaf name.
+
+Validation:
+
+- `cargo test` for winit, wgpu and gpu-queue on macOS: 57 passed (winit 50; the
+  two Linux AltGr/NumLock tests are Linux-only). `cargo check` of all three
+  crates for Linux x64 and Windows x64 succeeds.
+- Smoke counter app: AppKit window on screen (800x632 points including the title
+  bar, confirmed with `CGWindowListCopyWindowInfo`), frames presented at
+  800x600 through the swapchain, no validation errors.
+- `tests/test_windowing.py` (60 regular views created, resized four times and
+  destroyed, Khronos validation via `VK_INSTANCE_LAYERS`): **passed 3/3 after
+  the deadlock fix** (492, 494 and 464 primary presentations), 0/2 before it.
+  This covers the acquire→Impeller→present chain on `CAMetalLayer` surfaces and
+  programmatic resize.
+- Relocation: the runner, engine dylib, `icudtl.dat` and assets staged in one
+  directory, ad-hoc signed (`codesign --sign -`), launched from an unrelated
+  directory with `env -i`: it loaded the bundled engine dylib, found the Vulkan
+  loader through the new fallback and presented frames.
+
+Manual check (2026-11-13, by hand on the same host): the smoke app was run
+against a checklist covering pointer clicks and hover, scroll, keyboard
+(including Option dead keys, CapsLock and Cmd shortcuts), user-driven live
+resize, minimize/restore/focus, and close via the window button and Cmd+Q.
+The tester reported it working fine; no individual results or exit codes
+were recorded.
+
+Loader override fix (2026-11-13): `load_macos_vulkan` queued
+`FLUTTER_RUST_VULKAN_LIBRARY` as a candidate but returned from
+`ash::Entry::load()` first, so the override never won when a default loader was
+findable. The override is now tried before anything else; if it fails to load,
+a warning is logged and the documented search continues. The doc comment and
+`README.flutter` match. Rebuilt the smoke runner and ran the counter app three
+ways: default (loaded `/opt/homebrew/lib/libvulkan.1.dylib`), override pointing
+at `/opt/homebrew/opt/vulkan-loader/lib/libvulkan.1.dylib` (loaded that path),
+and a nonexistent override (warning, then fell back to Homebrew). All three
+reached the Dart VM service and rendered.
+
+Linux compile check (2026-11-13): `cargo +1.93.1 check --locked --target
+x86_64-unknown-linux-gnu -p flutter-shell-core -p flutter-plugin-sdk -p
+flutter-gpu-queue -p flutter-shell-wgpu -p flutter-shell-winit` on this Mac
+finished with no errors or warnings. This is a type check only; nothing was
+linked or run on Linux.
+
+Still not verified: Retina/scale changes (only a 1x display was attached);
+automated pixel captures of native windows (no Screen Recording permission).
+Release AOT was not attempted (needs a release engine build). MoltenVK and
+the loader still come from Homebrew rather than being bundled.
+
+### macOS M1 — wgpu and Impeller on MoltenVK, headless (2026-11-13)
+
+Second step of [`flutter-rs-macos-plan.md`](flutter-rs-macos-plan.md), on
+branch `macos/m0-engine-build`. Host: Apple M6, MoltenVK 1.4.2, Homebrew
+`vulkan-loader`/`vulkan-validationlayers`/`vulkan-tools` 1.4.363.
+
+Changes:
+
+- `flutter-gpu-queue` and `flutter-shell-wgpu`: every
+  `any(linux, windows[, android])` cfg now includes `macos` (30 sites). Each
+  crate gets a `macos` dependency block whose wgpu features add
+  `vulkan-portability`; on Apple targets wgpu's plain `vulkan` feature compiles
+  no backend. winit uses `default-features = false`, as on Windows. Both
+  lockfiles gain only `wgpu-core-deps-apple`.
+- No broker code changes were needed. The vendored wgpu-hal already enables
+  `VK_KHR_portability_enumeration` (with the enumerate-portability flag) and
+  `VK_EXT_metal_surface` on macOS, `VK_KHR_portability_subset` on Apple
+  devices, and creates AppKit surfaces from a `CAMetalLayer`. Impeller accepts
+  this extension set (`capabilities_vk.cc` treats metal-surface/portability as
+  WSI and portability-subset as optional).
+- `tests/headless_probe/build.rs`: links `libflutter_rust_engine.dylib` and uses
+  ld64's `-export_dynamic` on macOS.
+- `tests/test_headless_probe.py`: `--strace` is optional (display-socket check
+  reported as `null` when absent); `--driver-library-dir` sets
+  `DYLD_FALLBACK_LIBRARY_PATH` on macOS.
+
+Validation (all with `WGPU_VALIDATION=1` and
+`VK_LOADER_LAYERS_ENABLE=*validation*`; the loader log confirms
+`VK_LAYER_KHRONOS_validation` inserted at instance and device level):
+
+- `cargo test -p flutter-gpu-queue -p flutter-shell-wgpu`: 7 passed. The 4
+  device tests (`--ignored`, benchmark skipped) passed with no validation
+  messages: padded direct upload, slot reuse, slow writer/shutdown and the
+  empty hand-off pass uniform readback.
+- Headless probe (`tests/headless_fixture`, bundled with
+  `flutter build bundle --local-engine=host_debug_unopt_arm64`): **PASS, 12
+  Flutter frames** at 801x601 and 1001x751 rendered by Impeller on the borrowed
+  wgpu device, exit 0, no validation errors. Frames show the colour bars, text
+  and external wgpu texture squares. Evidence: `~/dev/m1-evidence/headless/`.
+- The Dart VM started, so the M0 assumption holds: the engine found
+  `kDartSnapshotData`/`Text` through `RTLD_DEFAULT` in the dylib with no
+  `dart_snapshot.cc` change.
+- `cargo check` of both crates for `x86_64-unknown-linux-gnu` and
+  `x86_64-pc-windows-msvc` still succeeds. Linux/Windows runtime tests were not
+  run.
+
+Development notes: ash loads `libvulkan.dylib` by name, which dyld does not
+find in `/opt/homebrew/lib` by default; set
+`DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` (bundling the loader is M4).
+The Rust targets are built with `cargo +1.93.1` from
+`engine/src/flutter/shell/platform/rust`. Building the bundle also needs
+`ninja dart_sdk frontend_server_aot flutter_patched_sdk
+flutter/sky/packages/sky_engine:sky_engine` for the local engine.
+
+Not covered by M1: window surfaces and the acquire→Impeller→present semaphore
+chain on a `CAMetalLayer` (needs the M2 winit host); performance; bundling
+MoltenVK.
+
+### macOS M0 — engine dylib on a macOS host (2026-11-13)
+
+First milestone step of [`flutter-rs-macos-plan.md`](flutter-rs-macos-plan.md)
+(Apple Silicon, macOS 27.0, Xcode with SDK MacOSX27.2). Branch
+`macos/m0-engine-build`, commit `60789a4`.
+
+Configured with `flutter/tools/gn --unoptimized --mac-cpu arm64
+--runtime-mode debug --no-rbe --no-goma` (`out/host_debug_unopt_arm64`) and
+built `ninja flutter_rust_engine`. The Rust shell's GN file already loads on
+macOS and its C++ sources (including the Vulkan surface and context) compiled
+without source changes. Host prerequisites found on the way: `xcode-select`
+must point at Xcode.app with the license accepted (the `darwin_sdk.py`
+gclient hook fails otherwise), and Xcode's separately downloaded Metal
+Toolchain (`xcodebuild -downloadComponent MetalToolchain`) is required because
+the macOS build still compiles Impeller's Metal shader libraries.
+
+Changes: `BUILD.gn` gives `flutter_rust_engine` a Mach-O exported-symbols list
+(`cpp/rust_engine_exports_mac.sym`, mirroring `rust_engine_exports.lst`) and an
+`@rpath/libflutter_rust_engine.dylib` install name, under `is_mac` only.
+
+Result: `libflutter_rust_engine.dylib` (arm64, 133 MB debug unopt) exports 50
+symbols: the 48 `FlutterRustShell*` functions defined in C++ plus
+`kDartSnapshotData`/`kDartSnapshotText`. Before the list it exported 161,
+including `InternalFlutterGpu_*` and `kPlatformStrongDill*`. The two declared
+ABI functions not exported (`FlutterRustShellGetAbi`, `FlutterRustShellRun`)
+are defined in Rust and supplied by the runner; the dylib has no unresolved
+Rust or Flutter symbols.
+
+Plan correction: no `runtime/dart_snapshot.cc` change is needed. macOS keeps
+the dynamic lookup path, whose current-process library is `RTLD_DEFAULT`
+(`fml/platform/posix/native_library_posix.cc`), and that searches the loaded
+dylib's exported snapshot symbols. This is unverified at runtime until a
+Cargo-linked runner exists (M4).
+
+Not yet done: Rust crates are not built for `aarch64-apple-darwin` (M1/M2),
+no runner links the dylib, nothing has run, and Linux was not rebuilt (the
+change is gated on `is_mac`).
+
 ### Headless Phase 0 (2026-11-09)
 
 Implemented the offscreen presentation seam (private ABI 15), owned targets,

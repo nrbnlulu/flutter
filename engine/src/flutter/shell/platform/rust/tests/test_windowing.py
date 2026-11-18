@@ -13,7 +13,7 @@ import re
 import subprocess
 import tempfile
 import time
-from native_desktop import desktop
+from native_desktop import desktop, runner_environment
 from test_texture import wait_until
 
 
@@ -40,6 +40,7 @@ def main():
       "RUST_BACKTRACE": "1",
       "FLUTTER_RUST_WINDOWING_STATUS": str(status),
   })
+  runner_environment(environment)
   motion = Path(directory) / "motion"
   parent_ready = Path(directory) / 'parent-ready'
   if args.wait_parent_mapped:

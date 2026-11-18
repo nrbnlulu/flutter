@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 import subprocess
 
+from native_desktop import runner_environment
+
 
 def main():
   parser = argparse.ArgumentParser(description=__doc__)
@@ -45,7 +47,9 @@ def main():
   base = [str(args.rlutter.resolve()), '--flutter-root', str(args.flutter_root.resolve())]
   if args.local_engine_src:
     base += ['--local-engine-src', str(args.local_engine_src.resolve())]
-  env = {k: v for k, v in os.environ.items() if k not in ('DISPLAY', 'WAYLAND_DISPLAY')}
+  env = runner_environment({
+      k: v for k, v in os.environ.items() if k not in ('DISPLAY', 'WAYLAND_DISPLAY')
+  })
   env['RUSTUP_TOOLCHAIN'] = '1.93.1'
   results = {}
   for name, defines, selected in [

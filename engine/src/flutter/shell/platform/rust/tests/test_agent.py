@@ -14,6 +14,8 @@ import socket
 import struct
 import subprocess
 import tempfile
+
+from native_desktop import runner_environment
 import time
 
 
@@ -210,6 +212,7 @@ def main():
     )
     if args.icd:
       env['VK_DRIVER_FILES'] = str(args.icd.resolve())
+    runner_environment(env)
     with (output / 'app.log').open('w') as log:
       process = subprocess.Popen([
           str(args.runner.resolve()),

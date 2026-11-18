@@ -17,7 +17,7 @@ import time
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
-from native_desktop import desktop
+from native_desktop import desktop, runner_environment
 from test_texture import DIAGNOSTIC, wait_until
 
 SOURCE = """import 'package:flutter/widgets.dart';
@@ -69,16 +69,20 @@ def main():
   source.write_text(SOURCE, encoding='utf-8')
   service = evidence / 'service.json'
   api = desktop()
-  environment = os.environ | {
-      'VK_INSTANCE_LAYERS': 'VK_LAYER_KHRONOS_validation', 'WGPU_VALIDATION': '1', 'WGPU_DEBUG': '1'
-  }
+  environment = runner_environment(
+      os.environ | {
+          'VK_INSTANCE_LAYERS': 'VK_LAYER_KHRONOS_validation', 'WGPU_VALIDATION': '1', 'WGPU_DEBUG':
+              '1'
+      }
+  )
+  host_device = {'win32': 'windows', 'darwin': 'macos'}.get(sys.platform, 'linux')
   log_path = evidence / 'run.log'
   app_pid = None
   debugger = None
   with log_path.open('w', encoding='utf-8') as log:
     process = subprocess.Popen([
-        cli, 'run', '-d', 'windows' if sys.platform == 'win32' else 'linux', '-t',
-        'lib/rlutter_probe.dart', root_arg, f'--vm-service-info-file={service}'
+        cli, 'run', '-d', host_device, '-t', 'lib/rlutter_probe.dart', root_arg,
+        f'--vm-service-info-file={service}'
     ],
                                cwd=project,
                                env=environment,

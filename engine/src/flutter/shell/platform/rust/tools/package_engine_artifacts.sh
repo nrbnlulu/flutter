@@ -9,7 +9,9 @@ src="$1"
 dst="$2"
 mkdir -p "$dst/gen/flutter/lib/snapshot"
 
-for f in libflutter_rust_engine.so flutter_rust_shell_runner icudtl.dat gen_snapshot font-subset impellerc libtessellator.so; do
+# Linux ships .so libraries and the GN runner; macOS ships .dylib libraries.
+for f in libflutter_rust_engine.so libflutter_rust_engine.dylib flutter_rust_shell_runner icudtl.dat \
+    gen_snapshot font-subset impellerc libtessellator.so libtessellator.dylib; do
   [[ -e "$src/$f" ]] && cp -L "$src/$f" "$dst/$f"
 done
 cp -RL "$src/flutter_patched_sdk" "$dst/"
@@ -27,7 +29,9 @@ import json
 from pathlib import Path
 import sys
 root = Path(sys.argv[1]).resolve()
-engine = ctypes.CDLL(str(root / 'libflutter_rust_engine.so'))
+library = next(root / name for name in ('libflutter_rust_engine.so', 'libflutter_rust_engine.dylib')
+               if (root / name).is_file())
+engine = ctypes.CDLL(str(library))
 engine.FlutterRustShellGetEngineAbiVersion.restype = ctypes.c_uint32
 engine.FlutterRustShellGetBuildMode.restype = ctypes.c_char_p
 engine.FlutterRustShellGetEngineRevision.restype = ctypes.c_char_p

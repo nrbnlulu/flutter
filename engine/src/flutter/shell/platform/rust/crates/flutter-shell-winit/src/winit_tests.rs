@@ -1377,3 +1377,24 @@ fn bounded_task_dispatch_preserves_due_work_and_deadline_order() {
     assert_eq!(queue.take_due_limit(now, 64).len(), 2);
     assert_eq!(queue.next_deadline(), Some(now + Duration::from_secs(1)));
 }
+
+#[test]
+fn outside_press_on_an_ancestor_popup_is_outside_the_active_child_popup() {
+    // Window 1 owns popup 2, which owns the active popup 3.
+    let parent = |id: FlutterRustViewId| match id.0 {
+        3 => Some(FlutterRustViewId(2)),
+        2 => Some(FlutterRustViewId(1)),
+        _ => None,
+    };
+    let active = FlutterRustViewId(3);
+    assert!(descends_from(FlutterRustViewId(3), active, parent));
+    // Pressing the ancestor popup or the owner window dismisses popup 3.
+    assert!(!descends_from(FlutterRustViewId(2), active, parent));
+    assert!(!descends_from(FlutterRustViewId(1), active, parent));
+    // Focus anywhere under the owner keeps the owner's popups open.
+    assert!(descends_from(
+        FlutterRustViewId(3),
+        FlutterRustViewId(1),
+        parent
+    ));
+}

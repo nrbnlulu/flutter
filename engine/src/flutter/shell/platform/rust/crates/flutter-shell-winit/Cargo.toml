@@ -48,6 +48,17 @@ winit = { version = "=0.31.0-beta.2", default-features = false, features = [
   "android-game-activity",
 ] }
 
+# macOS uses winit's AppKit backend and the Vulkan broker on MoltenVK; wgpu
+# builds its Vulkan backend on Apple targets only with `vulkan-portability`.
+[target.'cfg(target_os = "macos")'.dependencies]
+raw-window-handle = "=0.6.2"
+objc2 = "=0.6.4"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSPanel", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSGeometry", "NSThread"] }
+arboard = { version = "=3.7.0", default-features = false }
+wgpu = { git = "https://github.com/gfx-rs/wgpu.git", rev = "014d9e84813a2946febfa4888694c0b70565b2f5", default-features = false, features = ["std", "vulkan", "vulkan-portability", "wgsl"] }
+winit = { version = "=0.31.0-beta.2", default-features = false }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 raw-window-handle = "=0.6.2"
 arboard = { version = "=3.7.0", default-features = false }

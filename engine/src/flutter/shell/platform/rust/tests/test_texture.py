@@ -5,7 +5,7 @@
 
 """End-to-end animated wgpu texture test for the Flutter Rust shell."""
 
-from native_desktop import desktop
+from native_desktop import desktop, runner_environment
 
 import argparse
 import json
@@ -104,6 +104,7 @@ def main() -> None:
         "FLUTTER_RUST_PRESENTATION_STATS": str(presentations),
         "RUST_LOG": "wgpu_core=warn,wgpu_hal=warn",
     })
+    runner_environment(environment)
     if args.pixel_buffer:
       environment["FLUTTER_RUST_PIXEL_BUFFER_TEXTURE_DEMO"] = "1"
     if args.lifecycle_iterations:

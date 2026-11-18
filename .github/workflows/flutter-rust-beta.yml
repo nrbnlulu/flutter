@@ -296,6 +296,157 @@ jobs:
           path: ${{ runner.temp }}/android-engine-package
           retention-days: 1
 
+  build-macos-engine:
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime_mode: [debug, profile, release]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+          # Impeller still compiles its Metal shader libraries on macOS. Newer
+          # Xcode versions download the Metal toolchain separately.
+          xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Fetch engine dependencies
+        run: |
+          cp engine.gclient .gclient
+          "$RUNNER_TEMP/depot_tools/gclient" sync --no-history
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.93.1 --profile minimal
+
+      - name: Configure Flutter engine (${{ matrix.runtime_mode }})
+        working-directory: engine/src
+        env:
+          VPYTHON_BYPASS: manually managed python not supported by chrome operations
+        # Vulkan (MoltenVK) is on by default for macOS host builds; the output
+        # directory is host_<mode>_arm64.
+        run: flutter/tools/gn --runtime-mode ${{ matrix.runtime_mode }} --mac-cpu arm64 --no-goma --no-rbe
+
+      - name: Build Rust shell engine (${{ matrix.runtime_mode }})
+        working-directory: engine/src
+        env:
+          VPYTHON_BYPASS: manually managed python not supported by chrome operations
+        run: |
+          # As on Linux, ship the kernel compiler pieces built from the same
+          # tree as the engine. macOS links the Cargo runner against the
+          # engine dylib, so there is no GN runner.
+          ninja -C out/host_${{ matrix.runtime_mode }}_arm64 \
+            flutter_rust_engine flutter_patched_sdk dart-sdk gen_snapshot \
+            flutter/tools/font_subset:font_subset flutter/impeller/compiler:impellerc \
+            flutter/sky/packages/sky_engine:sky_engine \
+            flutter/flutter_frontend_server:frontend_server
+
+      - name: Package engine artifacts (${{ matrix.runtime_mode }})
+        working-directory: engine/src
+        run: |
+          flutter/shell/platform/rust/tools/package_engine_artifacts.sh \
+            out/host_${{ matrix.runtime_mode }}_arm64 \
+            "$RUNNER_TEMP/engine-package"
+
+      - name: Upload engine build (${{ matrix.runtime_mode }})
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: rust-engine-macos-${{ matrix.runtime_mode }}
+          path: ${{ runner.temp }}/engine-package
+          retention-days: 1
+
+  package-macos:
+    needs: [build-macos-engine, build-tool]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Flutter derives its framework version from a numeric tag and its
+          # common ancestor; a shallow checkout reports 0.0.0-unknown.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Re-fetch the resolved Flutter version tag
+        env:
+          FLUTTER_VERSION_TAG: ${{ needs.build-tool.outputs.flutter_version_tag }}
+        run: |
+          git fetch --force https://github.com/flutter/flutter.git "refs/tags/$FLUTTER_VERSION_TAG:refs/tags/$FLUTTER_VERSION_TAG"
+          echo "FLUTTER_VERSION_TAG=$FLUTTER_VERSION_TAG" >> "$GITHUB_ENV"
+
+      - name: Download macOS engine builds
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: rust-engine-macos-*
+          path: build/downloaded-macos-engines
+
+      - name: Package the macOS SDK
+        run: |
+          sdk=build/flutter-rust-macos-sdk
+          for mode in debug profile release; do
+            mkdir -p "$sdk/lib/$mode"
+            cp -R "build/downloaded-macos-engines/rust-engine-macos-$mode/." "$sdk/lib/$mode/"
+            chmod +x "$sdk/lib/$mode/gen_snapshot" "$sdk/lib/$mode/font-subset" "$sdk/lib/$mode/impellerc"
+            find "$sdk/lib/$mode/dart-sdk/bin" -type f ! -path '*/snapshots/*' -exec chmod +x {} +
+          done
+          python3 engine/src/flutter/shell/platform/rust/tools/package_sdk_sources.py "$sdk" --validate-engines
+          tar -C "$sdk" -czf build/flutter-rust-darwin-arm64.tar.gz .
+
+      - name: Bootstrap a standalone Flutter SDK without the engine checkout
+        run: |
+          bin/flutter --version
+          # A tool-owned clone keeps git metadata for version checks but has no
+          # engine/ directory, so rlutter cannot find checkout sources in it.
+          flutter_sdk="$RUNNER_TEMP/flutter-sdk"
+          git clone --no-local --single-branch "$GITHUB_WORKSPACE" "$flutter_sdk"
+          git -C "$flutter_sdk" fetch "$GITHUB_WORKSPACE" "refs/tags/$FLUTTER_VERSION_TAG:refs/tags/$FLUTTER_VERSION_TAG"
+          rm -rf "$flutter_sdk/engine"
+          cp -R bin/cache "$flutter_sdk/bin/cache"
+          rm -f "$flutter_sdk/bin/cache/flutter.version.json"
+          git -C "$flutter_sdk" merge-base HEAD "$FLUTTER_VERSION_TAG" > /dev/null
+          version="$("$flutter_sdk/bin/flutter" --version --machine | python3 -c 'import json,sys; print(json.load(sys.stdin).get("frameworkVersion",""))')"
+          echo "Standalone Flutter version: $version"
+          case "$version" in ''|0.0.0-unknown) echo "Flutter SDK has no usable numeric version" >&2; exit 1;; esac
+          echo "STANDALONE_FLUTTER=$flutter_sdk" >> "$GITHUB_ENV"
+
+      - name: Build an app from the exact archive
+        run: |
+          # No GPU on hosted runners: this checks linking and AOT compilation,
+          # not rendering.
+          rustup toolchain install 1.93.1 --profile minimal
+          cargo +1.93.1 build --release --locked \
+            --manifest-path engine/src/flutter/shell/platform/rust/rlutter/Cargo.toml
+          rlutter="$GITHUB_WORKSPACE/engine/src/flutter/shell/platform/rust/rlutter/target/release/rlutter"
+          export FLUTTER_ROOT="$STANDALONE_FLUTTER"
+          cd "$RUNNER_TEMP"
+          mkdir -p macos_smoke/.dart_tool/flutter_rs/sdk
+          tar -xzf "$GITHUB_WORKSPACE/build/flutter-rust-darwin-arm64.tar.gz" -C macos_smoke/.dart_tool/flutter_rs/sdk
+          cd macos_smoke
+          "$rlutter" create . --project-name macos_smoke
+          "$rlutter" build macos
+          test -f runner-rs/target/debug/data/flutter_assets/kernel_blob.bin
+          test -f runner-rs/target/debug/libs/libflutter_rust_engine.dylib
+          "$rlutter" build macos --profile
+          test -f runner-rs/target/flutter-profile/data/flutter_assets/app.so
+          "$rlutter" build macos --release
+          test -f runner-rs/target/release/data/flutter_assets/app.so
+          # The build must have used the packaged sources, not a checkout.
+          for dir in crates third_party; do
+            path=.dart_tool/flutter_rs/sdk/$dir
+            test -d "$path" && test ! -L "$path"
+            case "$(cd "$path" && pwd -P)" in "$GITHUB_WORKSPACE"*) echo "$path resolves into the checkout" >&2; exit 1;; esac
+          done
+
+      - name: Upload macOS distribution
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: macos-distribution
+          path: build/flutter-rust-darwin-arm64.tar.gz
+          retention-days: 1
+
   agent-protocol-tests:
     strategy:
       fail-fast: false
@@ -468,7 +619,7 @@ jobs:
           retention-days: 1
 
   publish:
-    needs: [build-tool, build-engine, build-android-engine, package-windows, agent-protocol-tests]
+    needs: [build-tool, build-engine, build-android-engine, package-windows, package-macos, agent-protocol-tests]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -520,6 +671,12 @@ jobs:
           pattern: rust-engine-android-*
           path: build/downloaded-android-engines
 
+      - name: Download macOS distribution
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: macos-distribution
+          path: build/macos-distribution
+
       - name: Download Windows distribution
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -531,6 +688,7 @@ jobs:
           python3 engine/src/flutter/shell/platform/rust/tools/package_sdk_sources.py \
             build/flutter-rust-sdk --validate-engines
           find build/windows-distribution -name '*.tar.gz' -exec cp {} build/ \;
+          cp build/macos-distribution/flutter-rust-darwin-arm64.tar.gz build/
           find build/windows-distribution -name rlutter.exe -exec cp {} build/ \;
           for mode in debug profile release; do
             lib="build/flutter-rust-sdk/lib/$mode"
@@ -691,6 +849,9 @@ jobs:
             echo '```bash'
             echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/rust/flutter-rs-shell/engine/src/flutter/shell/platform/rust/install.sh | sh"
             echo '```'
+            echo
+            echo 'macOS (Apple Silicon): build rlutter from this repository and pass'
+            echo '--flutter-root; it downloads flutter-rust-darwin-arm64.tar.gz when needed.'
             echo
             echo 'Windows (PowerShell; uses gh when available):'
             echo
