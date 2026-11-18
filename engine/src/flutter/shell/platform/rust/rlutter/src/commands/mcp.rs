@@ -8,6 +8,9 @@ use serde_json::{Value, json};
 use std::io::{BufRead, Read, Write};
 use std::path::Path;
 
+mod compact;
+mod ui;
+
 const MAX_MESSAGE: u64 = 1024 * 1024;
 
 // Native method, description, required fields, optional fields. Parameters keep
@@ -71,8 +74,20 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
         "",
     ),
     (
+        "ui.snapshot",
+        "Start app inspection here: bounded text semantics with actionable refs, no images. Default max_chars=4000 (0..64000). Continue with offset=nextOffset and generation from metadata; refresh after semantics changes. Hidden semantics are omitted, not proof of pixel visibility.",
+        "viewId",
+        "max_chars offset generation",
+    ),
+    (
+        "ui.screenshot",
+        "Explicit visual evidence for appearance, layout, custom painting or missing semantics. Returns PNG and frame metadata; not atomic with semantics. Attached monitors cannot capture.",
+        "viewId",
+        "mode afterFrame sizeGeneration name",
+    ),
+    (
         "semantics.snapshot",
-        "Read the semantics tree; obscured values are redacted.",
+        "Full structured semantics for diagnostics; prefer ui_snapshot for normal inspection. Obscured values are redacted.",
         "viewId",
         "",
     ),
@@ -84,15 +99,15 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "semantics.perform",
-        "Perform a semantic action using selector or handle. Observe the result separately.",
+        "Activate a supported semantic action by ref, selector or handle (not a coordinate tap). Observe the result with verify_wait; dispatch is not success.",
         "viewId action",
-        "selector handle args",
+        "ref selector handle args",
     ),
     (
         "input.tap",
-        "Tap a selector/handle or logical x/y. Acknowledgement proves dispatch only; use verify.wait afterward.",
+        "Dispatch a pointer tap at a ref/selector/handle's bounds or logical x/y. For semantic activation use semantics_perform. Dispatch is not success; use verify_wait afterward.",
         "viewId",
-        "selector handle x y",
+        "ref selector handle x y",
     ),
     (
         "input.pointer",
@@ -168,8 +183,9 @@ fn name(method: &str) -> String {
 }
 fn property(field: &str) -> Value {
     match field {
-        "after" | "viewId" | "physical" | "logical" | "afterFrame" | "sizeGeneration" | "count"
-        | "stableMs" | "rate" => json!({"type":"integer","minimum":0}),
+        "max_chars" => json!({"type":"integer","minimum":0,"maximum":64000,"default":4000}),
+        "offset" | "generation" | "after" | "viewId" | "physical" | "logical" | "afterFrame"
+        | "sizeGeneration" | "count" | "stableMs" | "rate" => json!({"type":"integer","minimum":0}),
         "width" | "height" | "x" | "y" | "deltaX" | "deltaY" => json!({"type":"number"}),
         "all" | "down" | "exists" | "enabled" | "focused" => json!({"type":"boolean"}),
         "selector" => {
@@ -219,7 +235,9 @@ struct McpServer {
 impl McpServer {
     fn new(backend: impl Backend + 'static) -> Self {
         Self {
-            backend: std::sync::Arc::new(std::sync::Mutex::new(Box::new(backend))),
+            backend: std::sync::Arc::new(std::sync::Mutex::new(Box::new(ui::UiBackend::new(
+                backend,
+            )))),
             available: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
@@ -228,7 +246,7 @@ impl rmcp::ServerHandler for McpServer {
     fn get_info(&self) -> rmcp::model::ServerConfig {
         rmcp::model::ServerConfig::new(rmcp::model::ServerCapabilities::builder().enable_tools().build())
             .with_server_info(rmcp::model::Implementation::new("rlutter", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Use rlutter_windows_list to discover view IDs. Prefer identifier selectors. Observe actions with rlutter_verify_wait; dispatch is not success. Never retry mutations after timeout or cancellation. Call rlutter_session_start with an absolute project_dir to build and launch an app. Pass its session_id to every app tool. Multiple worktrees can have separate sessions. Only one app operation may run at a time. For a running Linux monitor, use rlutter_session_attach(socket_path), monitor_events(after), and session_detach. Attached sessions are read-only and EOF leaves their app alive. Finish owned apps with rlutter_session_shutdown.")
+            .with_instructions("Use rlutter_windows_list to discover view IDs, then rlutter_ui_snapshot as the normal bounded observation. Act using its ref or stable identifier selectors, then verify. Snapshot records are complete JSON lines; metadata gives omission counts, nextOffset and generation for continuation. Refresh stale refs instead of retrying. Full semantics_snapshot is diagnostic. Request ui_screenshot explicitly for layout, appearance, custom painting, or missing semantics; ordinary observations/actions return no images. Semantics and pixels are not atomic. Prefer identifier selectors. Observe actions with rlutter_verify_wait; dispatch is not success. Never retry mutations after timeout or cancellation. Call rlutter_session_start with an absolute project_dir to build and launch an app. Pass its session_id to every app tool. Multiple worktrees can have separate sessions. Only one app operation may run at a time. For a running Linux monitor, use rlutter_session_attach(socket_path), monitor_events(after), and session_detach. Attached sessions are read-only and EOF leaves their app alive. Finish owned apps with rlutter_session_shutdown.")
     }
     fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
         tools()["tools"]

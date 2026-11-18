@@ -179,9 +179,18 @@ Register this command once in your IDE; it can start from any directory.
 Call `rlutter_session_start` with an absolute `project_dir` for the desired
 worktree, then pass the returned `session_id` to every app tool. Artifacts
 are generated under each project's `build/agent/`. Multiple sessions can stay
-open; shutdown closes only that app session. Discovery requires no build. Tools include `rlutter_windows_list`,
-`rlutter_input_tap`, `rlutter_verify_wait`, and `rlutter_capture_screenshot`
-(which returns an MCP image plus metadata). Finish with
+open; shutdown closes only that app session. Discovery requires no build.
+Discover views with `rlutter_windows_list`, then use `rlutter_ui_snapshot` as the
+normal bounded text observation (default 4,000 characters). Act by its `ref` or a
+stable identifier selector with `rlutter_semantics_perform` (semantic activation)
+or `rlutter_input_tap` (pointer hit testing), then `rlutter_verify_wait`.
+If truncated, continue using metadata's `nextOffset` and `generation`; refresh
+from offset zero after semantics changes or stale-reference errors. Full
+`rlutter_semantics_snapshot` and `rlutter_semantics_find` remain diagnostics.
+Request `rlutter_ui_screenshot` explicitly for appearance, layout, custom painting,
+missing semantics or visual failures; ordinary snapshots/actions return no
+images. Semantics do not establish pixel visibility and are not atomic with
+screenshots. Finish with
 `rlutter_session_shutdown`; closing stdin also cleans up the owned app.
 Cancellation does not undo dispatched input; never retry an uncertain mutation.
 See [MCP configuration and lifecycle](../../docs/mcp.md).

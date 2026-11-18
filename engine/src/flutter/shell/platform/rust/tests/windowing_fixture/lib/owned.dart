@@ -96,8 +96,9 @@ class _WindowingFixtureState extends State<_WindowingFixture> with SingleTickerP
         controller.dispose();
       }
     }
-    File(Platform.environment['FLUTTER_RUST_WINDOWING_STATUS']!)
-        .writeAsStringSync('complete released=$destroyed');
+    File(
+      Platform.environment['FLUTTER_RUST_WINDOWING_STATUS']!,
+    ).writeAsStringSync('complete released=$destroyed');
     await ServicesBinding.instance.exitApplication(ui.AppExitType.required);
   }
 

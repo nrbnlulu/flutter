@@ -25,6 +25,11 @@ const ISize& GlyphAtlasContext::GetAtlasSize() const {
   return atlas_size_;
 }
 
+bool GlyphAtlasContext::CanGrowAtlas(int64_t max_texture_height) const {
+  // Divide the limit instead of doubling the height to avoid overflow.
+  return atlas_size_.height <= max_texture_height / 2;
+}
+
 int64_t GlyphAtlasContext::GetHeightAdjustment() const {
   return height_adjustment_;
 }

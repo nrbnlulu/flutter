@@ -5,6 +5,7 @@
 mod hardware_buffer;
 
 use flutter_plugin_sdk::android::{HardwareBufferFrame, HardwareBufferTextureBackend};
+use flutter_plugin_sdk::gpu::wgpu;
 use hardware_buffer::HardwareBufferMailbox;
 
 use flutter_plugin_sdk::{
@@ -260,7 +261,34 @@ impl Backend {
         }))
     }
 }
+struct AndroidGpuQueue(Arc<GpuContext>);
+impl flutter_plugin_sdk::GpuQueue for AndroidGpuQueue {
+    fn submit(&self, commands: Vec<wgpu::CommandBuffer>) -> wgpu::SubmissionIndex {
+        self.0.shared_queue().submit(commands)
+    }
+    fn write_buffer(&self, buffer: &wgpu::Buffer, offset: wgpu::BufferAddress, data: &[u8]) {
+        self.0.shared_queue().write_buffer(buffer, offset, data);
+    }
+    fn write_texture(
+        &self,
+        texture: wgpu::TexelCopyTextureInfo<'_>,
+        data: &[u8],
+        layout: wgpu::TexelCopyBufferLayout,
+        size: wgpu::Extent3d,
+    ) {
+        self.0
+            .shared_queue()
+            .write_texture(texture, data, layout, size);
+    }
+}
 impl WgpuTextureBackend for Backend {
+    fn gpu_device(&self) -> Option<flutter_plugin_sdk::gpu::wgpu::Device> {
+        Some(self.native.gpu.device().clone())
+    }
+    fn gpu_queue(&self) -> Option<Arc<dyn flutter_plugin_sdk::GpuQueue>> {
+        Some(Arc::new(AndroidGpuQueue(self.native.gpu.clone())))
+    }
+
     fn create_android_hardware_buffer_texture(
         &self,
     ) -> Result<Arc<dyn HardwareBufferTextureBackend>> {
