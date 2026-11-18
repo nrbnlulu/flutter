@@ -716,6 +716,11 @@ class MacOS(Desktop):
     self.cf.CFRelease(application)
     raise RuntimeError(f'Window {address} has no Accessibility element')
 
+  def _perform(self, element, action, name, address):
+    error = self.ax.AXUIElementPerformAction(element, action)
+    if error:
+      raise RuntimeError(f'{name} on window {address} failed with AXError {error}')
+
   def _set(self, element, name, value):
     attribute = self._string(name)
     try:
@@ -750,7 +755,7 @@ class MacOS(Desktop):
           self._set(window, 'AXMain', self.true)
           raise_action = self._string('AXRaise')
           try:
-            self.ax.AXUIElementPerformAction(window, raise_action)
+            self._perform(window, raise_action, 'AXRaise', address)
           finally:
             self.cf.CFRelease(raise_action)
         elif action == 'close':
@@ -759,7 +764,7 @@ class MacOS(Desktop):
           try:
             if self.ax.AXUIElementCopyAttributeValue(window, attribute, ctypes.byref(button)):
               raise RuntimeError(f'Window {address} has no close button')
-            self.ax.AXUIElementPerformAction(button, press)
+            self._perform(button, press, 'AXPress', address)
             self.cf.CFRelease(button)
           finally:
             self.cf.CFRelease(attribute)
@@ -846,13 +851,14 @@ class MacOS(Desktop):
       raise RuntimeError('CGGetActiveDisplayList failed')
     return [self.cg.CGDisplayBounds(displays[index]) for index in range(count.value)]
 
-  def settled_client(self, address, timeout=5.0):
-    """Waits until a window's frame stops changing and lies on a display.
+  def settled_client(self, address, timeout=5.0, region=None):
+    """Waits until a window's frame stops changing and `region` is on screen.
 
     A window opened on a Space that is not showing makes macOS slide to it,
     and CGWindowList reports shifted frames during the animation (window
-    open animations also change the size). Capturing then would read pixels
-    from the wrong place or fail for an off-display rectangle.
+    open animations also change the size). `region` is the client-relative
+    rectangle about to be captured (default: the whole client area); only it
+    must be visible, possibly across several displays.
     """
     deadline = time.monotonic() + timeout
     last, since = None, time.monotonic()
@@ -862,16 +868,28 @@ class MacOS(Desktop):
       if frame != last:
         last, since = frame, time.monotonic()
       elif time.monotonic() - since >= .5:
-        x, y, width, height = frame
-        if any(b.origin.x <= x and b.origin.y <= y and x + width <= b.origin.x +
-               b.size.width and y + height <= b.origin.y + b.size.height
-               for b in self._display_bounds()):
+        left, top, width, height = region or (0, 0, *client['size'])
+        if self._visible((frame[0] + left, frame[1] + top, width, height)):
           return client
       time.sleep(.05)
-    raise RuntimeError(f'Window {address} did not settle on a display: {last}')
+    raise RuntimeError(
+        f'Window {address} did not settle with {region or "its client"} on screen: {last}'
+    )
+
+  def _visible(self, rect):
+    """Whether every corner of `rect` lies on some active display."""
+    x, y, width, height = rect
+    displays = self._display_bounds()
+    corners = [(x, y), (x + width - 1, y), (x, y + height - 1), (x + width - 1, y + height - 1)]
+    return all(
+        any(
+            b.origin.x <= cx < b.origin.x + b.size.width and b.origin.y <= cy < b.origin.y +
+            b.size.height for b in displays
+        ) for cx, cy in corners
+    )
 
   def capture_window(self, address, path, region=None):
-    self.settled_client(address)
+    self.settled_client(address, region=region)
     super().capture_window(address, path, region)
 
   # The app renders sRGB and macOS composites it into the display's color

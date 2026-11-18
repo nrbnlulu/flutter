@@ -220,6 +220,32 @@ class MacOSTest(unittest.TestCase):
         api.chord('1', 'F13')
       action.assert_not_called()
 
+  def test_capture_waits_only_for_the_requested_region_to_be_visible(self):
+    from native_desktop import _CGPoint, _CGRect, _CGSize
+    api = desktop()
+    display = _CGRect(_CGPoint(0, 0), _CGSize(1440, 900))
+    client = dict(address='7', pid=1, title='W', at=[900, 100], size=[800, 600])
+    clock = iter(range(0, 10000))
+    with patch.object(api, '_client', return_value=client), \
+        patch.object(api, '_display_bounds', return_value=[display]), \
+        patch('native_desktop.time.monotonic', side_effect=lambda: next(clock) / 10), \
+        patch('native_desktop.time.sleep'):
+      # The window extends past the right edge, but the requested pixel at
+      # client (150, 150) -> screen (1050, 250) is visible.
+      self.assertIs(api.settled_client('7', region=(150, 150, 1, 1)), client)
+      with self.assertRaisesRegex(RuntimeError, 'did not settle'):
+        api.settled_client('7', region=(700, 150, 1, 1), timeout=2)
+
+  def test_failed_accessibility_actions_are_reported(self):
+    api = desktop()
+    with patch.object(api, '_ax_window', return_value=(object(), object())), \
+        patch.object(api, '_set'), patch.object(api.cf, 'CFRelease'), \
+        patch.object(api.ax, 'AXUIElementCopyAttributeValue', return_value=0), \
+        patch.object(api.ax, 'AXUIElementPerformAction', return_value=-25202):
+      for action, name in (('focus', 'AXRaise'), ('close', 'AXPress')):
+        with self.assertRaisesRegex(RuntimeError, f'{name} on window 9 failed with AXError -25202'):
+          api.action(action, '9')
+
 
 if __name__ == '__main__':
   unittest.main()
