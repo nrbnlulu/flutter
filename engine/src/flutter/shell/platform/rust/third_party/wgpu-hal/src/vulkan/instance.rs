@@ -940,11 +940,27 @@ unsafe fn load_macos_vulkan() -> Result<ash::Entry, ash::LoadingError> {
         }
     }
     for candidate in candidates.iter().filter(|path| path.is_file()) {
-        if let Ok(entry) = unsafe { ash::Entry::load_from(candidate) } {
-            log::info!("Loaded the Vulkan loader from {}", candidate.display());
-            return Ok(entry);
+        match unsafe { ash::Entry::load_from(candidate) } {
+            Ok(entry) => {
+                log::info!("Loaded the Vulkan loader from {}", candidate.display());
+                return Ok(entry);
+            }
+            // An existing loader that fails (wrong architecture, missing
+            // dependency) is the actionable cause; report it.
+            Err(error) => log::warn!(
+                "Vulkan loader {} exists but failed to load: {error}",
+                candidate.display()
+            ),
         }
     }
+    log::warn!(
+        "No Vulkan loader could be loaded; default lookup failed ({first_error}); searched: {}",
+        candidates
+            .iter()
+            .map(|path| format!("{}", path.display()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     Err(first_error)
 }
 

@@ -27,7 +27,9 @@ processes started through protected binaries. The helper tries
 `FLUTTER_RUST_VULKAN_LIBRARY`, the default lookup, the executable directory,
 `../Frameworks`, `/opt/homebrew/lib` and `/usr/local/lib`, in that order. The
 override is tried before the default lookup so it always wins when it loads;
-if it fails, a warning is logged and the search continues. It is compiled only
+if it fails, a warning is logged and the search continues. Loaders that exist
+but fail to load are logged with their cause, and a final warning lists every
+path searched. It is compiled only
 for `target_os = "macos"`.
 
 No other source changes are intended.
