@@ -88,20 +88,21 @@ def main():
           until(tooltip)
           motion.write_text('resize')
           until(lambda: motion.read_text() == 'resized')
-          before = until(
-              lambda: tooltip() and tooltip()['bounds'][2:] == [200, 120] and tooltip()
-          )['bounds']
+          before = until(lambda: tooltip() and tooltip()['bounds'][2:] == [200, 120] and tooltip()
+                        )['bounds']
           assert before[2:] == [200, 120], before
           motion.write_text('anchor')
           until(lambda: motion.read_text() == 'anchored')
           anchored = until(
-              lambda: tooltip() and tooltip()['bounds'][:2] == [before[0] + 27, before[1] + 24] and tooltip()
+              lambda: tooltip() and tooltip()['bounds'][:2] == [before[0] + 27, before[1] + 24] and
+              tooltip()
           )['bounds']
           assert anchored[:2] == [before[0] + 27, before[1] + 24], (before, anchored)
           motion.write_text('partial')
           until(lambda: motion.read_text() == 'partial complete')
           partial = until(
-              lambda: tooltip() and tooltip()['bounds'][:2] == [anchored[0] - 10, anchored[1] - 7] and tooltip()
+              lambda: tooltip() and tooltip()['bounds'][:2] == [anchored[0] - 10, anchored[1] - 7]
+              and tooltip()
           )['bounds']
           assert partial[:2] == [anchored[0] - 10, anchored[1] - 7], (anchored, partial)
           motion.write_text('complete')
