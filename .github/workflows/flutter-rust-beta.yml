@@ -360,12 +360,22 @@ jobs:
           retention-days: 1
 
   package-macos:
-    needs: [build-macos-engine]
+    needs: [build-macos-engine, build-tool]
     runs-on: macos-14
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          # Flutter derives its framework version from a numeric tag and its
+          # common ancestor; a shallow checkout reports 0.0.0-unknown.
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Re-fetch the resolved Flutter version tag
+        env:
+          FLUTTER_VERSION_TAG: ${{ needs.build-tool.outputs.flutter_version_tag }}
+        run: |
+          git fetch --force https://github.com/flutter/flutter.git "refs/tags/$FLUTTER_VERSION_TAG:refs/tags/$FLUTTER_VERSION_TAG"
+          echo "FLUTTER_VERSION_TAG=$FLUTTER_VERSION_TAG" >> "$GITHUB_ENV"
 
       - name: Download macOS engine builds
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -373,7 +383,7 @@ jobs:
           pattern: rust-engine-macos-*
           path: build/downloaded-macos-engines
 
-      - name: Package and verify the macOS SDK
+      - name: Package the macOS SDK
         run: |
           sdk=build/flutter-rust-macos-sdk
           for mode in debug profile release; do
@@ -384,13 +394,33 @@ jobs:
           done
           python3 engine/src/flutter/shell/platform/rust/tools/package_sdk_sources.py "$sdk" --validate-engines
           tar -C "$sdk" -czf build/flutter-rust-darwin-arm64.tar.gz .
-          # Build an app from the exact archive (no GPU on hosted runners, so
-          # this checks linking and AOT compilation, not rendering).
+
+      - name: Bootstrap a standalone Flutter SDK without the engine checkout
+        run: |
+          bin/flutter --version
+          # A tool-owned clone keeps git metadata for version checks but has no
+          # engine/ directory, so rlutter cannot find checkout sources in it.
+          flutter_sdk="$RUNNER_TEMP/flutter-sdk"
+          git clone --no-local --single-branch "$GITHUB_WORKSPACE" "$flutter_sdk"
+          git -C "$flutter_sdk" fetch "$GITHUB_WORKSPACE" "refs/tags/$FLUTTER_VERSION_TAG:refs/tags/$FLUTTER_VERSION_TAG"
+          rm -rf "$flutter_sdk/engine"
+          cp -R bin/cache "$flutter_sdk/bin/cache"
+          rm -f "$flutter_sdk/bin/cache/flutter.version.json"
+          git -C "$flutter_sdk" merge-base HEAD "$FLUTTER_VERSION_TAG" > /dev/null
+          version="$("$flutter_sdk/bin/flutter" --version --machine | python3 -c 'import json,sys; print(json.load(sys.stdin).get("frameworkVersion",""))')"
+          echo "Standalone Flutter version: $version"
+          case "$version" in ''|0.0.0-unknown) echo "Flutter SDK has no usable numeric version" >&2; exit 1;; esac
+          echo "STANDALONE_FLUTTER=$flutter_sdk" >> "$GITHUB_ENV"
+
+      - name: Build an app from the exact archive
+        run: |
+          # No GPU on hosted runners: this checks linking and AOT compilation,
+          # not rendering.
           rustup toolchain install 1.93.1 --profile minimal
           cargo +1.93.1 build --release --locked \
             --manifest-path engine/src/flutter/shell/platform/rust/rlutter/Cargo.toml
           rlutter="$GITHUB_WORKSPACE/engine/src/flutter/shell/platform/rust/rlutter/target/release/rlutter"
-          export FLUTTER_ROOT="$GITHUB_WORKSPACE"
+          export FLUTTER_ROOT="$STANDALONE_FLUTTER"
           cd "$RUNNER_TEMP"
           mkdir -p macos_smoke/.dart_tool/flutter_rs/sdk
           tar -xzf "$GITHUB_WORKSPACE/build/flutter-rust-darwin-arm64.tar.gz" -C macos_smoke/.dart_tool/flutter_rs/sdk
@@ -403,6 +433,12 @@ jobs:
           test -f runner-rs/target/flutter-profile/data/flutter_assets/app.so
           "$rlutter" build macos --release
           test -f runner-rs/target/release/data/flutter_assets/app.so
+          # The build must have used the packaged sources, not a checkout.
+          for dir in crates third_party; do
+            path=.dart_tool/flutter_rs/sdk/$dir
+            test -d "$path" && test ! -L "$path"
+            case "$(cd "$path" && pwd -P)" in "$GITHUB_WORKSPACE"*) echo "$path resolves into the checkout" >&2; exit 1;; esac
+          done
 
       - name: Upload macOS distribution
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
