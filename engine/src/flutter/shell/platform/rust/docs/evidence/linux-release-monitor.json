@@ -1,0 +1,234 @@
+{
+  "passed": true,
+  "pid": 345176,
+  "epoch": "345176-1794389620159000805",
+  "transcript": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocolVersion": "2025-11-25",
+        "capabilities": {
+          "tools": {}
+        },
+        "serverInfo": {
+          "name": "rlutter",
+          "version": "0.1.0"
+        },
+        "instructions": "Use rlutter_windows_list to discover view IDs. Prefer identifier selectors. Observe actions with rlutter_verify_wait; dispatch is not success. Never retry mutations after timeout or cancellation. Call rlutter_session_start with an absolute project_dir to build and launch an app. Pass its session_id to every app tool. Multiple worktrees can have separate sessions. Only one app operation may run at a time. For a running Linux monitor, use rlutter_session_attach(socket_path), monitor_events(after), and session_detach. Attached sessions are read-only and EOF leaves their app alive. Finish owned apps with rlutter_session_shutdown."
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"capabilities\":{\"buildMode\":\"release\",\"engineRevision\":\"7c8b771b973cb1cd5b9000084077ff4a414e4b91\",\"epoch\":\"345176-1794389620159000805\",\"frameworkErrors\":false,\"methods\":[\"session.health\",\"diagnostics.snapshot\",\"windows.list\",\"semantics.snapshot\",\"monitor.events\"],\"monitor\":true,\"readOnly\":true},\"session_id\":\"monitor-1\"}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"buildMode\":\"release\",\"engineRevision\":\"7c8b771b973cb1cd5b9000084077ff4a414e4b91\",\"epoch\":\"345176-1794389620159000805\",\"frameworkErrors\":false,\"methods\":[\"session.health\",\"diagnostics.snapshot\",\"windows.list\",\"semantics.snapshot\",\"monitor.events\"],\"monitor\":true,\"readOnly\":true}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"views\":[{\"focused\":true,\"height\":736,\"title\":\"Linux release monitor proof\",\"viewId\":0,\"visible\":true,\"width\":1242}]}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"customActions\":[],\"epoch\":\"345176-1794389620159000805\",\"nodes\":[{\"actions\":0,\"children\":[1],\"currentValueLength\":-1,\"customActions\":[],\"decreasedValue\":\"\",\"enabled\":true,\"flags\":{\"hasImplicitScrolling\":false,\"isAccessibilityFocusBlocked\":false,\"isButton\":false,\"isChecked\":0,\"isEnabled\":0,\"isExpanded\":0,\"isFocused\":0,\"isHeader\":false,\"isHidden\":false,\"isImage\":false,\"isInMutuallyExclusiveGroup\":false,\"isKeyboardKey\":false,\"isLink\":false,\"isLiveRegion\":false,\"isMultiline\":false,\"isObscured\":false,\"isReadOnly\":false,\"isRequired\":0,\"isSelected\":0,\"isSlider\":false,\"isTextField\":false,\"isToggled\":0,\"namesRoute\":false,\"scopesRoute\":false},\"focused\":false,\"handle\":{\"epoch\":\"345176-1794389620159000805\",\"nodeId\":0,\"revision\":4,\"viewId\":0},\"headingLevel\":0,\"hidden\":false,\"hint\":\"\",\"hitTestChildren\":[1],\"hitTestTransform\":[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"id\":0,\"identifier\":\"\",\"increasedValue\":\"\",\"label\":\"\",\"linkUrl\":\"\",\"locale\":\"\",\"maxValue\":\"\",\"maxValueLength\":-1,\"minValue\":\"\",\"platformViewId\":-1,\"rect\":[0.0,0.0,1242.0,736.0],\"role\":0,\"roleName\":\"none\",\"scrollChildren\":0,\"scrollExtentMax\":null,\"scrollExtentMin\":null,\"scrollIndex\":0,\"scrollPosition\":null,\"textDirection\":0,\"textSelectionBase\":-1,\"textSelectionExtent\":-1,\"tooltip\":\"\",\"transform\":[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"traversalParent\":-1,\"validationResult\":0,\"value\":\"\",\"viewBounds\":[0.0,0.0,1242.0,736.0],\"viewTransform\":[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0]},{\"actions\":0,\"children\":[2],\"currentValueLength\":-1,\"customActions\":[],\"decreasedValue\":\"\",\"enabled\":true,\"flags\":{\"hasImplicitScrolling\":false,\"isAccessibilityFocusBlocked\":false,\"isButton\":false,\"isChecked\":0,\"isEnabled\":0,\"isExpanded\":0,\"isFocused\":0,\"isHeader\":false,\"isHidden\":false,\"isImage\":false,\"isInMutuallyExclusiveGroup\":false,\"isKeyboardKey\":false,\"isLink\":false,\"isLiveRegion\":false,\"isMultiline\":false,\"isObscured\":false,\"isReadOnly\":false,\"isRequired\":0,\"isSelected\":0,\"isSlider\":false,\"isTextField\":false,\"isToggled\":0,\"namesRoute\":false,\"scopesRoute\":false},\"focused\":false,\"handle\":{\"epoch\":\"345176-1794389620159000805\",\"nodeId\":1,\"revision\":4,\"viewId\":0},\"headingLevel\":0,\"hidden\":false,\"hint\":\"\",\"hitTestChildren\":[2],\"hitTestTransform\":[2.0,0.0,0.0,0.0,0.0,2.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"id\":1,\"identifier\":\"\",\"increasedValue\":\"\",\"label\":\"\",\"linkUrl\":\"\",\"locale\":\"\",\"maxValue\":\"\",\"maxValueLength\":-1,\"minValue\":\"\",\"platformViewId\":-1,\"rect\":[0.0,0.0,621.0,368.0],\"role\":0,\"roleName\":\"none\",\"scrollChildren\":0,\"scrollExtentMax\":null,\"scrollExtentMin\":null,\"scrollIndex\":0,\"scrollPosition\":null,\"textDirection\":2,\"textSelectionBase\":-1,\"textSelectionExtent\":-1,\"tooltip\":\"\",\"transform\":[2.0,0.0,0.0,0.0,0.0,2.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"traversalParent\":-1,\"validationResult\":0,\"value\":\"\",\"viewBounds\":[0.0,0.0,1242.0,736.0],\"viewTransform\":[2.0,0.0,0.0,0.0,0.0,2.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0]},{\"actions\":0,\"children\":[3],\"currentValueLength\":-1,\"customActions\":[],\"decreasedValue\":\"\",\"enabled\":true,\"flags\":{\"hasImplicitScrolling\":false,\"isAccessibilityFocusBlocked\":false,\"isButton\":false,\"isChecked\":0,\"isEnabled\":0,\"isExpanded\":0,\"isFocused\":0,\"isHeader\":false,\"isHidden\":false,\"isImage\":false,\"isInMutuallyExclusiveGroup\":false,\"isKeyboardKey\":false,\"isLink\":false,\"isLiveRegion\":false,\"isMultiline\":false,\"isObscured\":false,\"isReadOnly\":false,\"isRequired\":0,\"isSelected\":0,\"isSlider\":false,\"isTextField\":false,\"isToggled\":0,\"namesRoute\":false,\"scopesRoute\":false},\"focused\":false,\"handle\":{\"epoch\":\"345176-1794389620159000805\",\"nodeId\":2,\"revision\":4,\"viewId\":0},\"headingLevel\":0,\"hidden\":false,\"hint\":\"\",\"hitTestChildren\":[3],\"hitTestTransform\":[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"id\":2,\"identifier\":\"\",\"increasedValue\":\"\",\"label\":\"\",\"linkUrl\":\"\",\"locale\":\"\",\"maxValue\":\"\",\"maxValueLength\":-1,\"minValue\":\"\",\"platformViewId\":-1,\"rect\":[0.0,0.0,621.0,368.0],\"role\":0,\"roleName\":\"none\",\"scrollChildren\":0,\"scrollExtentMax\":null,\"scrollExtentMin\":null,\"scrollIndex\":0,\"scrollPosition\":null,\"textDirection\":0,\"textSelectionBase\":-1,\"textSelectionExtent\":-1,\"tooltip\":\"\",\"transform\":[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"traversalParent\":-1,\"validationResult\":0,\"value\":\"\",\"viewBounds\":[0.0,0.0,1242.0,736.0],\"viewTransform\":[2.0,0.0,0.0,0.0,0.0,2.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0]},{\"actions\":0,\"children\":[4,5,6,7],\"currentValueLength\":-1,\"customActions\":[],\"decreasedValue\":\"\",\"enabled\":true,\"flags\":{\"hasImplicitScrolling\":false,\"isAccessibilityFocusBlocked\":false,\"isButton\":false,\"isChecked\":0,\"isEnabled\":0,\"isExpanded\":0,\"isFocused\":0,\"isHeader\":false,\"isHidden\":false,\"isImage\":false,\"isInMutuallyExclusiveGroup\":false,\"isKeyboardKey\":false,\"isLink\":false,\"isLiveRegion\":false,\"isMultiline\":false,\"isObscured\":false,\"isReadOnly\":false,\"isRequired\":0,\"isSelected\":0,\"isSlider\":false,\"isTextField\":false,\"isToggled\":0,\"namesRoute\":false,\"scopesRoute\":true},\"focused\":false,\"handle\":{\"epoch\":\"345176-1794389620159000805\",\"nodeId\":3,\"revision\":4,\"viewId\":0},\"headingLevel\":0,\"hidden\":false,\"hint\":\"\",\"hitTestChildren\":[7,6,5,4],\"hitTestTransform\":[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"id\":3,\"identifier\":\"\",\"increasedValue\":\"\",\"label\":\"\",\"linkUrl\":\"\",\"locale\":\"\",\"maxValue\":\"\",\"maxValueLength\":-1,\"minValue\":\"\",\"platformViewId\":-1,\"rect\":[0.0,0.0,621.0,368.0],\"role\":0,\"roleName\":\"none\",\"scrollChildren\":0,\"scrollExtentMax\":null,\"scrollExtentMin\":null,\"scrollIndex\":0,\"scrollPosition\":null,\"textDirection\":0,\"textSelectionBase\":-1,\"textSelectionExtent\":-1,\"tooltip\":\"\",\"transform\":[1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"traversalParent\":-1,\"validationResult\":0,\"value\":\"\",\"viewBounds\":[0.0,0.0,1242.0,736.0],\"viewTransform\":[2.0,0.0,0.0,0.0,0.0,2.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0]},{\"actions\":0,\"children\":[],\"currentValueLength\":-1,\"customActions\":[],\"decreasedValue\":\"\",\"enabled\":true,\"flags\":{\"hasImplicitScrolling\":false,\"isAccessibilityFocusBlocked\":false,\"isButton\":false,\"isChecked\":0,\"isEnabled\":0,\"isExpanded\":0,\"isFocused\":0,\"isHeader\":false,\"isHidden\":false,\"isImage\":false,\"isInMutuallyExclusiveGroup\":false,\"isKeyboardKey\":false,\"isLink\":false,\"isLiveRegion\":false,\"isMultiline\":false,\"isObscured\":false,\"isReadOnly\":false,\"isRequired\":0,\"isSelected\":0,\"isSlider\":false,\"isTextField\":false,\"isToggled\":0,\"namesRoute\":false,\"scopesRoute\":false},\"focused\":false,\"handle\":{\"epoch\":\"345176-1794389620159000805\",\"nodeId\":4,\"revision\":4,\"viewId\":0},\"headingLevel\":0,\"hidden\":false,\"hint\":\"\",\"hitTestChildren\":[],\"hitTestTransform\":[1.0,0.0,0.0,172.5,0.0,1.0,0.0,67.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"id\":4,\"identifier\":\"\",\"increasedValue\":\"\",\"label\":\"LINUX \u00b7 RELEASE / AOT\",\"linkUrl\":\"\",\"locale\":\"\",\"maxValue\":\"\",\"maxValueLength\":-1,\"minValue\":\"\",\"platformViewId\":-1,\"rect\":[0.0,0.0,276.0,34.0],\"role\":0,\"roleName\":\"none\",\"scrollChildren\":0,\"scrollExtentMax\":null,\"scrollExtentMin\":null,\"scrollIndex\":0,\"scrollPosition\":null,\"textDirection\":2,\"textSelectionBase\":-1,\"textSelectionExtent\":-1,\"tooltip\":\"\",\"transform\":[1.0,0.0,0.0,172.5,0.0,1.0,0.0,67.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"traversalParent\":-1,\"validationResult\":0,\"value\":\"\",\"viewBounds\":[345.0,134.0,897.0,202.0],\"viewTransform\":[2.0,0.0,0.0,345.0,0.0,2.0,0.0,134.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0]},{\"actions\":0,\"children\":[],\"currentValueLength\":-1,\"customActions\":[],\"decreasedValue\":\"\",\"enabled\":true,\"flags\":{\"hasImplicitScrolling\":false,\"isAccessibilityFocusBlocked\":false,\"isButton\":false,\"isChecked\":0,\"isEnabled\":0,\"isExpanded\":0,\"isFocused\":0,\"isHeader\":false,\"isHidden\":false,\"isImage\":false,\"isInMutuallyExclusiveGroup\":false,\"isKeyboardKey\":false,\"isLink\":false,\"isLiveRegion\":false,\"isMultiline\":false,\"isObscured\":false,\"isReadOnly\":false,\"isRequired\":0,\"isSelected\":0,\"isSlider\":false,\"isTextField\":false,\"isToggled\":0,\"namesRoute\":false,\"scopesRoute\":false},\"focused\":false,\"handle\":{\"epoch\":\"345176-1794389620159000805\",\"nodeId\":5,\"revision\":4,\"viewId\":0},\"headingLevel\":0,\"hidden\":false,\"hint\":\"\",\"hitTestChildren\":[],\"hitTestTransform\":[1.0,0.0,0.0,81.75,0.0,1.0,0.0,125.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"id\":5,\"identifier\":\"\",\"increasedValue\":\"\",\"label\":\"Persistent MCP monitoring\",\"linkUrl\":\"\",\"locale\":\"\",\"maxValue\":\"\",\"maxValueLength\":-1,\"minValue\":\"\",\"platformViewId\":-1,\"rect\":[0.0,0.0,457.5,54.0],\"role\":0,\"roleName\":\"none\",\"scrollChildren\":0,\"scrollExtentMax\":null,\"scrollExtentMin\":null,\"scrollIndex\":0,\"scrollPosition\":null,\"textDirection\":2,\"textSelectionBase\":-1,\"textSelectionExtent\":-1,\"tooltip\":\"\",\"transform\":[1.0,0.0,0.0,81.75,0.0,1.0,0.0,125.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"traversalParent\":-1,\"validationResult\":0,\"value\":\"\",\"viewBounds\":[163.5,250.0,1078.5,358.0],\"viewTransform\":[2.0,0.0,0.0,163.5,0.0,2.0,0.0,250.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0]},{\"actions\":0,\"children\":[],\"currentValueLength\":-1,\"customActions\":[],\"decreasedValue\":\"\",\"enabled\":true,\"flags\":{\"hasImplicitScrolling\":false,\"isAccessibilityFocusBlocked\":false,\"isButton\":false,\"isChecked\":0,\"isEnabled\":0,\"isExpanded\":0,\"isFocused\":0,\"isHeader\":false,\"isHidden\":false,\"isImage\":false,\"isInMutuallyExclusiveGroup\":false,\"isKeyboardKey\":false,\"isLink\":false,\"isLiveRegion\":false,\"isMultiline\":false,\"isObscured\":false,\"isReadOnly\":false,\"isRequired\":0,\"isSelected\":0,\"isSlider\":false,\"isTextField\":false,\"isToggled\":0,\"namesRoute\":false,\"scopesRoute\":false},\"focused\":false,\"handle\":{\"epoch\":\"345176-1794389620159000805\",\"nodeId\":6,\"revision\":4,\"viewId\":0},\"headingLevel\":0,\"hidden\":false,\"hint\":\"\",\"hitTestChildren\":[],\"hitTestTransform\":[1.0,0.0,0.0,203.5517578125,0.0,1.0,0.0,203.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"id\":6,\"identifier\":\"uptime\",\"increasedValue\":\"\",\"label\":\"App running: 2s\",\"linkUrl\":\"\",\"locale\":\"\",\"maxValue\":\"\",\"maxValueLength\":-1,\"minValue\":\"\",\"platformViewId\":-1,\"rect\":[0.0,0.0,213.896484375,43.0],\"role\":0,\"roleName\":\"none\",\"scrollChildren\":0,\"scrollExtentMax\":null,\"scrollExtentMin\":null,\"scrollIndex\":0,\"scrollPosition\":null,\"textDirection\":2,\"textSelectionBase\":-1,\"textSelectionExtent\":-1,\"tooltip\":\"\",\"transform\":[1.0,0.0,0.0,203.5517578125,0.0,1.0,0.0,203.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"traversalParent\":-1,\"validationResult\":0,\"value\":\"\",\"viewBounds\":[407.103515625,406.0,834.896484375,492.0],\"viewTransform\":[2.0,0.0,0.0,407.103515625,0.0,2.0,0.0,406.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0]},{\"actions\":0,\"children\":[],\"currentValueLength\":-1,\"customActions\":[],\"decreasedValue\":\"\",\"enabled\":true,\"flags\":{\"hasImplicitScrolling\":false,\"isAccessibilityFocusBlocked\":false,\"isButton\":false,\"isChecked\":0,\"isEnabled\":0,\"isExpanded\":0,\"isFocused\":0,\"isHeader\":false,\"isHidden\":false,\"isImage\":false,\"isInMutuallyExclusiveGroup\":false,\"isKeyboardKey\":false,\"isLink\":false,\"isLiveRegion\":false,\"isMultiline\":false,\"isObscured\":false,\"isReadOnly\":false,\"isRequired\":0,\"isSelected\":0,\"isSlider\":false,\"isTextField\":false,\"isToggled\":0,\"namesRoute\":false,\"scopesRoute\":false},\"focused\":false,\"handle\":{\"epoch\":\"345176-1794389620159000805\",\"nodeId\":7,\"revision\":4,\"viewId\":0},\"headingLevel\":0,\"hidden\":false,\"hint\":\"\",\"hitTestChildren\":[],\"hitTestTransform\":[1.0,0.0,0.0,157.6767578125,0.0,1.0,0.0,270.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"id\":7,\"identifier\":\"\",\"increasedValue\":\"\",\"label\":\"Error scheduled at 12 seconds\",\"linkUrl\":\"\",\"locale\":\"\",\"maxValue\":\"\",\"maxValueLength\":-1,\"minValue\":\"\",\"platformViewId\":-1,\"rect\":[0.0,0.0,305.646484375,31.0],\"role\":0,\"roleName\":\"none\",\"scrollChildren\":0,\"scrollExtentMax\":null,\"scrollExtentMin\":null,\"scrollIndex\":0,\"scrollPosition\":null,\"textDirection\":2,\"textSelectionBase\":-1,\"textSelectionExtent\":-1,\"tooltip\":\"\",\"transform\":[1.0,0.0,0.0,157.6767578125,0.0,1.0,0.0,270.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],\"traversalParent\":-1,\"validationResult\":0,\"value\":\"\",\"viewBounds\":[315.353515625,540.0,926.646484375,602.0],\"viewTransform\":[2.0,0.0,0.0,315.353515625,0.0,2.0,0.0,540.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0]}],\"revision\":4,\"viewId\":0}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"epoch\":\"345176-1794389620159000805\",\"errorCount\":0,\"frameworkErrors\":true,\"healthy\":true,\"uiHeartbeatAgeMs\":16}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 7,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"epoch\":\"345176-1794389620159000805\",\"events\":[{\"data\":{\"views\":[{\"focused\":false,\"height\":377,\"title\":\"monitor_proof\",\"viewId\":0,\"visible\":true,\"width\":630}]},\"sequence\":1,\"type\":\"windows.changed\"},{\"data\":{\"viewId\":0},\"sequence\":2,\"type\":\"semantics.updated\"},{\"data\":{\"capabilities\":[\"valueKey\",\"widgetCount\",\"publicProperties\",\"predicates\",\"frameworkErrors\"],\"type\":\"ready\",\"version\":1},\"sequence\":3,\"type\":\"bridge\"},{\"data\":{\"views\":[{\"focused\":false,\"height\":377,\"title\":\"Linux release monitor proof\",\"viewId\":0,\"visible\":true,\"width\":630}]},\"sequence\":4,\"type\":\"windows.changed\"},{\"data\":{\"views\":[{\"focused\":true,\"height\":736,\"title\":\"Linux release monitor proof\",\"viewId\":0,\"visible\":true,\"width\":1242}]},\"sequence\":5,\"type\":\"windows.changed\"},{\"data\":{\"viewId\":0},\"sequence\":6,\"type\":\"semantics.updated\"},{\"data\":{\"viewId\":0},\"sequence\":7,\"type\":\"semantics.updated\"},{\"data\":{\"viewId\":0},\"sequence\":8,\"type\":\"semantics.updated\"}],\"gap\":false,\"nextSequence\":8}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 8,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"detached\":true}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 9,
+      "result": {
+        "protocolVersion": "2025-11-25",
+        "capabilities": {
+          "tools": {}
+        },
+        "serverInfo": {
+          "name": "rlutter",
+          "version": "0.1.0"
+        },
+        "instructions": "Use rlutter_windows_list to discover view IDs. Prefer identifier selectors. Observe actions with rlutter_verify_wait; dispatch is not success. Never retry mutations after timeout or cancellation. Call rlutter_session_start with an absolute project_dir to build and launch an app. Pass its session_id to every app tool. Multiple worktrees can have separate sessions. Only one app operation may run at a time. For a running Linux monitor, use rlutter_session_attach(socket_path), monitor_events(after), and session_detach. Attached sessions are read-only and EOF leaves their app alive. Finish owned apps with rlutter_session_shutdown."
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 10,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"capabilities\":{\"buildMode\":\"release\",\"engineRevision\":\"7c8b771b973cb1cd5b9000084077ff4a414e4b91\",\"epoch\":\"345176-1794389620159000805\",\"frameworkErrors\":true,\"methods\":[\"session.health\",\"diagnostics.snapshot\",\"windows.list\",\"semantics.snapshot\",\"monitor.events\"],\"monitor\":true,\"readOnly\":true},\"session_id\":\"monitor-1\"}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 11,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"buildMode\":\"release\",\"engineRevision\":\"7c8b771b973cb1cd5b9000084077ff4a414e4b91\",\"epoch\":\"345176-1794389620159000805\",\"frameworkErrors\":true,\"methods\":[\"session.health\",\"diagnostics.snapshot\",\"windows.list\",\"semantics.snapshot\",\"monitor.events\"],\"monitor\":true,\"readOnly\":true}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 12,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"epoch\":\"345176-1794389620159000805\",\"events\":[{\"data\":{\"viewId\":0},\"sequence\":9,\"type\":\"semantics.updated\"},{\"data\":{\"viewId\":0},\"sequence\":10,\"type\":\"semantics.updated\"},{\"data\":{\"viewId\":0},\"sequence\":11,\"type\":\"semantics.updated\"},{\"data\":{\"viewId\":0},\"sequence\":12,\"type\":\"semantics.updated\"},{\"data\":{\"viewId\":0},\"sequence\":13,\"type\":\"semantics.updated\"},{\"data\":{\"viewId\":0},\"sequence\":14,\"type\":\"semantics.updated\"},{\"data\":{\"viewId\":0},\"sequence\":15,\"type\":\"semantics.updated\"},{\"data\":{\"viewId\":0},\"sequence\":16,\"type\":\"semantics.updated\"},{\"data\":{\"viewId\":0},\"sequence\":17,\"type\":\"semantics.updated\"},{\"data\":{\"viewId\":0},\"sequence\":18,\"type\":\"semantics.updated\"},{\"data\":{\"kind\":\"framework\",\"message\":\"Bad state: intentional-monitor-proof\",\"stack\":null,\"type\":\"error\"},\"sequence\":19,\"type\":\"bridge\"},{\"data\":{\"viewId\":0},\"sequence\":20,\"type\":\"semantics.updated\"},{\"data\":{\"viewId\":0},\"sequence\":21,\"type\":\"semantics.updated\"},{\"data\":{\"viewId\":0},\"sequence\":22,\"type\":\"semantics.updated\"}],\"gap\":false,\"nextSequence\":22}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 13,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"epoch\":\"345176-1794389620159000805\",\"errorCount\":1,\"frameworkErrors\":true,\"healthy\":false,\"uiHeartbeatAgeMs\":28}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 14,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"code\":\"unsupported_capability\",\"message\":\"attached monitors expose observations only\"}"
+          }
+        ],
+        "isError": true
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 15,
+      "result": {
+        "protocolVersion": "2025-11-25",
+        "capabilities": {
+          "tools": {}
+        },
+        "serverInfo": {
+          "name": "rlutter",
+          "version": "0.1.0"
+        },
+        "instructions": "Use rlutter_windows_list to discover view IDs. Prefer identifier selectors. Observe actions with rlutter_verify_wait; dispatch is not success. Never retry mutations after timeout or cancellation. Call rlutter_session_start with an absolute project_dir to build and launch an app. Pass its session_id to every app tool. Multiple worktrees can have separate sessions. Only one app operation may run at a time. For a running Linux monitor, use rlutter_session_attach(socket_path), monitor_events(after), and session_detach. Attached sessions are read-only and EOF leaves their app alive. Finish owned apps with rlutter_session_shutdown."
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 16,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"capabilities\":{\"buildMode\":\"release\",\"engineRevision\":\"7c8b771b973cb1cd5b9000084077ff4a414e4b91\",\"epoch\":\"345176-1794389620159000805\",\"frameworkErrors\":true,\"methods\":[\"session.health\",\"diagnostics.snapshot\",\"windows.list\",\"semantics.snapshot\",\"monitor.events\"],\"monitor\":true,\"readOnly\":true},\"session_id\":\"monitor-1\"}"
+          }
+        ],
+        "isError": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 17,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"detached\":true}"
+          }
+        ],
+        "isError": false
+      }
+    }
+  ]
+}

@@ -1066,3 +1066,9 @@ app builds require Rust/Cargo and Visual Studio C++ build tools.
 The rolling CLI workflow builds both Linux x64 and Windows x64. Windows assets
 are `rlutter-windows-x64.zip` and `rlutter-windows-x64.zip.sha256`; publication
 waits for matching Linux and Windows BETA SDK archives.
+
+Normal Linux applications can also opt into an attachable observation endpoint
+with the `agent-monitor` Cargo feature and a private launch-time socket path,
+including in release/AOT builds. MCP attachment does not own or shut down the
+application. See [Linux monitoring](engine/src/flutter/shell/platform/rust/docs/monitoring.md)
+for setup, error coverage and bounded event cursors.

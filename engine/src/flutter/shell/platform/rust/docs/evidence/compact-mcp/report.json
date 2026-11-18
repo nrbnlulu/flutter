@@ -1,0 +1,1093 @@
+{
+  "status": "passed",
+  "runs": [
+    {
+      "status": "passed",
+      "mode": "baseline",
+      "scope": "form",
+      "checks": [
+        "stale action rejected after increment; counter remains 1",
+        "Unicode form -> separate dialog view -> confirm -> saved value",
+        "explicit screenshot: metadata before valid PNG; fresh UI frame"
+      ],
+      "pagination": [],
+      "schema": {
+        "tool_count": 31,
+        "canonical_tools_json_bytes": 14557,
+        "canonical_tools_json_chars": 14557,
+        "note": "Canonical schema size is descriptive; full tools/list wire cost is in discovery."
+      },
+      "screenshot_metadata": {
+        "actionSequence": 5,
+        "colorConvention": "linear RGBA8, straight alpha, PNG gAMA=1.0",
+        "completedSessionMicros": 1324256,
+        "epoch": "1a7cb9-18e8dd4faac4d9aa",
+        "frameId": 21,
+        "height": 500,
+        "path": "<artifacts>/form-project/build/agent/mcp-1728915-1794927738260988034-1/capture-1-view-1-generation-1-frame-21.png",
+        "pixelRatio": 1.0,
+        "readbackMicros": 871,
+        "semanticsRevision": 6,
+        "sizeGeneration": 1,
+        "uiFrameBoundary": 21,
+        "uiFrameNumber": 22,
+        "viewId": 1,
+        "width": 700
+      },
+      "wall_ms": 48888.34692098317,
+      "metrics": {
+        "total": {
+          "request_bytes": 5667,
+          "request_chars": 5619,
+          "response_bytes": 204029,
+          "response_chars": 203945,
+          "requests": 30,
+          "responses": 29,
+          "latency_ms": 48877.79423518805,
+          "images": 1
+        },
+        "by_category": {
+          "discovery": {
+            "request_bytes": 283,
+            "request_chars": 283,
+            "response_bytes": 15899,
+            "response_chars": 15899,
+            "requests": 3,
+            "responses": 2,
+            "latency_ms": 5.447342002298683,
+            "images": 0
+          },
+          "health": {
+            "request_bytes": 148,
+            "request_chars": 148,
+            "response_bytes": 168,
+            "response_chars": 168,
+            "requests": 1,
+            "responses": 1,
+            "latency_ms": 1.4406339905690402,
+            "images": 0
+          },
+          "negative_controls": {
+            "request_bytes": 481,
+            "request_chars": 481,
+            "response_bytes": 2068,
+            "response_chars": 2068,
+            "requests": 2,
+            "responses": 2,
+            "latency_ms": 164.74848400685005,
+            "images": 0
+          },
+          "observations": {
+            "request_bytes": 814,
+            "request_chars": 814,
+            "response_bytes": 132654,
+            "response_chars": 132606,
+            "requests": 5,
+            "responses": 5,
+            "latency_ms": 19.614936027210206,
+            "images": 0
+          },
+          "screenshots": {
+            "request_bytes": 163,
+            "request_chars": 163,
+            "response_bytes": 37960,
+            "response_chars": 37960,
+            "requests": 1,
+            "responses": 1,
+            "latency_ms": 22.726209019310772,
+            "images": 1
+          },
+          "shutdown": {
+            "request_bytes": 150,
+            "request_chars": 150,
+            "response_bytes": 114,
+            "response_chars": 114,
+            "requests": 1,
+            "responses": 1,
+            "latency_ms": 60.77127601020038,
+            "images": 0
+          },
+          "startup": {
+            "request_bytes": 217,
+            "request_chars": 217,
+            "response_bytes": 263,
+            "response_chars": 263,
+            "requests": 1,
+            "responses": 1,
+            "latency_ms": 47505.17421599943,
+            "images": 0
+          },
+          "task": {
+            "request_bytes": 3411,
+            "request_chars": 3363,
+            "response_bytes": 14903,
+            "response_chars": 14867,
+            "requests": 16,
+            "responses": 16,
+            "latency_ms": 1097.8711381321773,
+            "images": 0
+          }
+        }
+      },
+      "command": [
+        "<rust-source>/rlutter/target/debug/rlutter",
+        "--flutter-root",
+        "<flutter-sdk>",
+        "mcp",
+        "--stdio"
+      ],
+      "automatic_mutation_retries": 0,
+      "transcript": "<artifacts>/form-baseline/transcript.jsonl"
+    },
+    {
+      "status": "passed",
+      "mode": "compact",
+      "scope": "form",
+      "checks": [
+        "stale action rejected after increment; counter remains 1",
+        "Unicode form -> separate dialog view -> confirm -> saved value",
+        "bounded pagination covers every visible record exactly once",
+        "explicit screenshot: metadata before valid PNG; fresh UI frame"
+      ],
+      "pagination": [
+        [
+          {
+            "collapsed": 3,
+            "epoch": "1a7ea2-18e8dd506bb1ce48",
+            "generation": 1,
+            "hidden": 0,
+            "nextOffset": null,
+            "offset": 0,
+            "omitted": 0,
+            "returned": 15,
+            "revision": 1,
+            "total": 15,
+            "viewId": 1
+          }
+        ],
+        [
+          {
+            "collapsed": 3,
+            "epoch": "1a7ea2-18e8dd506bb1ce48",
+            "generation": 2,
+            "hidden": 0,
+            "nextOffset": null,
+            "offset": 0,
+            "omitted": 0,
+            "returned": 15,
+            "revision": 2,
+            "total": 15,
+            "viewId": 1
+          }
+        ],
+        [
+          {
+            "collapsed": 3,
+            "epoch": "1a7ea2-18e8dd506bb1ce48",
+            "generation": 3,
+            "hidden": 0,
+            "nextOffset": null,
+            "offset": 0,
+            "omitted": 0,
+            "returned": 15,
+            "revision": 4,
+            "total": 15,
+            "viewId": 1
+          }
+        ],
+        [
+          {
+            "collapsed": 3,
+            "epoch": "1a7ea2-18e8dd506bb1ce48",
+            "generation": 4,
+            "hidden": 0,
+            "nextOffset": null,
+            "offset": 0,
+            "omitted": 0,
+            "returned": 4,
+            "revision": 1,
+            "total": 4,
+            "viewId": 2
+          }
+        ],
+        [
+          {
+            "collapsed": 3,
+            "epoch": "1a7ea2-18e8dd506bb1ce48",
+            "generation": 5,
+            "hidden": 0,
+            "nextOffset": null,
+            "offset": 0,
+            "omitted": 0,
+            "returned": 15,
+            "revision": 6,
+            "total": 15,
+            "viewId": 1
+          }
+        ],
+        [
+          {
+            "collapsed": 3,
+            "epoch": "1a7ea2-18e8dd506bb1ce48",
+            "generation": 6,
+            "hidden": 0,
+            "nextOffset": 3,
+            "offset": 0,
+            "omitted": 12,
+            "returned": 3,
+            "revision": 6,
+            "total": 15,
+            "viewId": 1
+          },
+          {
+            "collapsed": 3,
+            "epoch": "1a7ea2-18e8dd506bb1ce48",
+            "generation": 6,
+            "hidden": 0,
+            "nextOffset": 7,
+            "offset": 3,
+            "omitted": 11,
+            "returned": 4,
+            "revision": 6,
+            "total": 15,
+            "viewId": 1
+          },
+          {
+            "collapsed": 3,
+            "epoch": "1a7ea2-18e8dd506bb1ce48",
+            "generation": 6,
+            "hidden": 0,
+            "nextOffset": 11,
+            "offset": 7,
+            "omitted": 11,
+            "returned": 4,
+            "revision": 6,
+            "total": 15,
+            "viewId": 1
+          },
+          {
+            "collapsed": 3,
+            "epoch": "1a7ea2-18e8dd506bb1ce48",
+            "generation": 6,
+            "hidden": 0,
+            "nextOffset": null,
+            "offset": 11,
+            "omitted": 11,
+            "returned": 4,
+            "revision": 6,
+            "total": 15,
+            "viewId": 1
+          }
+        ]
+      ],
+      "schema": {
+        "tool_count": 31,
+        "canonical_tools_json_bytes": 14557,
+        "canonical_tools_json_chars": 14557,
+        "note": "Canonical schema size is descriptive; full tools/list wire cost is in discovery."
+      },
+      "screenshot_metadata": {
+        "actionSequence": 5,
+        "colorConvention": "linear RGBA8, straight alpha, PNG gAMA=1.0",
+        "completedSessionMicros": 1426180,
+        "epoch": "1a7ea2-18e8dd506bb1ce48",
+        "frameId": 23,
+        "height": 500,
+        "path": "<artifacts>/form-project/build/agent/mcp-1735901-1794927787149612187-1/capture-1-view-1-generation-1-frame-23.png",
+        "pixelRatio": 1.0,
+        "readbackMicros": 1026,
+        "semanticsRevision": 6,
+        "sizeGeneration": 1,
+        "uiFrameBoundary": 23,
+        "uiFrameNumber": 24,
+        "viewId": 1,
+        "width": 700
+      },
+      "wall_ms": 3364.396944991313,
+      "metrics": {
+        "total": {
+          "request_bytes": 6340,
+          "request_chars": 6292,
+          "response_bytes": 84433,
+          "response_chars": 84325,
+          "requests": 34,
+          "responses": 33,
+          "latency_ms": 3353.1081429100595,
+          "images": 1
+        },
+        "by_category": {
+          "discovery": {
+            "request_bytes": 283,
+            "request_chars": 283,
+            "response_bytes": 15899,
+            "response_chars": 15899,
+            "requests": 3,
+            "responses": 2,
+            "latency_ms": 4.866186995059252,
+            "images": 0
+          },
+          "health": {
+            "request_bytes": 148,
+            "request_chars": 148,
+            "response_bytes": 168,
+            "response_chars": 168,
+            "requests": 1,
+            "responses": 1,
+            "latency_ms": 4.687767010182142,
+            "images": 0
+          },
+          "negative_controls": {
+            "request_bytes": 440,
+            "request_chars": 440,
+            "response_bytes": 2131,
+            "response_chars": 2131,
+            "requests": 2,
+            "responses": 2,
+            "latency_ms": 171.52157600503415,
+            "images": 0
+          },
+          "observations": {
+            "request_bytes": 919,
+            "request_chars": 919,
+            "response_bytes": 10111,
+            "response_chars": 10063,
+            "requests": 5,
+            "responses": 5,
+            "latency_ms": 23.457348986994475,
+            "images": 0
+          },
+          "pagination": {
+            "request_bytes": 778,
+            "request_chars": 778,
+            "response_bytes": 3263,
+            "response_chars": 3239,
+            "requests": 4,
+            "responses": 4,
+            "latency_ms": 18.74417797080241,
+            "images": 0
+          },
+          "screenshots": {
+            "request_bytes": 158,
+            "request_chars": 158,
+            "response_bytes": 37581,
+            "response_chars": 37581,
+            "requests": 1,
+            "responses": 1,
+            "latency_ms": 17.546415998367593,
+            "images": 1
+          },
+          "shutdown": {
+            "request_bytes": 150,
+            "request_chars": 150,
+            "response_bytes": 114,
+            "response_chars": 114,
+            "requests": 1,
+            "responses": 1,
+            "latency_ms": 81.29403198836371,
+            "images": 0
+          },
+          "startup": {
+            "request_bytes": 217,
+            "request_chars": 217,
+            "response_bytes": 263,
+            "response_chars": 263,
+            "requests": 1,
+            "responses": 1,
+            "latency_ms": 1853.544250014238,
+            "images": 0
+          },
+          "task": {
+            "request_bytes": 3247,
+            "request_chars": 3199,
+            "response_bytes": 14903,
+            "response_chars": 14867,
+            "requests": 16,
+            "responses": 16,
+            "latency_ms": 1177.4463879410177,
+            "images": 0
+          }
+        }
+      },
+      "command": [
+        "<rust-source>/rlutter/target/debug/rlutter",
+        "--flutter-root",
+        "<flutter-sdk>",
+        "mcp",
+        "--stdio"
+      ],
+      "automatic_mutation_retries": 0,
+      "transcript": "<artifacts>/form-compact/transcript.jsonl"
+    },
+    {
+      "status": "passed",
+      "mode": "baseline",
+      "scope": "list_and_paint",
+      "checks": [
+        "scrollDown remains actionable; initially absent row 30 becomes observable",
+        "paint-only glyph absent from semantics; explicit PNGs show changed canvas pixels"
+      ],
+      "pagination": [],
+      "schema": {
+        "tool_count": 31,
+        "canonical_tools_json_bytes": 14557,
+        "canonical_tools_json_chars": 14557,
+        "note": "Canonical schema size is descriptive; full tools/list wire cost is in discovery."
+      },
+      "scroll_actions": 3,
+      "paint": {
+        "before_metadata": {
+          "actionSequence": 3,
+          "colorConvention": "linear RGBA8, straight alpha, PNG gAMA=1.0",
+          "completedSessionMicros": 918039,
+          "epoch": "1a9b67-18e8dd5c1c5f8fe2",
+          "frameId": 2,
+          "height": 360,
+          "path": "<artifacts>/list_and_paint-project/build/agent/mcp-1736670-1794927790682979329-1/capture-1-view-2-generation-1-frame-2.png",
+          "pixelRatio": 1.0,
+          "readbackMicros": 415,
+          "semanticsRevision": 1,
+          "sizeGeneration": 1,
+          "uiFrameBoundary": 8,
+          "uiFrameNumber": 9,
+          "viewId": 2,
+          "width": 440
+        },
+        "unchanged_metadata": {
+          "actionSequence": 3,
+          "colorConvention": "linear RGBA8, straight alpha, PNG gAMA=1.0",
+          "completedSessionMicros": 934804,
+          "epoch": "1a9b67-18e8dd5c1c5f8fe2",
+          "frameId": 3,
+          "height": 360,
+          "path": "<artifacts>/list_and_paint-project/build/agent/mcp-1736670-1794927790682979329-1/capture-2-view-2-generation-1-frame-3.png",
+          "pixelRatio": 1.0,
+          "readbackMicros": 355,
+          "semanticsRevision": 1,
+          "sizeGeneration": 1,
+          "uiFrameBoundary": 9,
+          "uiFrameNumber": 10,
+          "viewId": 2,
+          "width": 440
+        },
+        "after_metadata": {
+          "actionSequence": 4,
+          "colorConvention": "linear RGBA8, straight alpha, PNG gAMA=1.0",
+          "completedSessionMicros": 1113872,
+          "epoch": "1a9b67-18e8dd5c1c5f8fe2",
+          "frameId": 5,
+          "height": 360,
+          "path": "<artifacts>/list_and_paint-project/build/agent/mcp-1736670-1794927790682979329-1/capture-3-view-2-generation-1-frame-5.png",
+          "pixelRatio": 1.0,
+          "readbackMicros": 296,
+          "semanticsRevision": 2,
+          "sizeGeneration": 1,
+          "uiFrameBoundary": 19,
+          "uiFrameNumber": 20,
+          "viewId": 2,
+          "width": 440
+        },
+        "width": 440,
+        "height": 360,
+        "lower_half_changed_pixels": 62576,
+        "before_pixel_sha256": "d83e98217bdcf2c1dd0f0cb6849aef7e743039575b59ebf49be3c9546442ea98",
+        "after_pixel_sha256": "7d41a862439641df109678c02ee20a062504930542ccc78a06317a39938e5cf0",
+        "unchanged_control_equal_pixels": true,
+        "decoder": "stdlib PNG CRC/zlib/filter reconstruction, 8-bit RGB(A)"
+      },
+      "wall_ms": 49783.60263200011,
+      "metrics": {
+        "total": {
+          "request_bytes": 5925,
+          "request_chars": 5925,
+          "response_bytes": 299118,
+          "response_chars": 298718,
+          "requests": 32,
+          "responses": 31,
+          "latency_ms": 49540.621777035994,
+          "images": 3
+        },
+        "by_category": {
+          "discovery": {
+            "request_bytes": 283,
+            "request_chars": 283,
+            "response_bytes": 15899,
+            "response_chars": 15899,
+            "requests": 3,
+            "responses": 2,
+            "latency_ms": 7.370796985924244,
+            "images": 0
+          },
+          "health": {
+            "request_bytes": 148,
+            "request_chars": 148,
+            "response_bytes": 168,
+            "response_chars": 168,
+            "requests": 1,
+            "responses": 1,
+            "latency_ms": 2.8359929856378585,
+            "images": 0
+          },
+          "observations": {
+            "request_bytes": 977,
+            "request_chars": 977,
+            "response_bytes": 215841,
+            "response_chars": 215451,
+            "requests": 6,
+            "responses": 6,
+            "latency_ms": 36.91485899616964,
+            "images": 0
+          },
+          "screenshots": {
+            "request_bytes": 489,
+            "request_chars": 489,
+            "response_bytes": 49511,
+            "response_chars": 49511,
+            "requests": 3,
+            "responses": 3,
+            "latency_ms": 37.367075972724706,
+            "images": 3
+          },
+          "shutdown": {
+            "request_bytes": 150,
+            "request_chars": 150,
+            "response_bytes": 114,
+            "response_chars": 114,
+            "requests": 1,
+            "responses": 1,
+            "latency_ms": 60.92485800036229,
+            "images": 0
+          },
+          "startup": {
+            "request_bytes": 227,
+            "request_chars": 227,
+            "response_bytes": 273,
+            "response_chars": 273,
+            "requests": 1,
+            "responses": 1,
+            "latency_ms": 48528.973058011616,
+            "images": 0
+          },
+          "task": {
+            "request_bytes": 3651,
+            "request_chars": 3651,
+            "response_bytes": 17312,
+            "response_chars": 17302,
+            "requests": 17,
+            "responses": 17,
+            "latency_ms": 866.2351360835601,
+            "images": 0
+          }
+        }
+      },
+      "command": [
+        "<rust-source>/rlutter/target/debug/rlutter",
+        "--flutter-root",
+        "<flutter-sdk>",
+        "mcp",
+        "--stdio"
+      ],
+      "automatic_mutation_retries": 0,
+      "transcript": "<artifacts>/list_and_paint-baseline/transcript.jsonl"
+    },
+    {
+      "status": "passed",
+      "mode": "compact",
+      "scope": "list_and_paint",
+      "checks": [
+        "scrollDown remains actionable; initially absent row 30 becomes observable",
+        "long-list pagination: same epoch/revision/generation; no gaps or duplicates",
+        "paint-only glyph absent from semantics; explicit PNGs show changed canvas pixels"
+      ],
+      "pagination": [
+        [
+          {
+            "collapsed": 13,
+            "epoch": "1a9d31-18e8dd5cd0a7a4df",
+            "generation": 1,
+            "hidden": 0,
+            "nextOffset": null,
+            "offset": 0,
+            "omitted": 0,
+            "returned": 14,
+            "revision": 1,
+            "total": 14,
+            "viewId": 1
+          }
+        ],
+        [
+          {
+            "collapsed": 14,
+            "epoch": "1a9d31-18e8dd5cd0a7a4df",
+            "generation": 2,
+            "hidden": 0,
+            "nextOffset": null,
+            "offset": 0,
+            "omitted": 0,
+            "returned": 15,
+            "revision": 2,
+            "total": 15,
+            "viewId": 1
+          }
+        ],
+        [
+          {
+            "collapsed": 14,
+            "epoch": "1a9d31-18e8dd5cd0a7a4df",
+            "generation": 3,
+            "hidden": 0,
+            "nextOffset": null,
+            "offset": 0,
+            "omitted": 0,
+            "returned": 15,
+            "revision": 3,
+            "total": 15,
+            "viewId": 1
+          }
+        ],
+        [
+          {
+            "collapsed": 14,
+            "epoch": "1a9d31-18e8dd5cd0a7a4df",
+            "generation": 4,
+            "hidden": 0,
+            "nextOffset": null,
+            "offset": 0,
+            "omitted": 0,
+            "returned": 15,
+            "revision": 4,
+            "total": 15,
+            "viewId": 1
+          }
+        ],
+        [
+          {
+            "collapsed": 14,
+            "epoch": "1a9d31-18e8dd5cd0a7a4df",
+            "generation": 5,
+            "hidden": 0,
+            "nextOffset": 4,
+            "offset": 0,
+            "omitted": 11,
+            "returned": 4,
+            "revision": 4,
+            "total": 15,
+            "viewId": 1
+          },
+          {
+            "collapsed": 14,
+            "epoch": "1a9d31-18e8dd5cd0a7a4df",
+            "generation": 5,
+            "hidden": 0,
+            "nextOffset": 7,
+            "offset": 4,
+            "omitted": 12,
+            "returned": 3,
+            "revision": 4,
+            "total": 15,
+            "viewId": 1
+          },
+          {
+            "collapsed": 14,
+            "epoch": "1a9d31-18e8dd5cd0a7a4df",
+            "generation": 5,
+            "hidden": 0,
+            "nextOffset": 11,
+            "offset": 7,
+            "omitted": 11,
+            "returned": 4,
+            "revision": 4,
+            "total": 15,
+            "viewId": 1
+          },
+          {
+            "collapsed": 14,
+            "epoch": "1a9d31-18e8dd5cd0a7a4df",
+            "generation": 5,
+            "hidden": 0,
+            "nextOffset": null,
+            "offset": 11,
+            "omitted": 11,
+            "returned": 4,
+            "revision": 4,
+            "total": 15,
+            "viewId": 1
+          }
+        ],
+        [
+          {
+            "collapsed": 3,
+            "epoch": "1a9d31-18e8dd5cd0a7a4df",
+            "generation": 6,
+            "hidden": 0,
+            "nextOffset": null,
+            "offset": 0,
+            "omitted": 0,
+            "returned": 4,
+            "revision": 1,
+            "total": 4,
+            "viewId": 2
+          }
+        ],
+        [
+          {
+            "collapsed": 3,
+            "epoch": "1a9d31-18e8dd5cd0a7a4df",
+            "generation": 7,
+            "hidden": 0,
+            "nextOffset": null,
+            "offset": 0,
+            "omitted": 0,
+            "returned": 4,
+            "revision": 2,
+            "total": 4,
+            "viewId": 2
+          }
+        ]
+      ],
+      "schema": {
+        "tool_count": 31,
+        "canonical_tools_json_bytes": 14557,
+        "canonical_tools_json_chars": 14557,
+        "note": "Canonical schema size is descriptive; full tools/list wire cost is in discovery."
+      },
+      "scroll_actions": 3,
+      "paint": {
+        "before_metadata": {
+          "actionSequence": 3,
+          "colorConvention": "linear RGBA8, straight alpha, PNG gAMA=1.0",
+          "completedSessionMicros": 955548,
+          "epoch": "1a9d31-18e8dd5cd0a7a4df",
+          "frameId": 2,
+          "height": 360,
+          "path": "<artifacts>/list_and_paint-project/build/agent/mcp-1743754-1794927840465275497-1/capture-1-view-2-generation-1-frame-2.png",
+          "pixelRatio": 1.0,
+          "readbackMicros": 429,
+          "semanticsRevision": 1,
+          "sizeGeneration": 1,
+          "uiFrameBoundary": 12,
+          "uiFrameNumber": 13,
+          "viewId": 2,
+          "width": 440
+        },
+        "unchanged_metadata": {
+          "actionSequence": 3,
+          "colorConvention": "linear RGBA8, straight alpha, PNG gAMA=1.0",
+          "completedSessionMicros": 972221,
+          "epoch": "1a9d31-18e8dd5cd0a7a4df",
+          "frameId": 3,
+          "height": 360,
+          "path": "<artifacts>/list_and_paint-project/build/agent/mcp-1743754-1794927840465275497-1/capture-2-view-2-generation-1-frame-3.png",
+          "pixelRatio": 1.0,
+          "readbackMicros": 381,
+          "semanticsRevision": 1,
+          "sizeGeneration": 1,
+          "uiFrameBoundary": 13,
+          "uiFrameNumber": 14,
+          "viewId": 2,
+          "width": 440
+        },
+        "after_metadata": {
+          "actionSequence": 4,
+          "colorConvention": "linear RGBA8, straight alpha, PNG gAMA=1.0",
+          "completedSessionMicros": 1156610,
+          "epoch": "1a9d31-18e8dd5cd0a7a4df",
+          "frameId": 5,
+          "height": 360,
+          "path": "<artifacts>/list_and_paint-project/build/agent/mcp-1743754-1794927840465275497-1/capture-3-view-2-generation-1-frame-5.png",
+          "pixelRatio": 1.0,
+          "readbackMicros": 252,
+          "semanticsRevision": 2,
+          "sizeGeneration": 1,
+          "uiFrameBoundary": 20,
+          "uiFrameNumber": 21,
+          "viewId": 2,
+          "width": 440
+        },
+        "width": 440,
+        "height": 360,
+        "lower_half_changed_pixels": 62576,
+        "before_pixel_sha256": "d83e98217bdcf2c1dd0f0cb6849aef7e743039575b59ebf49be3c9546442ea98",
+        "after_pixel_sha256": "7d41a862439641df109678c02ee20a062504930542ccc78a06317a39938e5cf0",
+        "unchanged_control_equal_pixels": true,
+        "decoder": "stdlib PNG CRC/zlib/filter reconstruction, 8-bit RGB(A)"
+      },
+      "wall_ms": 3069.237707008142,
+      "metrics": {
+        "total": {
+          "request_bytes": 6650,
+          "request_chars": 6650,
+          "response_bytes": 97667,
+          "response_chars": 97191,
+          "requests": 36,
+          "responses": 35,
+          "latency_ms": 2822.7631910995115,
+          "images": 3
+        },
+        "by_category": {
+          "discovery": {
+            "request_bytes": 283,
+            "request_chars": 283,
+            "response_bytes": 15899,
+            "response_chars": 15899,
+            "requests": 3,
+            "responses": 2,
+            "latency_ms": 5.462344997795299,
+            "images": 0
+          },
+          "health": {
+            "request_bytes": 148,
+            "request_chars": 148,
+            "response_bytes": 168,
+            "response_chars": 168,
+            "requests": 1,
+            "responses": 1,
+            "latency_ms": 2.5038890016730875,
+            "images": 0
+          },
+          "observations": {
+            "request_bytes": 1103,
+            "request_chars": 1103,
+            "response_bytes": 11125,
+            "response_chars": 10735,
+            "requests": 6,
+            "responses": 6,
+            "latency_ms": 35.76828507357277,
+            "images": 0
+          },
+          "pagination": {
+            "request_bytes": 778,
+            "request_chars": 778,
+            "response_bytes": 3262,
+            "response_chars": 3186,
+            "requests": 4,
+            "responses": 4,
+            "latency_ms": 28.05587599868886,
+            "images": 0
+          },
+          "screenshots": {
+            "request_bytes": 474,
+            "request_chars": 474,
+            "response_bytes": 49514,
+            "response_chars": 49514,
+            "requests": 3,
+            "responses": 3,
+            "latency_ms": 40.5736539978534,
+            "images": 3
+          },
+          "shutdown": {
+            "request_bytes": 150,
+            "request_chars": 150,
+            "response_bytes": 114,
+            "response_chars": 114,
+            "requests": 1,
+            "responses": 1,
+            "latency_ms": 61.229276994708925,
+            "images": 0
+          },
+          "startup": {
+            "request_bytes": 227,
+            "request_chars": 227,
+            "response_bytes": 273,
+            "response_chars": 273,
+            "requests": 1,
+            "responses": 1,
+            "latency_ms": 1771.439553995151,
+            "images": 0
+          },
+          "task": {
+            "request_bytes": 3487,
+            "request_chars": 3487,
+            "response_bytes": 17312,
+            "response_chars": 17302,
+            "requests": 17,
+            "responses": 17,
+            "latency_ms": 877.730311040068,
+            "images": 0
+          }
+        }
+      },
+      "command": [
+        "<rust-source>/rlutter/target/debug/rlutter",
+        "--flutter-root",
+        "<flutter-sdk>",
+        "mcp",
+        "--stdio"
+      ],
+      "automatic_mutation_retries": 0,
+      "transcript": "<artifacts>/list_and_paint-compact/transcript.jsonl"
+    }
+  ],
+  "methodology": {
+    "baseline": "Full semantics_snapshot with native handles, current server",
+    "compact": "ui_snapshot with generation-scoped refs, current server",
+    "wire_units": "Actual UTF-8 bytes and Unicode characters, including JSON-RPC and LF",
+    "schema": "Same-server comparison, NOT original-server baseline: complete current tools/list charged to every run. No legacy subtraction: exact historical descriptions and ref-related schema changes were not reconstructed. A historical baseline would have smaller discovery cost, so these savings must not be attributed to that baseline.",
+    "tokens": "Unavailable: no model tokenizer used; bytes/chars are not model tokens",
+    "latency": "Serial wall-clock RPC latency; startup includes build, not model inference",
+    "ordering": "Baseline then compact on the same isolated copy; cache warming can bias latency",
+    "retries": "No automatic retries; every request including negative controls is charged",
+    "coverage": "Separate form and 160-row lazy list/custom-paint app flows in both modes",
+    "coverage_limits": "One deterministic fixture per scope, not arbitrary app coverage",
+    "scope_comparison": "Matched task flows per scope; compact additionally runs a 650-character pagination check. Totals charge that extra work and all schema/image traffic. Observation totals include every continuation needed to obtain a complete compact observation."
+  },
+  "coverage_fixture_sha256": "0c6eb2fb0d1403362b72366679f48a0a46b161429e8001bdb133bd04a314b754",
+  "comparison": {
+    "form": {
+      "total": {
+        "baseline": {
+          "request_bytes": 5667,
+          "request_chars": 5619,
+          "response_bytes": 204029,
+          "response_chars": 203945,
+          "requests": 30,
+          "responses": 29,
+          "latency_ms": 48877.79423518805,
+          "images": 1
+        },
+        "compact": {
+          "request_bytes": 6340,
+          "request_chars": 6292,
+          "response_bytes": 84433,
+          "response_chars": 84325,
+          "requests": 34,
+          "responses": 33,
+          "latency_ms": 3353.1081429100595,
+          "images": 1
+        },
+        "response_byte_reduction_percent": 58.6171573648844,
+        "baseline_request_plus_response_bytes": 209696,
+        "compact_request_plus_response_bytes": 90773
+      },
+      "observations": {
+        "baseline": {
+          "request_bytes": 814,
+          "request_chars": 814,
+          "response_bytes": 132654,
+          "response_chars": 132606,
+          "requests": 5,
+          "responses": 5,
+          "latency_ms": 19.614936027210206,
+          "images": 0
+        },
+        "compact": {
+          "request_bytes": 919,
+          "request_chars": 919,
+          "response_bytes": 10111,
+          "response_chars": 10063,
+          "requests": 5,
+          "responses": 5,
+          "latency_ms": 23.457348986994475,
+          "images": 0
+        },
+        "response_byte_reduction_percent": 92.37791547936737,
+        "baseline_request_plus_response_bytes": 133468,
+        "compact_request_plus_response_bytes": 11030
+      }
+    },
+    "list_and_paint": {
+      "total": {
+        "baseline": {
+          "request_bytes": 5925,
+          "request_chars": 5925,
+          "response_bytes": 299118,
+          "response_chars": 298718,
+          "requests": 32,
+          "responses": 31,
+          "latency_ms": 49540.621777035994,
+          "images": 3
+        },
+        "compact": {
+          "request_bytes": 6650,
+          "request_chars": 6650,
+          "response_bytes": 97667,
+          "response_chars": 97191,
+          "requests": 36,
+          "responses": 35,
+          "latency_ms": 2822.7631910995115,
+          "images": 3
+        },
+        "response_byte_reduction_percent": 67.34833744542289,
+        "baseline_request_plus_response_bytes": 305043,
+        "compact_request_plus_response_bytes": 104317
+      },
+      "observations": {
+        "baseline": {
+          "request_bytes": 977,
+          "request_chars": 977,
+          "response_bytes": 215841,
+          "response_chars": 215451,
+          "requests": 6,
+          "responses": 6,
+          "latency_ms": 36.91485899616964,
+          "images": 0
+        },
+        "compact": {
+          "request_bytes": 1103,
+          "request_chars": 1103,
+          "response_bytes": 11125,
+          "response_chars": 10735,
+          "requests": 6,
+          "responses": 6,
+          "latency_ms": 35.76828507357277,
+          "images": 0
+        },
+        "response_byte_reduction_percent": 94.84574293113911,
+        "baseline_request_plus_response_bytes": 216818,
+        "compact_request_plus_response_bytes": 12228
+      }
+    },
+    "combined": {
+      "total": {
+        "baseline": {
+          "request_bytes": 11592,
+          "request_chars": 11544,
+          "response_bytes": 503147,
+          "response_chars": 502663,
+          "requests": 62,
+          "responses": 60,
+          "latency_ms": 98418.41601222404,
+          "images": 4
+        },
+        "compact": {
+          "request_bytes": 12990,
+          "request_chars": 12942,
+          "response_bytes": 182100,
+          "response_chars": 181516,
+          "requests": 70,
+          "responses": 68,
+          "latency_ms": 6175.871334009571,
+          "images": 4
+        },
+        "response_byte_reduction_percent": 63.80779374616166,
+        "baseline_request_plus_response_bytes": 514739,
+        "compact_request_plus_response_bytes": 195090
+      },
+      "observations": {
+        "baseline": {
+          "request_bytes": 1791,
+          "request_chars": 1791,
+          "response_bytes": 348495,
+          "response_chars": 348057,
+          "requests": 11,
+          "responses": 11,
+          "latency_ms": 56.52979502337985,
+          "images": 0
+        },
+        "compact": {
+          "request_bytes": 2022,
+          "request_chars": 2022,
+          "response_bytes": 21236,
+          "response_chars": 20798,
+          "requests": 11,
+          "responses": 11,
+          "latency_ms": 59.225634060567245,
+          "images": 0
+        },
+        "response_byte_reduction_percent": 93.90636881447367,
+        "baseline_request_plus_response_bytes": 350286,
+        "compact_request_plus_response_bytes": 23258
+      }
+    }
+  },
+  "artifact_note": "Machine paths normalized. Raw transcripts, logs and unchanged-control PNG remain local artifacts, not bundled here. Re-run the documented test to regenerate them."
+}

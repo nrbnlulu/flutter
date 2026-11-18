@@ -10,6 +10,10 @@ description = "Winit host runtime for the Flutter Rust shell"
 crate-type = ["rlib", "staticlib"]
 path = "src/lib.rs"
 
+[features]
+# Explicit build-time opt-in, including release/AOT applications.
+agent-monitor = []
+
 [dependencies]
 flutter-shell-agent = { path = "../flutter-shell-agent", version = "0.1.0" }
 async-trait = "=0.1.89"

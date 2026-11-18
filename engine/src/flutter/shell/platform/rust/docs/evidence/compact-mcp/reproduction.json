@@ -1,0 +1,87 @@
+{
+  "cwd": "<rust-source>",
+  "explicit_environment": {
+    "RUSTUP_TOOLCHAIN": "1.93.1",
+    "VK_INSTANCE_LAYERS": "VK_LAYER_KHRONOS_validation"
+  },
+  "commands": {
+    "build": [
+      "cargo",
+      "build",
+      "--locked",
+      "--manifest-path",
+      "rlutter/Cargo.toml"
+    ],
+    "compact": [
+      "python3",
+      "tests/test_compact_mcp.py",
+      "--rlutter",
+      "rlutter/target/debug/rlutter",
+      "--flutter-root",
+      "<flutter-sdk>",
+      "--project",
+      "<generated-agent-fixture>",
+      "--artifacts",
+      "<artifacts>",
+      "--timeout",
+      "120"
+    ],
+    "legacy": [
+      "python3",
+      "tests/test_mcp.py",
+      "--rlutter",
+      "rlutter/target/debug/rlutter",
+      "--flutter-root",
+      "<flutter-sdk>",
+      "--project",
+      "<artifacts>/form-project",
+      "--artifacts",
+      "<artifacts>/legacy"
+    ]
+  },
+  "terminal_timeout_seconds": {
+    "build": 120,
+    "compact": 300,
+    "legacy": 180
+  },
+  "python": "3.14.8 (main, Oct  2 2026, 10:23:31) [GCC 16.2.1 20260810]",
+  "platform": "Linux-7.2.15-1-omarchy-x86_64-with-glibc2.44",
+  "inherited_environment_subset": {
+    "CARGO_TARGET_DIR": null,
+    "FLUTTER_ROOT": null,
+    "WGPU_BACKEND": null,
+    "VK_ICD_FILENAMES": null,
+    "VK_DRIVER_FILES": null,
+    "DISPLAY": ":0",
+    "WAYLAND_DISPLAY": "wayland-1",
+    "XDG_RUNTIME_DIR": "/run/user/1000"
+  },
+  "sha256": {
+    "rlutter/target/debug/rlutter": "0588f324b27026f58d093fad8a0c1146ef6c7508056511a20d15cd726a7c3ae9",
+    "rlutter/src/commands/mcp.rs": "1017faf38f1c262ab3eefa80b3d608a690c3c8ace7c9ad60e70d283e40ba9327",
+    "rlutter/src/commands/mcp/compact.rs": "027b20d56fa0e65ba3434fa8a3309c52501428b759c94131bb7241dfea5812f7",
+    "rlutter/src/commands/mcp/ui.rs": "8388ee8a260d904edddc890582e1dd21be24a182258a915a97029b441a888412",
+    "tests/test_compact_mcp.py": "acb9d904764ef85be96de894a17f72ba8332f7619e685c5e93a2724b1dfec6ba",
+    "tests/test_mcp.py": "e91589330954ba4339efa49fa970483476656e4c90ce42d33d88325c5d299e0e",
+    "tests/compact_fixture/lib/main.dart": "0c6eb2fb0d1403362b72366679f48a0a46b161429e8001bdb133bd04a314b754"
+  },
+  "status": {
+    "build": "passed",
+    "compact": "passed",
+    "legacy_shutdown_and_eof": "passed"
+  },
+  "pagination_budget_changed": false,
+  "legacy_evidence": {
+    "shutdown": {
+      "response_count": 16,
+      "transcript": "<artifacts>/legacy/shutdown.json",
+      "log": "<artifacts>/legacy/shutdown.log"
+    },
+    "eof": {
+      "response_count": 11,
+      "transcript": "<artifacts>/legacy/eof.json",
+      "log": "<artifacts>/legacy/eof.log"
+    }
+  },
+  "artifact_note": "Machine paths normalized. Raw transcripts, logs and unchanged-control PNG remain local artifacts, not bundled here. Re-run the documented test to regenerate them."
+}
