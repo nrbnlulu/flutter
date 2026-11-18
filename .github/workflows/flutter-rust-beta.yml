@@ -297,7 +297,7 @@ jobs:
           retention-days: 1
 
   build-macos-engine:
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
@@ -361,7 +361,7 @@ jobs:
 
   package-macos:
     needs: [build-macos-engine, build-tool]
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
