@@ -204,6 +204,10 @@ class GlyphAtlasContext {
   /// @brief      Retrieve the size of the current glyph atlas.
   const ISize& GetAtlasSize() const;
 
+  // Whether doubling the current height stays within the device limit.
+  // Texture limits need not be powers of two.
+  bool CanGrowAtlas(int64_t max_texture_height) const;
+
   //----------------------------------------------------------------------------
   /// @brief      Retrieve the previous (if any) rect packer.
   std::shared_ptr<RectanglePacker> GetRectPacker() const;

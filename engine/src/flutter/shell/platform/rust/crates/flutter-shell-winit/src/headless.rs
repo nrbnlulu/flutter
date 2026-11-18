@@ -103,8 +103,12 @@ impl VirtualHost {
                         return None;
                     }
                     let (w, h) = v._broker.dimensions()?;
-                    let (w, h) = (f64::from(w) / self.ratio, f64::from(h) / self.ratio);
-                    if v.bounds.2 == w && v.bounds.3 == h {
+                    let (mut w, mut h) = (f64::from(w) / self.ratio, f64::from(h) / self.ratio);
+                    if let Some((min_w, min_h, max_w, max_h)) = v.constraints {
+                        w = w.clamp(min_w, max_w);
+                        h = h.clamp(min_h, max_h);
+                    }
+                    if !self.valid_size(w, h) || (v.bounds.2 == w && v.bounds.3 == h) {
                         return None;
                     }
                     v.bounds.2 = w;

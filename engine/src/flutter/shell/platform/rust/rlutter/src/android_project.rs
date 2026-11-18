@@ -371,6 +371,22 @@ mod tests {
     }
 
     #[test]
+    fn generated_activity_configures_backtraces_before_loading_native_runtime() {
+        let project = project("android_debug_backtraces");
+        ensure(&project, "com.test").unwrap();
+        let activity = fs::read_to_string(
+            android_dir(&project).join("app/src/main/java/dev/flutter/rs/RustActivity.java"),
+        )
+        .unwrap();
+        let configure = activity
+            .find("Os.setenv(\"RUST_LIB_BACKTRACE\", \"0\", false)")
+            .unwrap();
+        let load = activity.find("System.loadLibrary").unwrap();
+        assert!(configure < load);
+        assert!(activity.contains("ApplicationInfo.FLAG_DEBUGGABLE"));
+    }
+
+    #[test]
     fn generated_project_is_filled_in_and_gradlew_is_executable() {
         let p = project("android_project_gen");
         assert!(ensure(&p, "dev.example").unwrap());
