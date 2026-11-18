@@ -11,6 +11,25 @@ semantics and optional widget assertions, input, screenshots, video and CI
 evidence. Phases 0 and 1 are complete on Linux x64. The display-free virtual
 host is available; agent observation/control and verification remain pending.
 
+### PR #21 review fixes (2026-11-18)
+
+Rebased onto `rust/flutter-rs-shell` at 130dc77 (agent monitor, compact MCP
+observations): `shell.rs` and `rlutter/src/commands/mcp.rs` conflicts resolved;
+upstream's attach-to-monitor mode stays Linux-only. Then addressed the AI code
+review: B2 `tasks.py` passes `--target-dir`; B1/C1 `package-macos` fetches the
+version tag with full history and builds against an engine-free Flutter clone,
+asserting physical archive sources (simulated locally with a sparse worktree:
+version 3.50.0-1.0.pre-735, sources stay in the archive); B3 legacy key
+messages carry `specifiedLogicalKey`; B4 vsync anchors on the output timestamp;
+U3 the display link stops after 500 ms idle (observed stopping and restarting
+on input) and is released at teardown; U1 tooltips ignore mouse events; U2
+outside presses are judged against the active popup's subtree; B5/D1 the macOS
+backend checks only the captured region and reports failed AX actions; D2
+failing Vulkan loader candidates are logged. Windowing, owned, tooltip, popup,
+texture, text-input, rlutter runtime and release AOT tasks pass after the
+rebase and fixes; 57 winit, 138 rlutter and 14 backend unit tests pass; Linux
+and Windows `cargo check` are clean.
+
 ### macOS release/profile AOT and CI packaging (2026-11-17)
 
 Engines: `out/host_release_arm64` and `out/host_profile_arm64` built locally
