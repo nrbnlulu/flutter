@@ -207,19 +207,57 @@ pub fn copy_if_changed(source: &Path, destination: &Path) -> Result<()> {
             }
         }
     }
-    if let Some(parent) = destination.parent() {
+    if let Some(parent) = destination.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
     if destination.is_dir() {
         remove_path(destination)?;
     }
-    // macOS caches a binary's code signature per file: overwriting a signed
-    // library or executable in place makes the kernel kill the next process
-    // that maps it. Replace the file instead.
-    if cfg!(target_os = "macos") && destination.is_file() {
-        fs::remove_file(destination)?;
+    // Never truncate an existing destination in place: running apps keep
+    // `kernel_blob.bin`, `app.so`, ICU data, fonts, and shared libraries
+    // mmap'd (causing SIGBUS/SIGSEGV on Linux/macOS if overwritten on the same
+    // inode), and macOS caches code signatures per inode. Copy into a sibling
+    // temporary file and atomically rename it into place instead.
+    copy_atomic(source, destination)
+}
+
+fn copy_atomic(source: &Path, destination: &Path) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    let parent = match destination.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let temp = loop {
+        let seq = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(".rlutter-tmp-{}-{seq}", std::process::id()));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(_) => break candidate,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("create temporary file {}", candidate.display()));
+            }
+        }
+    };
+    struct Cleanup<'a>(&'a Path, bool);
+    impl Drop for Cleanup<'_> {
+        fn drop(&mut self) {
+            if self.1 {
+                let _ = fs::remove_file(self.0);
+            }
+        }
     }
-    fs::copy(source, destination).with_context(|| format!("copy {}", source.display()))?;
+    let mut cleanup = Cleanup(&temp, true);
+    fs::copy(source, &temp).with_context(|| format!("copy {}", source.display()))?;
+    fs::rename(&temp, destination)
+        .with_context(|| format!("replace {} with {}", destination.display(), temp.display()))?;
+    cleanup.1 = false;
     Ok(())
 }
 
@@ -335,6 +373,44 @@ mod tests {
         fs::remove_dir_all(source.join("nested")).unwrap();
         copy_dir(&source, &destination).unwrap();
         assert!(!destination.join("nested").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn copy_if_changed_replaces_inode_without_mutating_open_handles() {
+        use std::io::Read;
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempdir("atomic_copy");
+        let source = dir.join("source.bin");
+        let destination = dir.join("kernel_blob.bin");
+        fs::write(&source, b"original-kernel-contents").unwrap();
+        copy_if_changed(&source, &destination).unwrap();
+        let original_ino = fs::metadata(&destination).unwrap().ino();
+
+        // Unchanged content must keep the existing inode and avoid rewriting.
+        copy_if_changed(&source, &destination).unwrap();
+        assert_eq!(fs::metadata(&destination).unwrap().ino(), original_ino);
+
+        // Hold an open handle simulating a running app with kernel_blob.bin mapped.
+        let mut handle = fs::File::open(&destination).unwrap();
+        fs::write(&source, b"new-shorter").unwrap();
+        copy_if_changed(&source, &destination).unwrap();
+
+        // The directory entry must point to a fresh inode with the new content,
+        // while the already-open old inode keeps the original bytes intact.
+        assert_ne!(fs::metadata(&destination).unwrap().ino(), original_ino);
+        assert_eq!(fs::read(&destination).unwrap(), b"new-shorter");
+        let mut old_bytes = Vec::new();
+        handle.read_to_end(&mut old_bytes).unwrap();
+        assert_eq!(old_bytes, b"original-kernel-contents");
+
+        // No temporary staging files should be left behind.
+        let entries: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries.len(), 2);
     }
 
     #[test]

@@ -82,10 +82,12 @@ fn git(root: &Path, args: &[&str]) -> Value {
         .map(|o| json!(String::from_utf8_lossy(&o.stdout).trim()))
         .unwrap_or(Value::Null)
 }
+#[allow(clippy::too_many_arguments)]
 pub fn manifest(
     root: &Path,
     sdk: &Path,
     runner: &Path,
+    assets: &Path,
     target: &str,
     mode: &str,
     defines: &[String],
@@ -93,11 +95,12 @@ pub fn manifest(
 ) -> Result<Value> {
     let directory = runner.parent().context("runner has no directory")?;
     let staged = fingerprint(
-        directory,
+        Path::new(""),
         &[
-            runner.file_name().unwrap().into(),
-            "data".into(),
-            "libs".into(),
+            runner.to_path_buf(),
+            directory.join("data").join("icudtl.dat"),
+            directory.join("libs"),
+            assets.to_path_buf(),
         ],
     )?;
     let dependencies = fingerprint(
@@ -113,4 +116,71 @@ pub fn manifest(
         "projectRevision":git(root,&["rev-parse","HEAD"]),"dirtyTree":git(root,&["status","--porcelain","--untracked-files=normal"]),"sdkRevision":git(sdk,&["rev-parse","HEAD"]),"sdkDirtyTree":git(sdk,&["status","--porcelain","--untracked-files=normal"]),
         "environment":{"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"locale":std::env::var("LANG").ok(),"timezone":std::env::var("TZ").ok(),"fontconfig":std::env::var("FONTCONFIG_FILE").ok(),"display":false,"clock":"monotonic real time"}}),
     )
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod tests {
+    use super::*;
+    use crate::util::testing::tempdir;
+
+    #[test]
+    fn manifest_fingerprints_isolated_assets_instead_of_bundled_assets() {
+        let root = tempdir("provenance_isolated");
+        let runner_dir = root.join("runner-rs/target/debug");
+        let bundled = runner_dir.join("data/flutter_assets");
+        let libs = runner_dir.join("libs");
+        let agent_assets = root.join("build/rlutter/linux/debug/agent/flutter_assets");
+        fs::create_dir_all(&bundled).unwrap();
+        fs::create_dir_all(&libs).unwrap();
+        fs::create_dir_all(&agent_assets).unwrap();
+
+        let runner = runner_dir.join("demo");
+        fs::write(&runner, "runner").unwrap();
+        fs::write(runner_dir.join("data/icudtl.dat"), "icu").unwrap();
+        fs::write(libs.join("libflutter_rust_engine.so"), "engine").unwrap();
+        fs::write(bundled.join("kernel_blob.bin"), "interactive-v1").unwrap();
+        fs::write(agent_assets.join("kernel_blob.bin"), "agent-v1").unwrap();
+
+        let m1 = manifest(
+            &root,
+            &root,
+            &runner,
+            &agent_assets,
+            "lib/main.dart",
+            "debug",
+            &[],
+            json!({}),
+        )
+        .unwrap();
+
+        // Changing bundled interactive assets must not change agent staged fingerprint.
+        fs::write(bundled.join("kernel_blob.bin"), "interactive-v2").unwrap();
+        let m2 = manifest(
+            &root,
+            &root,
+            &runner,
+            &agent_assets,
+            "lib/main.dart",
+            "debug",
+            &[],
+            json!({}),
+        )
+        .unwrap();
+        assert_eq!(m1["staged"]["sha256"], m2["staged"]["sha256"]);
+
+        // Changing agent assets must change agent staged fingerprint.
+        fs::write(agent_assets.join("kernel_blob.bin"), "agent-v2").unwrap();
+        let m3 = manifest(
+            &root,
+            &root,
+            &runner,
+            &agent_assets,
+            "lib/main.dart",
+            "debug",
+            &[],
+            json!({}),
+        )
+        .unwrap();
+        assert_ne!(m1["staged"]["sha256"], m3["staged"]["sha256"]);
+    }
 }

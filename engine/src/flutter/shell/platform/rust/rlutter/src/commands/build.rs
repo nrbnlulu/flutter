@@ -20,6 +20,14 @@ pub struct DesktopBuild {
     pub project: Project,
     pub engine: Engine,
     pub runner: PathBuf,
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    pub assets: PathBuf,
+}
+
+enum AssetStaging {
+    Bundled,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    Agent,
 }
 
 /// Builds the app for the Linux host: the Dart bundle, the runner, and the
@@ -80,6 +88,59 @@ pub(super) fn build_desktop(
     platform: &str,
     project: Project,
 ) -> Result<DesktopBuild> {
+    build_desktop_with_staging(
+        ctx,
+        mode,
+        target,
+        dart_defines,
+        platform,
+        project,
+        AssetStaging::Bundled,
+    )
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn build_desktop_agent(
+    ctx: &Ctx,
+    mode: BuildMode,
+    target: &str,
+    dart_defines: &[String],
+    platform: &str,
+    project: Project,
+) -> Result<DesktopBuild> {
+    build_desktop_with_staging(
+        ctx,
+        mode,
+        target,
+        dart_defines,
+        platform,
+        project,
+        AssetStaging::Agent,
+    )
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn agent_asset_dirs(project: &Project, platform: &str, mode: BuildMode) -> (PathBuf, PathBuf) {
+    let base = project
+        .build_dir()
+        .join(platform)
+        .join(mode.name())
+        .join("agent");
+    // Assemble writes in place via Flutter's copySync; stage into a sibling
+    // directory via atomic copy_dir so concurrent agent runs never truncate an
+    // active mapping, and never touch `<runner dir>/data/flutter_assets`.
+    (base.join("assemble"), base.join("flutter_assets"))
+}
+
+fn build_desktop_with_staging(
+    ctx: &Ctx,
+    mode: BuildMode,
+    target: &str,
+    dart_defines: &[String],
+    platform: &str,
+    project: Project,
+    staging: AssetStaging,
+) -> Result<DesktopBuild> {
     let supported_arch = if platform == "macos" {
         cfg!(any(target_arch = "aarch64", target_arch = "x86_64"))
     } else {
@@ -91,11 +152,22 @@ pub(super) fn build_desktop(
     project.require_rust_shell()?;
     let engine = prepare(ctx, &project, mode)?;
 
-    let output = project
-        .build_dir()
-        .join(platform)
-        .join(mode.name())
-        .join("flutter_assets");
+    let runner = runner_binary(&project, mode);
+    let runner_dir = runner
+        .parent()
+        .context("runner binary has no parent directory")?;
+    let (output, staged_assets) = match staging {
+        AssetStaging::Bundled => (
+            project
+                .build_dir()
+                .join(platform)
+                .join(mode.name())
+                .join("flutter_assets"),
+            runner_dir.join("data").join("flutter_assets"),
+        ),
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        AssetStaging::Agent => agent_asset_dirs(&project, platform, mode),
+    };
     let bundle = dart::assemble_bundle(
         &ctx.flutter,
         &project,
@@ -108,15 +180,21 @@ pub(super) fn build_desktop(
     )?;
     if let Some(app_so) = &bundle.app_so {
         // The runner loads the AOT library from the assets directory.
-        fs::copy(app_so, bundle.assets.join("app.so"))?;
+        copy_if_changed(app_so, &bundle.assets.join("app.so"))?;
     }
 
     eprintln!("Building Rust shell runner...");
     run(&mut runner_cargo_command(&project, mode))?;
     native_libs::build_all(&project, mode, None)?;
 
-    let runner = runner_binary(&project, mode);
-    stage_bundle(&project, mode, &engine, &bundle.assets, &runner)?;
+    stage_bundle(
+        &project,
+        mode,
+        &engine,
+        &bundle.assets,
+        &runner,
+        &staged_assets,
+    )?;
     eprintln!(
         "Built {}",
         runner
@@ -128,6 +206,7 @@ pub(super) fn build_desktop(
         project,
         engine,
         runner,
+        assets: staged_assets,
     })
 }
 
@@ -151,24 +230,25 @@ pub fn runner_binary(project: &Project, mode: BuildMode) -> PathBuf {
         .join(format!("{}{}", project.name, std::env::consts::EXE_SUFFIX))
 }
 
-/// Copies `flutter_assets` and `icudtl.dat` into `<runner dir>/data/`, and the
-/// engine and native plugin libraries into `<runner dir>/libs/`, so the runner
-/// finds them relative to its own executable (build.rs adds `$ORIGIN/libs` to
-/// its rpath).
+/// Copies `flutter_assets` into `staged_assets`, `icudtl.dat` into
+/// `<runner dir>/data/`, and the engine and native plugin libraries into
+/// `<runner dir>/libs/`, so the runner finds them relative to its own
+/// executable (build.rs adds `$ORIGIN/libs` to its rpath).
 fn stage_bundle(
     project: &Project,
     mode: BuildMode,
     engine: &Engine,
     assets: &Path,
     runner: &Path,
+    staged_assets: &Path,
 ) -> Result<()> {
     let runner_dir = runner
         .parent()
         .context("runner binary has no parent directory")?;
     let data = runner_dir.join("data");
-    copy_dir(assets, &data.join("flutter_assets"))?;
+    copy_dir(assets, staged_assets)?;
     // Only needed to locate app.so while building.
-    let _ = fs::remove_file(data.join("flutter_assets").join(".last_build_id"));
+    let _ = fs::remove_file(staged_assets.join(".last_build_id"));
     copy_if_changed(&engine.target.join("icudtl.dat"), &data.join("icudtl.dat"))
         .context("cannot copy icudtl.dat")?;
 
@@ -322,8 +402,17 @@ mod tests {
         fs::write(&runner, "bin").unwrap();
         fs::write(runner.parent().unwrap().join("user.txt"), "keep").unwrap();
 
-        stage_bundle(&p, BuildMode::Debug, &engine, &assets, &runner).unwrap();
         let dir = runner.parent().unwrap();
+        let bundled_assets = dir.join("data/flutter_assets");
+        stage_bundle(
+            &p,
+            BuildMode::Debug,
+            &engine,
+            &assets,
+            &runner,
+            &bundled_assets,
+        )
+        .unwrap();
         let libs = if cfg!(windows) {
             dir.to_owned()
         } else {
@@ -338,7 +427,15 @@ mod tests {
             .set_modified(sentinel)
             .unwrap();
         fs::remove_file(native.join("plug.dll")).unwrap();
-        stage_bundle(&p, BuildMode::Debug, &engine, &assets, &runner).unwrap();
+        stage_bundle(
+            &p,
+            BuildMode::Debug,
+            &engine,
+            &assets,
+            &runner,
+            &bundled_assets,
+        )
+        .unwrap();
         assert_eq!(
             fs::metadata(staged_engine).unwrap().modified().unwrap(),
             sentinel
@@ -353,5 +450,67 @@ mod tests {
             "icu"
         );
         assert!(libs.join(crate::sdk::host_engine_library()).is_file());
+    }
+
+    #[test]
+    fn isolated_agent_staging_preserves_bundled_flutter_assets() {
+        let p = project("build_stage_agent");
+        let engine_dir = p.dir.join("engine");
+        fs::create_dir_all(&engine_dir).unwrap();
+        fs::write(engine_dir.join("icudtl.dat"), "icu").unwrap();
+        fs::write(engine_dir.join(crate::sdk::host_engine_library()), "engine").unwrap();
+        let engine = Engine {
+            target: engine_dir.clone(),
+            host: engine_dir,
+        };
+
+        let runner = runner_binary(&p, BuildMode::Debug);
+        let dir = runner.parent().unwrap();
+        fs::create_dir_all(dir).unwrap();
+        fs::write(&runner, "bin").unwrap();
+
+        let app_assets = p.dir.join("app_assets");
+        fs::create_dir_all(&app_assets).unwrap();
+        fs::write(app_assets.join("kernel_blob.bin"), "interactive-app").unwrap();
+        let bundled_assets = dir.join("data/flutter_assets");
+        stage_bundle(
+            &p,
+            BuildMode::Debug,
+            &engine,
+            &app_assets,
+            &runner,
+            &bundled_assets,
+        )
+        .unwrap();
+
+        let (assemble, agent_assets) = agent_asset_dirs(&p, "linux", BuildMode::Debug);
+        assert_ne!(assemble, agent_assets);
+        assert_ne!(agent_assets, bundled_assets);
+        fs::create_dir_all(&assemble).unwrap();
+        fs::write(assemble.join("kernel_blob.bin"), "agent-smoke-target").unwrap();
+        fs::write(assemble.join(".last_build_id"), "id").unwrap();
+        stage_bundle(
+            &p,
+            BuildMode::Debug,
+            &engine,
+            &assemble,
+            &runner,
+            &agent_assets,
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(bundled_assets.join("kernel_blob.bin")).unwrap(),
+            "interactive-app"
+        );
+        assert_eq!(
+            fs::read_to_string(agent_assets.join("kernel_blob.bin")).unwrap(),
+            "agent-smoke-target"
+        );
+        assert!(!agent_assets.join(".last_build_id").exists());
+        assert_eq!(
+            fs::read_to_string(dir.join("data/icudtl.dat")).unwrap(),
+            "icu"
+        );
     }
 }
