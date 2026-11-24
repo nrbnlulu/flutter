@@ -149,7 +149,7 @@ mod linux {
             let mut defines = defines.to_vec();
             defines.retain(|v| !v.starts_with("FLUTTER_RUST_AGENT="));
             defines.push("FLUTTER_RUST_AGENT=true".into());
-            let build = super::super::build::build_desktop(
+            let build = super::super::build::build_desktop_agent(
                 ctx,
                 mode,
                 target,
@@ -157,6 +157,10 @@ mod linux {
                 std::env::consts::OS,
                 crate::project::Project::load(&project.dir)?,
             )?;
+            let assets = build
+                .assets
+                .canonicalize()
+                .unwrap_or_else(|_| build.assets.clone());
             if source != super::super::provenance::sources(&project.dir, target)? {
                 bail!("source changed during the verification build; start a new session");
             }
@@ -164,6 +168,7 @@ mod linux {
                 &project.dir,
                 ctx.flutter.root(),
                 &build.runner,
+                &assets,
                 target,
                 mode.name(),
                 &defines,
@@ -181,6 +186,7 @@ mod linux {
             fs::set_permissions(&endpoint.0, fs::Permissions::from_mode(0o700))?;
             let socket = endpoint.0.join("control.sock");
             let mut child = Command::new(&build.runner)
+                .arg(&assets)
                 .current_dir(&build.project.dir)
                 .env("FLUTTER_RUST_HEADLESS", "1")
                 .env(
