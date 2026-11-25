@@ -34,7 +34,9 @@ env:
 
 jobs:
   build:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # BETA can publish successfully even when an optional platform failed.
+    # The publish step below checks the actual SDK tag before releasing binaries.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure'
     strategy:
       fail-fast: false
       matrix:
@@ -92,7 +94,8 @@ jobs:
         with:
           name: ${{ matrix.asset }}
           path: dist/
-          retention-days: 1
+          overwrite: true
+          retention-days: 7
 
   publish:
     # Publish only after the matching SDK passed its packaged app builds.

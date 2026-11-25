@@ -124,14 +124,16 @@ jobs:
         with:
           name: rlutter-flutter-sdk
           path: ${{ runner.temp }}/rlutter-flutter-linux-x64.tar.gz
-          retention-days: 1
+          overwrite: true
+          retention-days: 7
 
       - name: Upload Flutter tool snapshot
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: flutter-tools-snapshot
           path: bin/cache/flutter_tools.snapshot
-          retention-days: 1
+          overwrite: true
+          retention-days: 7
 
   build-engine:
     runs-on: ubuntu-latest
@@ -206,6 +208,7 @@ jobs:
         with:
           name: rust-headless-evidence
           path: build/headless-*
+          overwrite: true
           retention-days: 7
 
       - name: Package engine artifacts (${{ matrix.runtime_mode }})
@@ -220,7 +223,8 @@ jobs:
         with:
           name: rust-engine-${{ matrix.runtime_mode }}
           path: ${{ runner.temp }}/engine-package
-          retention-days: 1
+          overwrite: true
+          retention-days: 7
 
   build-android-engine:
     runs-on: ubuntu-latest
@@ -294,11 +298,14 @@ jobs:
         with:
           name: rust-engine-android-${{ matrix.android_cpu }}-${{ matrix.runtime_mode }}
           path: ${{ runner.temp }}/android-engine-package
-          retention-days: 1
+          overwrite: true
+          retention-days: 7
 
   build-macos-engine:
     runs-on: macos-15
     strategy:
+      # Hosted ARM64 capacity is limited; do not queue all three engines at once.
+      max-parallel: 1
       fail-fast: false
       matrix:
         runtime_mode: [debug, profile, release]
@@ -313,7 +320,9 @@ jobs:
           echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
           # Impeller still compiles its Metal shader libraries on macOS. Newer
           # Xcode versions download the Metal toolchain separately.
-          xcodebuild -downloadComponent MetalToolchain || true
+          if xcodebuild -help 2>&1 | grep -q -- '-downloadComponent'; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
 
       - name: Fetch engine dependencies
         run: |
@@ -357,7 +366,8 @@ jobs:
         with:
           name: rust-engine-macos-${{ matrix.runtime_mode }}
           path: ${{ runner.temp }}/engine-package
-          retention-days: 1
+          overwrite: true
+          retention-days: 7
 
   package-macos:
     needs: [build-macos-engine, build-tool]
@@ -445,14 +455,26 @@ jobs:
         with:
           name: macos-distribution
           path: build/flutter-rust-darwin-arm64.tar.gz
-          retention-days: 1
+          overwrite: true
+          retention-days: 7
 
   agent-protocol-tests:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Check offline package audit boundaries before engine sync
+        run: |
+          python -m pip install PyYAML==6.0.2
+          python engine/src/flutter/tools/pub_get_offline_test.py
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.93.1 --profile minimal
+      - name: Test protocol, semantics, codecs and PNGs without a GPU
+        run: cargo +1.93.1 test --locked --manifest-path engine/src/flutter/shell/platform/rust/Cargo.toml -p flutter-shell-agent -p flutter-shell-core -p flutter-gpu-queue
+
+  agent-protocol-tests-windows:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -531,7 +553,8 @@ jobs:
         with:
           name: windows-engine-${{ matrix.runtime_mode }}
           path: build/windows-engine
-          retention-days: 1
+          overwrite: true
+          retention-days: 7
 
   package-windows:
     needs: [build-windows, build-tool]
@@ -616,9 +639,15 @@ jobs:
             build/flutter-rust-windows-x64.tar.gz
             build/rlutter-flutter-windows-x64.tar.gz
             engine/src/flutter/shell/platform/rust/rlutter/target/release/rlutter.exe
-          retention-days: 1
+          overwrite: true
+          retention-days: 7
 
   publish:
+    # A failed optional platform must not suppress the verified Linux release.
+    if: >-
+      ${{ !cancelled() && needs.build-tool.result == 'success' &&
+          needs.build-engine.result == 'success' &&
+          needs.agent-protocol-tests.result == 'success' }}
     needs: [build-tool, build-engine, build-android-engine, package-windows, package-macos, agent-protocol-tests]
     runs-on: ubuntu-latest
     steps:
@@ -666,30 +695,41 @@ jobs:
           path: build/flutter-rust-sdk/lib/profile
 
       - name: Download Android engine builds
+        if: needs.build-android-engine.result == 'success'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: rust-engine-android-*
           path: build/downloaded-android-engines
 
       - name: Download macOS distribution
+        if: needs.package-macos.result == 'success'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: macos-distribution
           path: build/macos-distribution
 
       - name: Download Windows distribution
+        if: needs.package-windows.result == 'success'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: windows-distribution
           path: build/windows-distribution
 
       - name: Package BETA assets
+        env:
+          ANDROID_READY: ${{ needs.build-android-engine.result == 'success' }}
+          WINDOWS_READY: ${{ needs.package-windows.result == 'success' }}
+          MACOS_READY: ${{ needs.package-macos.result == 'success' }}
         run: |
           python3 engine/src/flutter/shell/platform/rust/tools/package_sdk_sources.py \
             build/flutter-rust-sdk --validate-engines
-          find build/windows-distribution -name '*.tar.gz' -exec cp {} build/ \;
-          cp build/macos-distribution/flutter-rust-darwin-arm64.tar.gz build/
-          find build/windows-distribution -name rlutter.exe -exec cp {} build/ \;
+          if [[ "$WINDOWS_READY" == true ]]; then
+            find build/windows-distribution -name '*.tar.gz' -exec cp {} build/ \;
+            find build/windows-distribution -name rlutter.exe -exec cp {} build/ \;
+          fi
+          if [[ "$MACOS_READY" == true ]]; then
+            cp build/macos-distribution/flutter-rust-darwin-arm64.tar.gz build/
+          fi
           for mode in debug profile release; do
             lib="build/flutter-rust-sdk/lib/$mode"
             chmod +x "$lib/flutter_rust_shell_runner" "$lib/gen_snapshot" "$lib/font-subset" \
@@ -700,20 +740,21 @@ jobs:
           # One archive per Android ABI, laid out as <mode>/ like the Linux
           # bundle's lib/<mode>/. rlutter downloads
           # flutter-rust-<flutter TargetPlatform>.tar.gz on demand.
-          for dir in build/downloaded-android-engines/rust-engine-android-*-*; do
-            name="$(basename "$dir")"   # rust-engine-android-<cpu>-<mode>
-            mode="${name##*-}"
-            cpu="${name#rust-engine-android-}"; cpu="${cpu%-*}"
-            mkdir -p "build/android-$cpu/$mode"
-            cp -R "$dir/." "build/android-$cpu/$mode/"
-            chmod +x "build/android-$cpu/$mode/clang_x64/gen_snapshot" 2>/dev/null || true
-          done
-          for dir in build/android-*/; do
-            cpu="$(basename "$dir")"    # android-<cpu>
-            tar -C "$dir" -czf "build/flutter-rust-$cpu.tar.gz" .
-          done
+          if [[ "$ANDROID_READY" == true ]]; then
+            for dir in build/downloaded-android-engines/rust-engine-android-*-*; do
+              name="$(basename "$dir")"   # rust-engine-android-<cpu>-<mode>
+              mode="${name##*-}"
+              cpu="${name#rust-engine-android-}"; cpu="${cpu%-*}"
+              mkdir -p "build/android-$cpu/$mode"
+              cp -R "$dir/." "build/android-$cpu/$mode/"
+              chmod +x "build/android-$cpu/$mode/clang_x64/gen_snapshot" 2>/dev/null || true
+            done
+            for dir in build/android-*/; do
+              cpu="$(basename "$dir")"    # android-<cpu>
+              tar -C "$dir" -czf "build/flutter-rust-$cpu.tar.gz" .
+            done
+          fi
           mv build/flutter_tools.snapshot build/flutter-tools.snapshot
-          sha256sum build/flutter-rust-*.tar.gz build/rlutter-flutter-*.tar.gz build/rlutter.exe build/flutter-tools.snapshot > build/SHA256SUMS
 
       - name: Verify standalone SDK without a Flutter installation
         run: |
@@ -768,6 +809,14 @@ jobs:
             --rlutter "$rlutter" --flutter-root "$XDG_CACHE_HOME/rlutter/flutter-BETA" \
             --project "$PWD" --artifacts "$RUNNER_TEMP/packaged-agent-controls"
 
+      - name: Verify packaged Android SDK
+        id: verify-android
+        if: needs.build-android-engine.result == 'success'
+        continue-on-error: true
+        run: |
+          rlutter="$GITHUB_WORKSPACE/engine/src/flutter/shell/platform/rust/rlutter/target/release/rlutter"
+          export XDG_CACHE_HOME="$RUNNER_TEMP/standalone-cache"
+          cd "$RUNNER_TEMP/standalone_smoke"
           # Exercise the Android archives exactly as a release user receives
           # them, including Flutter's Java plugin loader and JNI libraries.
           rustup target add aarch64-linux-android --toolchain 1.93.1
@@ -830,7 +879,41 @@ jobs:
           path: |
             ${{ runner.temp }}/packaged-agent-evidence
             ${{ runner.temp }}/packaged-agent-controls
+          overwrite: true
           retention-days: 7
+
+      - name: Preserve metadata for unchanged platform assets
+        env:
+          GH_TOKEN: ${{ secrets.FLUTTER_RUST_RELEASE_TOKEN }}
+          ANDROID_READY: ${{ needs.build-android-engine.result == 'success' && steps.verify-android.outcome == 'success' }}
+          WINDOWS_READY: ${{ needs.package-windows.result == 'success' }}
+          MACOS_READY: ${{ needs.package-macos.result == 'success' }}
+        run: |
+          # Never upload unverified Android archives over the previous release.
+          if [[ "$ANDROID_READY" != true ]]; then
+            rm -f build/flutter-rust-android-*.tar.gz
+          fi
+          mkdir -p build/previous-release
+          if gh release view BETA --json assets > build/previous-release/assets.json; then
+            for asset in SHA256SUMS platform-revisions.json; do
+              if jq -e --arg name "$asset" '.assets[] | select(.name == $name)' build/previous-release/assets.json >/dev/null; then
+                gh release download BETA --pattern "$asset" --dir build/previous-release
+              fi
+            done
+          else
+            # Distinguish the first release from an API/authentication failure.
+            gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq '.[].tag_name' > build/previous-release/tags
+            if grep -Fxq BETA build/previous-release/tags; then
+              echo 'Could not read the existing BETA release' >&2
+              exit 1
+            fi
+          fi
+          platforms=(--platform linux)
+          [[ "$ANDROID_READY" != true ]] || platforms+=(--platform android)
+          [[ "$WINDOWS_READY" != true ]] || platforms+=(--platform windows)
+          [[ "$MACOS_READY" != true ]] || platforms+=(--platform macos)
+          python3 .github/scripts/update-beta-metadata.py build "$GITHUB_SHA" \
+            --previous build/previous-release "${platforms[@]}"
 
       - name: Publish rolling BETA release
         env:
@@ -841,6 +924,12 @@ jobs:
             "refs/tags/${FLUTTER_VERSION_TAG}:refs/tags/${FLUTTER_VERSION_TAG}"
           {
             echo 'Rolling Flutter Rust shell SDK artifacts.'
+            echo
+            echo 'Platforms update independently. Assets from unavailable platforms are retained.'
+            echo 'Exact per-platform revisions are recorded in platform-revisions.json; unlisted platforms predate revision tracking.'
+            echo
+            echo 'Platform revisions:'
+            jq -r 'to_entries[] | "- \(.key): `\(.value)`"' build/platform-revisions.json
             echo
             echo 'Install rlutter (downloads this SDK when needed):'
             echo
@@ -870,10 +959,19 @@ jobs:
               --target "${GITHUB_SHA}" \
               --notes-file notes.md
           fi
-          gh release upload BETA \
-            build/flutter-rust-*.tar.gz \
-            build/flutter-tools.snapshot \
-            build/rlutter-flutter-*.tar.gz \
-            build/rlutter.exe \
-            build/SHA256SUMS \
-            --clobber
+          shopt -s nullglob
+          assets=(build/flutter-rust-*.tar.gz build/flutter-tools.snapshot
+                  build/rlutter-flutter-*.tar.gz build/rlutter.exe
+                  build/SHA256SUMS build/platform-revisions.json)
+          # rlutter.exe is optional; unlike globs its literal name needs filtering.
+          existing=()
+          for asset in "${assets[@]}"; do
+            [[ ! -f "$asset" ]] || existing+=("$asset")
+          done
+          gh release upload BETA "${existing[@]}" --clobber
+
+      - name: Report Android verification failure for retry
+        if: steps.verify-android.outcome == 'failure'
+        run: |
+          echo 'Linux BETA published; Android verification failed and needs a retry.' >&2
+          exit 1

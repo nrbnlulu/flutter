@@ -1,0 +1,77 @@
+name: Flutter Rust retry
+
+on:
+  workflow_run:
+    workflows: [Flutter Rust BETA artifacts, rlutter CLI]
+    types: [completed]
+    branches: [master, rust/flutter-rs-shell]
+
+permissions:
+  actions: write
+  contents: read
+
+# Serialize duplicate completion events without cancelling an active retry.
+concurrency:
+  group: flutter-rust-retry-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    if: >-
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.conclusion == 'failure' ||
+       github.event.workflow_run.conclusion == 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # No checkout or source execution: only query GitHub and request a rerun.
+      - name: Retry failed jobs (at most three total attempts)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          [[ "$REPO" == "$GH_REPO" ]] || exit 0
+          case "$CONCLUSION" in
+            failure|cancelled) ;;
+            *) exit 0 ;;
+          esac
+          case "$HEAD_BRANCH" in
+            master|rust/flutter-rs-shell) ;;
+            *) exit 0 ;;
+          esac
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          if (( ATTEMPT >= 3 )); then
+            echo 'Three total attempts reached; not retrying.'
+            exit 0
+          fi
+
+          # A previous handler or manual rerun may already have advanced this run.
+          current_run="$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID")"
+          if ! jq -e --argjson attempt "$ATTEMPT" --arg conclusion "$CONCLUSION" \
+            '.status == "completed" and .run_attempt == $attempt and .conclusion == $conclusion' \
+            <<< "$current_run" > /dev/null; then
+            echo 'Run is no longer completed at the triggering attempt; skipping.'
+            exit 0
+          fi
+
+          # Do not revive superseded runs cancelled by workflow concurrency.
+          tip="$(gh api "repos/$GH_REPO/git/ref/heads/$HEAD_BRANCH" --jq '.object.sha')"
+          if [[ "$tip" != "$HEAD_SHA" ]]; then
+            echo 'Triggering commit is no longer the branch tip; skipping.'
+            exit 0
+          fi
+
+          # Workflow-level completion also covers runner acquisition failures,
+          # where no job step could execute its own retry logic.
+          gh api --method POST "repos/$GH_REPO/actions/runs/$RUN_ID/rerun-failed-jobs"
+          echo "Requested failed-job retry after attempt $ATTEMPT."
