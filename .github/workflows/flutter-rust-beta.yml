@@ -302,7 +302,7 @@ jobs:
           retention-days: 7
 
   build-macos-engine:
-    runs-on: macos-15
+    runs-on: macos-26
     strategy:
       # Hosted ARM64 capacity is limited; do not queue all three engines at once.
       max-parallel: 1
@@ -371,7 +371,7 @@ jobs:
 
   package-macos:
     needs: [build-macos-engine, build-tool]
-    # Keep the macOS 15 deployment target, but avoid its starved packaging pool.
+    # Use the same ARM64 image for engine and packaged-app builds.
     runs-on: macos-26
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
