@@ -102,8 +102,11 @@ impl Client {
             .get_ref()
             .set_read_timeout(Some(Duration::from_millis(timeout + 5000)))?;
         let message = json!({"id":self.id,"method":method,"params":params});
-        serde_json::to_writer(&mut self.output, &message)?;
-        self.output.write_all(b"\n")?;
+        serde_json::to_writer(&mut self.output, &message)
+            .context("failed to write runner control channel request")?;
+        self.output
+            .write_all(b"\n")
+            .context("failed to write runner control channel request")?;
         loop {
             let mut line = Vec::new();
             self.input
@@ -321,6 +324,17 @@ pub fn run(ctx: &Ctx, args: &VerifyArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn disconnected_runner_write_identifies_control_channel() {
+        let (stream, peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut client = Client::new(&stream).unwrap();
+        drop(peer);
+        let error = client.rpc("session.health", json!({})).unwrap_err();
+        assert!(error.to_string().contains("control channel"), "{error:#}");
+    }
+
     #[test]
     fn scenario_rejects_unknown_fields_and_broad_expected_errors() {
         assert!(
